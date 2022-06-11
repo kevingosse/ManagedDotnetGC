@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "ManagedDotnetGC": {
+      "commandName": "Project",
+      "commandLineArgs": "E:\\git\\ManagedDotnetGC\\TestApp\\bin\\Debug\\net6.0\\win-x64\\TestApp.exe",
+      "workingDirectory": "E:\\git\\ManagedDotnetGC\\TestApp\\bin\\Debug\\net6.0\\win-x64",
+      "environmentVariables": {
+        "COMPlus_GCName": "ManagedDotnetGC.dll"
+      }
+    }
+  }
+}

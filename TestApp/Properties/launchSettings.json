@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "TestApp": {
+      "commandName": "Project",
+      "nativeDebugging": true,
+      "environmentVariables": {
+        "COMPlus_GCName": "ManagedDotnetGC.dll"
+      }
+    }
+  }
+}
