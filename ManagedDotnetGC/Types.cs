@@ -1,8 +1,17 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+
+using ULONG64 = System.UInt64;
+using ULONG = System.UInt32;
+using LONG = System.Int32;
+using UINT = System.UInt32;
+using BOOL = System.Boolean;
+using DWORD = System.Int32;
+using WORD = System.Int16;
 
 namespace ManagedDotnetGC;
 
@@ -319,3 +328,615 @@ public enum WriteBarrierOp
     SwitchToWriteWatch,
     SwitchToNonWriteWatch
 };
+
+/// <summary>
+/// A representation of CLR's CLRDATA_ADDRESS, which is a signed 64bit integer.
+/// Unfortunately this can cause issues when inspecting 32bit processes, since
+/// if the highest bit is set the value will be sign-extended.  This struct is
+/// meant to
+/// </summary>
+[DebuggerDisplay("{AsUInt64()}")]
+public readonly struct CLRDATA_ADDRESS
+{
+    /// <summary>
+    /// Gets raw value of this address.  May be sign-extended if inspecting a 32bit process.
+    /// </summary>
+    public long Value { get; }
+
+    /// <summary>Creates an instance of CLRDATA_ADDRESS.</summary>
+    /// <param name="value"></param>
+    public CLRDATA_ADDRESS(long value) => this.Value = value;
+
+    /// <summary>
+    /// Returns the value of this address and un-sign extends the value if appropriate.
+    /// </summary>
+    /// <param name="cda">The address to convert.</param>
+    public static implicit operator ulong(CLRDATA_ADDRESS cda) => cda.AsUInt64();
+
+    public static implicit operator CLRDATA_ADDRESS(ulong value) => new CLRDATA_ADDRESS((long)(IntPtr)(long)value);
+
+    public override string ToString() => AsUInt64().ToString("x2");
+
+    /// <summary>
+    /// Returns the value of this address and un-sign extends the value if appropriate.
+    /// </summary>
+    /// <returns>The value of this address and un-sign extends the value if appropriate.</returns>
+    private ulong AsUInt64() => (ulong)(UIntPtr)(ulong)this.Value;
+}
+
+public enum CorDebugPlatform : uint
+{
+    CORDB_PLATFORM_WINDOWS_X86 = 0,
+    CORDB_PLATFORM_WINDOWS_AMD64 = (CORDB_PLATFORM_WINDOWS_X86 + 1),
+    CORDB_PLATFORM_WINDOWS_IA64 = (CORDB_PLATFORM_WINDOWS_AMD64 + 1),
+    CORDB_PLATFORM_MAC_PPC = (CORDB_PLATFORM_WINDOWS_IA64 + 1),
+    CORDB_PLATFORM_MAC_X86 = (CORDB_PLATFORM_MAC_PPC + 1),
+    CORDB_PLATFORM_WINDOWS_ARM = (CORDB_PLATFORM_MAC_X86 + 1),
+    CORDB_PLATFORM_MAC_AMD64 = (CORDB_PLATFORM_WINDOWS_ARM + 1),
+    CORDB_PLATFORM_WINDOWS_ARM64 = (CORDB_PLATFORM_MAC_AMD64 + 1),
+    CORDB_PLATFORM_POSIX_AMD64 = (CORDB_PLATFORM_WINDOWS_ARM64 + 1),
+    CORDB_PLATFORM_POSIX_X86 = (CORDB_PLATFORM_POSIX_AMD64 + 1),
+    CORDB_PLATFORM_POSIX_ARM = (CORDB_PLATFORM_POSIX_X86 + 1),
+    CORDB_PLATFORM_POSIX_ARM64 = (CORDB_PLATFORM_POSIX_ARM + 1)
+}
+
+public struct DacpThreadStoreData
+{
+    public int threadCount;
+    public int unstartedThreadCount;
+    public int backgroundThreadCount;
+    public int pendingThreadCount;
+    public int deadThreadCount;
+    public CLRDATA_ADDRESS firstThread;
+    public CLRDATA_ADDRESS finalizerThread;
+    public CLRDATA_ADDRESS gcThread;
+    public int fHostConfig;          // Uses hosting flags defined above
+}
+
+public struct DacpAppDomainStoreData
+{
+    public CLRDATA_ADDRESS sharedDomain;
+    public CLRDATA_ADDRESS systemDomain;
+    public int DomainCount;
+}
+
+public struct DacpCOMInterfacePointerData
+{
+    public CLRDATA_ADDRESS methodTable;
+    public CLRDATA_ADDRESS interfacePtr;
+    public CLRDATA_ADDRESS comContext;
+}
+
+public enum DacpAppDomainDataStage
+{
+    STAGE_CREATING,
+    STAGE_READYFORMANAGEDCODE,
+    STAGE_ACTIVE,
+    STAGE_OPEN,
+    STAGE_UNLOAD_REQUESTED,
+    STAGE_EXITING,
+    STAGE_EXITED,
+    STAGE_FINALIZING,
+    STAGE_FINALIZED,
+    STAGE_HANDLETABLE_NOACCESS,
+    STAGE_CLEARED,
+    STAGE_COLLECTED,
+    STAGE_CLOSED
+}
+
+// Information about a BaseDomain (AppDomain, SharedDomain or SystemDomain).
+// For types other than AppDomain, some fields (like dwID, DomainLocalBlock, etc.) will be 0/null.
+public struct DacpAppDomainData
+{
+    // The pointer to the BaseDomain (not necessarily an AppDomain).
+    // It's useful to keep this around in the structure
+    public CLRDATA_ADDRESS AppDomainPtr;
+    public CLRDATA_ADDRESS AppSecDesc;
+    public CLRDATA_ADDRESS pLowFrequencyHeap;
+    public CLRDATA_ADDRESS pHighFrequencyHeap;
+    public CLRDATA_ADDRESS pStubHeap;
+    public CLRDATA_ADDRESS DomainLocalBlock;
+    public CLRDATA_ADDRESS pDomainLocalModules;
+    // The creation sequence number of this app domain (starting from 1)
+    public int dwId;
+    public int AssemblyCount;
+    public int FailedAssemblyCount;
+    public DacpAppDomainDataStage appDomainStage;
+}
+
+public struct DacpAssemblyData
+{
+    public CLRDATA_ADDRESS AssemblyPtr; //useful to have
+    public CLRDATA_ADDRESS ClassLoader;
+    public CLRDATA_ADDRESS ParentDomain;
+    public CLRDATA_ADDRESS BaseDomainPtr;
+    public CLRDATA_ADDRESS AssemblySecDesc;
+    public bool isDynamic;
+    public uint ModuleCount;
+    public uint LoadContext;
+    public bool isDomainNeutral; // Always false, preserved for backward compatibility
+    public int dwLocationFlags;
+}
+
+public struct DacpThreadData
+{
+    public int corThreadId;
+    public int osThreadId;
+    public int state;
+    public ulong preemptiveGCDisabled;
+    public CLRDATA_ADDRESS allocContextPtr;
+    public CLRDATA_ADDRESS allocContextLimit;
+    public CLRDATA_ADDRESS context;
+    public CLRDATA_ADDRESS domain;
+    public CLRDATA_ADDRESS pFrame;
+    public int lockCount;
+    public CLRDATA_ADDRESS firstNestedException; // Pass this pointer to DacpNestedExceptionInfo
+    public CLRDATA_ADDRESS teb;
+    public CLRDATA_ADDRESS fiberData;
+    public CLRDATA_ADDRESS lastThrownObjectHandle;
+    public CLRDATA_ADDRESS nextThread;
+}
+
+public struct DacpModuleData
+{
+    public CLRDATA_ADDRESS Address;
+    public CLRDATA_ADDRESS File; // A PEFile addr
+    public CLRDATA_ADDRESS ilBase;
+    public CLRDATA_ADDRESS metadataStart;
+    public ULONG64 metadataSize;
+    public CLRDATA_ADDRESS Assembly; // Assembly pointer
+    public BOOL bIsReflection;
+    public BOOL bIsPEFile;
+    public ULONG64 dwBaseClassIndex;
+    public ULONG64 dwModuleID;
+
+    public DWORD dwTransientFlags;
+
+    public CLRDATA_ADDRESS TypeDefToMethodTableMap;
+    public CLRDATA_ADDRESS TypeRefToMethodTableMap;
+    public CLRDATA_ADDRESS MethodDefToDescMap;
+    public CLRDATA_ADDRESS FieldDefToDescMap;
+    public CLRDATA_ADDRESS MemberRefToDescMap;
+    public CLRDATA_ADDRESS FileReferencesMap;
+    public CLRDATA_ADDRESS ManifestModuleReferencesMap;
+
+    CLRDATA_ADDRESS pLookupTableHeap;
+    CLRDATA_ADDRESS pThunkHeap;
+
+    public ULONG64 dwModuleIndex;
+}
+
+public enum ModuleMapType { TYPEDEFTOMETHODTABLE, TYPEREFTOMETHODTABLE }
+
+
+public struct DacpMethodDescData
+{
+    public BOOL bHasNativeCode;
+    public BOOL bIsDynamic;
+    public WORD wSlotNumber;
+    public CLRDATA_ADDRESS NativeCodeAddr;
+    // Useful for breaking when a method is jitted.
+    public CLRDATA_ADDRESS AddressOfNativeCodeSlot;
+
+    public CLRDATA_ADDRESS MethodDescPtr;
+    public CLRDATA_ADDRESS MethodTablePtr;
+    public CLRDATA_ADDRESS ModulePtr;
+
+    public MdToken MDToken;
+    public CLRDATA_ADDRESS GCInfo;
+    public CLRDATA_ADDRESS GCStressCodeCopy;
+
+    // This is only valid if bIsDynamic is true
+    public CLRDATA_ADDRESS managedDynamicMethodObject;
+
+    public CLRDATA_ADDRESS requestedIP;
+
+    // Gives info for the single currently active version of a method
+    public DacpReJitData rejitDataCurrent;
+
+    // Gives info corresponding to requestedIP (for !ip2md)
+    public DacpReJitData rejitDataRequested;
+
+    // Total number of rejit versions that have been jitted
+    public ULONG cJittedRejitVersions;
+}
+
+public struct MdToken
+{
+    public int Value;
+}
+
+public struct DacpReJitData
+{
+    public enum Flags
+    {
+        kUnknown,
+        kRequested,
+        kActive,
+        kReverted,
+    };
+
+    public CLRDATA_ADDRESS rejitID;
+    public Flags flags;
+    public CLRDATA_ADDRESS NativeCodeAddr;
+}
+
+public struct DacpMethodDescTransparencyData
+{
+    public BOOL bHasCriticalTransparentInfo;
+    public BOOL bIsCritical;
+    public BOOL bIsTreatAsSafe;
+}
+
+public enum JITTypes { TYPE_UNKNOWN = 0, TYPE_JIT, TYPE_PJIT };
+
+public struct DacpCodeHeaderData
+{
+    public CLRDATA_ADDRESS GCInfo;
+    public JITTypes JITType;
+    public CLRDATA_ADDRESS MethodDescPtr;
+    public CLRDATA_ADDRESS MethodStart;
+    public DWORD MethodSize;
+    public CLRDATA_ADDRESS ColdRegionStart;
+    public DWORD ColdRegionSize;
+    public DWORD HotRegionSize;
+}
+
+public struct DacpJitManagerInfo
+{
+    public CLRDATA_ADDRESS managerAddr;
+    public DWORD codeType; // for union below
+    public CLRDATA_ADDRESS ptrHeapList;    // A HeapList * if IsMiIL(codeType)
+}
+
+public struct T_CONTEXT
+{
+    public int Value;
+}
+
+public struct DacpThreadpoolData
+{
+    public LONG cpuUtilization;
+    public int NumIdleWorkerThreads;
+    public int NumWorkingWorkerThreads;
+    public int NumRetiredWorkerThreads;
+    public LONG MinLimitTotalWorkerThreads;
+    public LONG MaxLimitTotalWorkerThreads;
+
+    public CLRDATA_ADDRESS FirstUnmanagedWorkRequest;
+
+    public CLRDATA_ADDRESS HillClimbingLog;
+    public int HillClimbingLogFirstIndex;
+    public int HillClimbingLogSize;
+
+    public DWORD NumTimers;
+
+    public LONG NumCPThreads;
+    public LONG NumFreeCPThreads;
+    public LONG MaxFreeCPThreads;
+    public LONG NumRetiredCPThreads;
+    public LONG MaxLimitTotalCPThreads;
+    public LONG CurrentLimitTotalCPThreads;
+    public LONG MinLimitTotalCPThreads;
+
+    public CLRDATA_ADDRESS AsyncTimerCallbackCompletionFPtr;
+}
+
+public struct DacpGenerationData
+{
+    public CLRDATA_ADDRESS start_segment;
+    public CLRDATA_ADDRESS allocation_start;
+
+    // These are examined only for generation 0, otherwise NULL
+    public CLRDATA_ADDRESS allocContextPtr;
+    public CLRDATA_ADDRESS allocContextLimit;
+}
+
+public struct DacpWorkRequestData
+{
+    public CLRDATA_ADDRESS Function;
+    public CLRDATA_ADDRESS Context;
+    public CLRDATA_ADDRESS NextWorkRequest;
+}
+
+public struct DacpHillClimbingLogEntry
+{
+    public DWORD TickCount;
+    public int Transition;
+    public int NewControlSetting;
+    public int LastHistoryCount;
+    public double LastHistoryMean;
+}
+
+public enum DacpObjectType { OBJ_STRING = 0, OBJ_FREE, OBJ_OBJECT, OBJ_ARRAY, OBJ_OTHER };
+
+public readonly struct CorElementType
+{
+    public readonly uint Value;
+}
+
+public struct DacpObjectData
+{
+    public CLRDATA_ADDRESS MethodTable;
+    public DacpObjectType ObjectType;
+    public ULONG64 Size;
+    public CLRDATA_ADDRESS ElementTypeHandle;
+    public CorElementType ElementType;
+    public DWORD dwRank;
+    public ULONG64 dwNumComponents;
+    public ULONG64 dwComponentSize;
+    public CLRDATA_ADDRESS ArrayDataPtr;
+    public CLRDATA_ADDRESS ArrayBoundsPtr;
+    public CLRDATA_ADDRESS ArrayLowerBoundsPtr;
+
+    public CLRDATA_ADDRESS RCW;
+    public CLRDATA_ADDRESS CCW;
+}
+
+public struct DacpMethodTableData
+{
+    public BOOL bIsFree; // everything else is NULL if this is true.
+    public CLRDATA_ADDRESS Module;
+    public CLRDATA_ADDRESS Class;
+    public CLRDATA_ADDRESS ParentMethodTable;
+    public WORD wNumInterfaces;
+    public WORD wNumMethods;
+    public WORD wNumVtableSlots;
+    public WORD wNumVirtuals;
+    public DWORD BaseSize;
+    public DWORD ComponentSize;
+    public MdTypeDef cl; // Metadata token
+    public DWORD dwAttrClass; // cached metadata
+    public BOOL bIsShared;  // Always false, preserved for backward compatibility
+    public BOOL bIsDynamic;
+    public BOOL bContainsPointers;
+}
+
+public readonly struct MdTypeDef
+{
+    public readonly int Value;
+}
+
+public struct DacpMethodTableFieldData
+{
+    public WORD wNumInstanceFields;
+    public WORD wNumStaticFields;
+    public WORD wNumThreadStaticFields;
+
+    public CLRDATA_ADDRESS FirstField; // If non-null, you can retrieve more
+
+    public WORD wContextStaticOffset;
+    public WORD wContextStaticsSize;
+}
+
+public struct DacpMethodTableTransparencyData
+{
+    public BOOL bHasCriticalTransparentInfo;
+    public BOOL bIsCritical;
+    public BOOL bIsTreatAsSafe;
+}
+
+public struct DacpFieldDescData
+{
+    public CorElementType Type;
+    public CorElementType sigType;     // ELEMENT_TYPE_XXX from signature. We need this to disply pretty name for String in minidump's case
+    public CLRDATA_ADDRESS MTOfType; // NULL if Type is not loaded
+
+    public CLRDATA_ADDRESS ModuleOfType;
+    public MdTypeDef TokenOfType;
+
+    public MdFieldDef mb;
+    public CLRDATA_ADDRESS MTOfEnclosingClass;
+    public DWORD dwOffset;
+    public BOOL bIsThreadLocal;
+    public BOOL bIsContextLocal;
+    public BOOL bIsStatic;
+    public CLRDATA_ADDRESS NextField;
+}
+
+public readonly struct MdFieldDef
+{
+    public readonly int Value;
+}
+
+public struct DacpGcHeapData
+{
+    public BOOL bServerMode;
+    public BOOL bGcStructuresValid;
+    public UINT HeapCount;
+    public UINT g_max_generation;
+}
+
+public struct DacpGcHeapDetails
+{
+    public const int DAC_NUMBERGENERATIONS = 4;
+    public CLRDATA_ADDRESS heapAddr; // Only filled in in server mode, otherwise NULL
+    public CLRDATA_ADDRESS alloc_allocated;
+
+    public CLRDATA_ADDRESS mark_array;
+    public CLRDATA_ADDRESS current_c_gc_state;
+    public CLRDATA_ADDRESS next_sweep_obj;
+    public CLRDATA_ADDRESS saved_sweep_ephemeral_seg;
+    public CLRDATA_ADDRESS saved_sweep_ephemeral_start;
+    public CLRDATA_ADDRESS background_saved_lowest_address;
+    public CLRDATA_ADDRESS background_saved_highest_address;
+
+    public DacpGenerationData generation_table1;
+    public DacpGenerationData generation_table2;
+    public DacpGenerationData generation_table3;
+    public DacpGenerationData generation_table4;
+    public CLRDATA_ADDRESS ephemeral_heap_segment;
+    public CLRDATA_ADDRESS finalization_fill_pointers1;
+    public CLRDATA_ADDRESS finalization_fill_pointers2;
+    public CLRDATA_ADDRESS finalization_fill_pointers3;
+    public CLRDATA_ADDRESS finalization_fill_pointers4;
+    public CLRDATA_ADDRESS finalization_fill_pointers5;
+    public CLRDATA_ADDRESS finalization_fill_pointers6;
+    public CLRDATA_ADDRESS finalization_fill_pointers7;
+    public CLRDATA_ADDRESS lowest_address;
+    public CLRDATA_ADDRESS highest_address;
+    public CLRDATA_ADDRESS card_table;
+}
+
+public struct DacpHeapSegmentData
+{
+    public CLRDATA_ADDRESS segmentAddr;
+    public CLRDATA_ADDRESS allocated;
+    public CLRDATA_ADDRESS committed;
+    public CLRDATA_ADDRESS reserved;
+    public CLRDATA_ADDRESS used;
+    public CLRDATA_ADDRESS mem;
+    // pass this to request if non-null to get the next segments.
+    public CLRDATA_ADDRESS next;
+    public CLRDATA_ADDRESS gc_heap; // only filled in in server mode, otherwise NULL
+    // computed field: if this is the ephemeral segment highMark includes the ephemeral generation
+    public CLRDATA_ADDRESS highAllocMark;
+
+    public nint flags;
+    public CLRDATA_ADDRESS background_allocated;
+}
+
+public struct DacpOomData
+{
+    public int reason;
+    public ULONG64 alloc_size;
+    public ULONG64 available_pagefile_mb;
+    public ULONG64 gc_index;
+    public int fgm;
+    public ULONG64 size;
+    public BOOL loh_p;
+}
+
+public struct DacpGcHeapAnalyzeData
+{
+    public CLRDATA_ADDRESS heapAddr; // Only filled in in server mode, otherwise NULL
+
+    public CLRDATA_ADDRESS internal_root_array;
+    public ULONG64 internal_root_array_index;
+    public BOOL heap_analyze_success;
+}
+
+public struct DacpSyncBlockData
+{
+    public CLRDATA_ADDRESS Object;
+    public BOOL bFree; // if set, no other fields are useful
+
+    // fields below provide data from this, so it's just for display
+    public CLRDATA_ADDRESS SyncBlockPointer;
+    public DWORD COMFlags;
+    public UINT MonitorHeld;
+    public UINT Recursion;
+    public CLRDATA_ADDRESS HoldingThread;
+    public UINT AdditionalThreadCount;
+    public CLRDATA_ADDRESS appDomainPtr;
+
+    // SyncBlockCount will always be filled in with the number of SyncBlocks.
+    // SyncBlocks may be requested from [1,SyncBlockCount]
+    public UINT SyncBlockCount;
+}
+
+public struct DacpDomainLocalModuleData
+{
+    // These two parameters are used as input params when calling the
+    // no-argument form of Request below.
+    public CLRDATA_ADDRESS appDomainAddr;
+    public ULONG64 ModuleID;
+
+    public CLRDATA_ADDRESS pClassData;
+    public CLRDATA_ADDRESS pDynamicClassTable;
+    public CLRDATA_ADDRESS pGCStaticDataStart;
+    public CLRDATA_ADDRESS pNonGCStaticDataStart;
+}
+
+public struct DacpThreadLocalModuleData
+{
+    // These two parameters are used as input params when calling the
+    // no-argument form of Request below.
+    public CLRDATA_ADDRESS threadAddr;
+    public ULONG64 ModuleIndex;
+
+    public CLRDATA_ADDRESS pClassData;
+    public CLRDATA_ADDRESS pDynamicClassTable;
+    public CLRDATA_ADDRESS pGCStaticDataStart;
+    public CLRDATA_ADDRESS pNonGCStaticDataStart;
+}
+
+public struct DacpSyncBlockCleanupData
+{
+    public CLRDATA_ADDRESS SyncBlockPointer;
+
+    public CLRDATA_ADDRESS nextSyncBlock;
+    public CLRDATA_ADDRESS blockRCW;
+    public CLRDATA_ADDRESS blockClassFactory;
+    public CLRDATA_ADDRESS blockCCW;
+}
+
+public enum VCSHeapType { IndcellHeap, LookupHeap, ResolveHeap, DispatchHeap, CacheEntryHeap }
+
+public struct DacpUsefulGlobalsData
+{
+    public CLRDATA_ADDRESS ArrayMethodTable;
+    public CLRDATA_ADDRESS StringMethodTable;
+    public CLRDATA_ADDRESS ObjectMethodTable;
+    public CLRDATA_ADDRESS ExceptionMethodTable;
+    public CLRDATA_ADDRESS FreeMethodTable;
+}
+
+public readonly struct HMODULE
+{
+    public readonly nint Value;
+}
+
+public struct DacpRCWData
+{
+    public CLRDATA_ADDRESS identityPointer;
+    public CLRDATA_ADDRESS unknownPointer;
+    public CLRDATA_ADDRESS managedObject;
+    public CLRDATA_ADDRESS jupiterObject;
+    public CLRDATA_ADDRESS vtablePtr;
+    public CLRDATA_ADDRESS creatorThread;
+    public CLRDATA_ADDRESS ctxCookie;
+
+    public LONG refCount;
+    public LONG interfaceCount;
+
+    public BOOL isJupiterObject;
+    public BOOL supportsIInspectable;
+    public BOOL isAggregated;
+    public BOOL isContained;
+    public BOOL isFreeThreaded;
+    public BOOL isDisconnected;
+}
+
+public struct DacpCCWData
+{
+    public CLRDATA_ADDRESS outerIUnknown;
+    public CLRDATA_ADDRESS managedObject;
+    public CLRDATA_ADDRESS handle;
+    public CLRDATA_ADDRESS ccwAddress;
+
+    public LONG refCount;
+    public LONG interfaceCount;
+    public BOOL isNeutered;
+
+    public LONG jupiterRefCount;
+    public BOOL isPegged;
+    public BOOL isGlobalPegged;
+    public BOOL hasStrongRef;
+    public BOOL isExtendsCOMObject;
+    public BOOL isAggregated;
+}
+
+public struct DacpAllocData
+{
+    public CLRDATA_ADDRESS allocBytes;
+    public CLRDATA_ADDRESS allocBytesLoh;
+};
+
+public struct DacpGenerationAllocData
+{
+    public DacpAllocData allocData1;
+    public DacpAllocData allocData2;
+    public DacpAllocData allocData3;
+    public DacpAllocData allocData4;
+}

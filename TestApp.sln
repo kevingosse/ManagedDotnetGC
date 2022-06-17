@@ -6,9 +6,9 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{911E67C6-3D85-4FCE-B560-20A9C3E3FF48}") = "TestApp", "TestApp\bin\Debug\net6.0\win-x64\TestApp.exe", "{FEE2A187-BA9D-48E4-A7AB-0E07399A7D7B}"
 	ProjectSection(DebuggerProjectSystem) = preProject
 		PortSupplier = 00000000-0000-0000-0000-000000000000
-		Executable = E:\git\ManagedDotnetGC\TestApp\bin\Debug\net6.0\win-x64\TestApp.exe
+		Executable = C:\git\ManagedDotnetGC\TestApp\bin\Debug\net6.0\win-x64\TestApp.exe
 		RemoteMachine = ARSTANEK
-		StartingDirectory = E:\git\ManagedDotnetGC\TestApp\bin\Debug\net6.0\win-x64
+		StartingDirectory = C:\git\ManagedDotnetGC\TestApp\bin\Debug\net6.0\win-x64
 		Environment = complus_gcname=ManagedDotnetGCLoader.dll	
 		LaunchingEngine = 00000000-0000-0000-0000-000000000000
 		UseLegacyDebugEngines = No

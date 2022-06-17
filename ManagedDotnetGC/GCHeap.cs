@@ -6,6 +6,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
+using static ManagedDotnetGC.Log;
+
 namespace ManagedDotnetGC
 {
     internal unsafe class GCHeap : IGCHeap
@@ -14,6 +16,7 @@ namespace ManagedDotnetGC
         private readonly GCHandleManager _gcHandleManager;
 
         private readonly NativeStubs.IGCHeapStub _gcHeapStub;
+        private ISOSDacInterface _sosDacInterface;
 
         public GCHeap(IGCToCLR gcToClr)
         {
@@ -220,7 +223,15 @@ namespace ManagedDotnetGC
 
         public HResult GarbageCollect(int generation, bool low_memory_p, int mode)
         {
-            Console.WriteLine("GarbageCollect");
+            Write("GarbageCollect");
+            _gcHandleManager.Store.DumpHandles(_sosDacInterface);
+
+
+
+            // _sosDacInterface.GetStackReferences
+
+            //_sosDacInterface.
+
 
             return HResult.S_OK;
         }
@@ -263,8 +274,6 @@ namespace ManagedDotnetGC
         {
             Console.WriteLine("[GC] Initialize GCHeap");
 
-
-
             var parameters = default(WriteBarrierParameters);
 
             parameters.operation = WriteBarrierOp.Initialize;
@@ -277,7 +286,32 @@ namespace ManagedDotnetGC
             parameters.ephemeral_high = (byte*)1;
 
             _gcToClr.StompWriteBarrier(Unsafe.AsPointer(ref parameters));
+
+            TryLoadDAC();
+
             return HResult.S_OK;
+        }
+
+        private void TryLoadDAC()
+        {
+            var library = NativeLibrary.Load("mscordaccore.dll");
+            var export = NativeLibrary.GetExport(library, "CLRDataCreateInstance");
+
+            var createInstance = (delegate* unmanaged[Stdcall]<in Guid, IntPtr, out IntPtr, HResult>)export;
+
+            var dataTarget = new ClrDataTarget();
+
+            var result = createInstance(KnownGuids.IClrDataProcess, dataTarget.ICLRDataTargetObject, out var ppUnk);
+
+            var unknown = NativeStubs.IUnknownStub.Wrap(ppUnk);
+
+            result = unknown.QueryInterface(KnownGuids.ISOSDacInterface, out var sosDacInterfacePtr);
+
+            Write("QueryInterface ISOSDacInterface: " + result);
+
+            _sosDacInterface = NativeStubs.ISOSDacInterfaceStub.Wrap(sosDacInterfacePtr);
+
+            
         }
 
         public unsafe bool IsPromoted(GCObject* obj)
@@ -433,6 +467,40 @@ namespace ManagedDotnetGC
 
         public unsafe void PublishObject(byte* obj)
         {
+            var ptr = (IntPtr)obj;
+
+            Write($"PublishObject: {ptr:x2}");
+
+            var target = (nint*)obj;
+
+            var result = _sosDacInterface.GetMethodTableData(new CLRDATA_ADDRESS(*target), out var data);
+
+            Write("GetMethodTableData: " + result);
+            Write("Class: " + data.Class);
+
+            result = _sosDacInterface.GetObjectClassName(new CLRDATA_ADDRESS((long)obj), 0, null, out var needed);
+
+            Write("GetObjectClassName: " + result);
+
+            Write("Free: " + data.bIsFree);
+            Write("Needed: " + needed);
+
+            if (needed == 0)
+            {
+                return;
+            }
+
+            var str = new char[needed];
+
+            string name;
+
+            fixed (char* p = &str[0])
+            {
+                _sosDacInterface.GetObjectClassName(new CLRDATA_ADDRESS((long)obj), needed, p, out _);
+                name = new string(str);
+            }
+
+            Write("Name: " + name);
         }
 
         public void SetWaitForGCEvent()

@@ -25,7 +25,7 @@ BOOL APIENTRY DllMain(HMODULE hModule,
 	{
 		return true;
 	}
-
+	
 	std::cout << "[Loader] Loading module" << std::endl;
 	auto module = LoadLibraryA("ManagedDotnetGC.dll");
 

@@ -18,6 +18,8 @@ namespace ManagedDotnetGC
 
         public IntPtr IGCHandleManagerObject => _gcHandleManagerStub;
 
+        public GCHandleStore Store => _gcHandleStore;
+
         public bool Initialize()
         {
             Console.WriteLine("[GC] GCHandleManager Initialize");
