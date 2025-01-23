@@ -1,13 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿namespace TestApp;
 
-namespace TestApp
+internal class StaticClass
 {
-    internal class StaticClass
-    {
-        public static object Root;
-    }
+    public static object Root;
 }

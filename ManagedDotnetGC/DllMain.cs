@@ -1,43 +1,44 @@
 ﻿using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace ManagedDotnetGC
+using static ManagedDotnetGC.Log;
+
+namespace ManagedDotnetGC;
+
+public class DllMain
 {
-    public class DllMain
+    [UnmanagedCallersOnly(EntryPoint = "DllMain")]
+    public static bool Main(nint hModule, int fdwReason, nint reserved)
     {
-        [UnmanagedCallersOnly(EntryPoint = "DllMain")]
-        public static bool Main(nint hModule, int fdwReason, nint reserved)
+        if (fdwReason == 1)
         {
-            if (fdwReason == 1)
-            {
-                Console.WriteLine("[GC] DllMain");
-            }
-
-            return true;
+            Write("DllMain");
         }
 
-        [UnmanagedCallersOnly(EntryPoint = "Custom_GC_Initialize")]
-        public static unsafe HResult GC_Initialize(IntPtr clrToGC, IntPtr* gcHeap, IntPtr* gcHandleManager, GcDacVars* gcDacVars)
-        {
-            Console.WriteLine("[GC] GC_Initialize");
+        return true;
+    }
 
-            var gc = new GCHeap(NativeStubs.IGCToCLRStub.Wrap(clrToGC));
+    [UnmanagedCallersOnly(EntryPoint = "Custom_GC_Initialize")]
+    public static unsafe HResult GC_Initialize(IntPtr clrToGC, IntPtr* gcHeap, IntPtr* gcHandleManager, GcDacVars* gcDacVars)
+    {
+        Write("GC_Initialize");
 
-            *gcHeap = gc.IGCHeapObject;
-            *gcHandleManager = gc.IGCHandleManagerObject;
+        var gc = new GCHeap(NativeObjects.IGCToCLR.Wrap(clrToGC));
 
-            return HResult.S_OK;
-        }
+        *gcHeap = gc.IGCHeapObject;
+        *gcHandleManager = gc.IGCHandleManagerObject;
 
-        [UnmanagedCallersOnly(EntryPoint = "Custom_GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
-        public static unsafe HResult GC_VersionInfo(VersionInfo* versionInfo)
-        {
-            Console.WriteLine("[GC] GC_VersionInfo");
+        return HResult.S_OK;
+    }
 
-            (*versionInfo).MajorVersion = 5;
-            (*versionInfo).MinorVersion = 1;
+    [UnmanagedCallersOnly(EntryPoint = "Custom_GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
+    public static unsafe HResult GC_VersionInfo(VersionInfo* versionInfo)
+    {
+        Write($"GC_VersionInfo {versionInfo->MajorVersion}.{versionInfo->MinorVersion}.{versionInfo->BuildVersion}");
 
-            return HResult.S_OK;
-        }
+        versionInfo->MajorVersion = 5;
+        versionInfo->MinorVersion = 3;
+
+        return HResult.S_OK;
     }
 }

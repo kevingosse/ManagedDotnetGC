@@ -1,16 +1,9 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+﻿namespace ManagedDotnetGC;
 
-namespace ManagedDotnetGC
+internal class Log
 {
-    internal class Log
+    public static void Write(string str)
     {
-        public static void Write(string str)
-        {
-            Console.WriteLine($"[GC] {str}");
-        }
+        Console.WriteLine($"[GC] {str}");
     }
 }

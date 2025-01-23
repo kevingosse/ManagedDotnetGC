@@ -1,17 +1,17 @@
-﻿namespace ManagedDotnetGC;
+﻿namespace ManagedDotnetGC.Interfaces;
 
-[GenerateNativeStub]
+[NativeObject]
 public unsafe interface IGCHandleManager
 {
     bool Initialize();
 
     void Shutdown();
 
-    IntPtr GetGlobalHandleStore();
+    nint GetGlobalHandleStore();
 
-    IntPtr CreateHandleStore();
+    nint CreateHandleStore();
 
-    void DestroyHandleStore(IntPtr store);
+    void DestroyHandleStore(nint store);
 
     OBJECTHANDLE CreateGlobalHandleOfType(GCObject* obj, HandleType type);
 

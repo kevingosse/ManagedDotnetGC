@@ -1,130 +1,123 @@
-﻿using System.Runtime.InteropServices;
+﻿using ManagedDotnetGC.Interfaces;
+using static ManagedDotnetGC.Log;
 
-namespace ManagedDotnetGC
+namespace ManagedDotnetGC;
+
+internal unsafe class GCHandleManager : IGCHandleManager
 {
-    internal unsafe class GCHandleManager : IGCHandleManager
+    private readonly NativeObjects.IGCToCLRInvoker _gcToClr;
+    private readonly NativeObjects.IGCHandleManager _nativeObject;
+    private readonly GCHandleStore _gcHandleStore;
+
+
+    public GCHandleManager(NativeObjects.IGCToCLRInvoker gcToClr)
     {
-        private readonly IGCToCLR _gcToClr;
-        private readonly NativeStubs.IGCHandleManagerStub _gcHandleManagerStub;
-        private readonly GCHandleStore _gcHandleStore;
+        _gcHandleStore = new GCHandleStore();
+        _gcToClr = gcToClr;
+        _nativeObject = NativeObjects.IGCHandleManager.Wrap(this);
+    }
 
+    public IntPtr IGCHandleManagerObject => _nativeObject;
 
-        public GCHandleManager(IGCToCLR gcToClr)
-        {
-            _gcHandleStore = new GCHandleStore();
-            _gcToClr = gcToClr;
-            _gcHandleManagerStub = NativeStubs.IGCHandleManagerStub.Wrap(this);
-        }
+    public GCHandleStore Store => _gcHandleStore;
 
-        public IntPtr IGCHandleManagerObject => _gcHandleManagerStub;
+    public bool Initialize()
+    {
+        Write("GCHandleManager Initialize");
+        return true;
+    }
 
-        public GCHandleStore Store => _gcHandleStore;
+    public void Shutdown()
+    {
+    }
 
-        public bool Initialize()
-        {
-            Console.WriteLine("[GC] GCHandleManager Initialize");
-            return true;
-        }
+    public IntPtr GetGlobalHandleStore()
+    {
+        return _gcHandleStore.IGCHandleStoreObject;
+    }
 
-        public void Shutdown()
-        {
-        }
+    public IntPtr CreateHandleStore()
+    {
+        Write("GCHandleManager CreateHandleStore");
 
-        public IntPtr GetGlobalHandleStore()
-        {
-            return _gcHandleStore.IGCHandleStoreObject;
-        }
+        return default;
+    }
 
-        public IntPtr CreateHandleStore()
-        {
-            Console.WriteLine("GCHandleManager CreateHandleStore");
+    public void DestroyHandleStore(IntPtr store)
+    {
+        Write("GCHandleManager DestroyHandleStore");
+    }
 
-            return default;
-        }
+    public unsafe OBJECTHANDLE CreateGlobalHandleOfType(GCObject* obj, HandleType type)
+    {
+        return _gcHandleStore.CreateHandleOfType(obj, type);
+    }
 
-        public void DestroyHandleStore(IntPtr store)
-        {
-            Console.WriteLine("[GC] GCHandleManager DestroyHandleStore");
-        }
+    public OBJECTHANDLE CreateDuplicateHandle(OBJECTHANDLE handle)
+    {
+        Write("GCHandleManager CreateDuplicateHandle");
 
-        public unsafe OBJECTHANDLE CreateGlobalHandleOfType(GCObject* obj, HandleType type)
-        {
-            return _gcHandleStore.CreateHandleOfType(obj, type);
-        }
+        return handle;
+    }
 
-        public OBJECTHANDLE CreateDuplicateHandle(OBJECTHANDLE handle)
-        {
-            Console.WriteLine("GCHandleManager CreateDuplicateHandle");
+    public void DestroyHandleOfType(OBJECTHANDLE handle, HandleType type)
+    {
+        Write("GCHandleManager DestroyHandleOfType");
+    }
 
-            return handle;
-        }
+    public void DestroyHandleOfUnknownType(OBJECTHANDLE handle)
+    {
+        Write("GCHandleManager DestroyHandleOfUnknownType");
+    }
 
-        public void DestroyHandleOfType(OBJECTHANDLE handle, HandleType type)
-        {
-            // Console.WriteLine("GCHandleManager DestroyHandleOfType");
-        }
+    public unsafe void SetExtraInfoForHandle(OBJECTHANDLE handle, HandleType type, void* pExtraInfo)
+    {
+        Write("GCHandleManager SetExtraInfoForHandle");
+    }
 
-        public void DestroyHandleOfUnknownType(OBJECTHANDLE handle)
-        {
-            Console.WriteLine("GCHandleManager DestroyHandleOfUnknownType");
-        }
+    public unsafe void* GetExtraInfoFromHandle(OBJECTHANDLE handle)
+    {
+        Write("GCHandleManager GetExtraInfoFromHandle");
+        return null;
+    }
 
-        public unsafe void SetExtraInfoForHandle(OBJECTHANDLE handle, HandleType type, void* pExtraInfo)
-        {
-            Console.WriteLine("GCHandleManager SetExtraInfoForHandle");
-        }
+    public unsafe void StoreObjectInHandle(OBJECTHANDLE handle, GCObject* obj)
+    {
+        Write($"GCHandleManager StoreObjectInHandle {handle.Value:x2} {(IntPtr)obj:x2}");
+        *((GCObject**)handle.Value) = obj;
+    }
 
-        public unsafe void* GetExtraInfoFromHandle(OBJECTHANDLE handle)
-        {
-            Console.WriteLine("GCHandleManager GetExtraInfoFromHandle");
+    public unsafe bool StoreObjectInHandleIfNull(OBJECTHANDLE handle, GCObject* obj)
+    {
+        Write("GCHandleManager StoreObjectInHandleIfNull");
+        return false;
+    }
 
-            return null;
-        }
+    public unsafe void SetDependentHandleSecondary(OBJECTHANDLE handle, GCObject* obj)
+    {
+        Write("GCHandleManager SetDependentHandleSecondary");
+    }
 
-        public unsafe void StoreObjectInHandle(OBJECTHANDLE handle, GCObject* obj)
-        {
-            Console.WriteLine("GCHandleManager StoreObjectInHandle");
+    public unsafe GCObject* GetDependentHandleSecondary(OBJECTHANDLE handle)
+    {
+        Write("GCHandleManager GetDependentHandleSecondary");
+        return null;
+    }
 
-        }
+    public unsafe GCObject* InterlockedCompareExchangeObjectInHandle(OBJECTHANDLE handle, GCObject* obj, GCObject* comparandObject)
+    {
+        Write("GCHandleManager InterlockedCompareExchangeObjectInHandle");
+        return null;
+    }
 
-        public unsafe bool StoreObjectInHandleIfNull(OBJECTHANDLE handle, GCObject* obj)
-        {
-            Console.WriteLine("GCHandleManager StoreObjectInHandleIfNull");
+    public HandleType HandleFetchType(OBJECTHANDLE handle)
+    {
+        Write("GCHandleManager HandleFetchType");
+        return HandleType.HNDTYPE_WEAK_SHORT;
+    }
 
-            return false;
-        }
-
-        public unsafe void SetDependentHandleSecondary(OBJECTHANDLE handle, GCObject* obj)
-        {
-            Console.WriteLine("GCHandleManager SetDependentHandleSecondary");
-
-        }
-
-        public unsafe GCObject* GetDependentHandleSecondary(OBJECTHANDLE handle)
-        {
-            Console.WriteLine("GCHandleManager GetDependentHandleSecondary");
-
-            return null;
-        }
-
-        public unsafe GCObject* InterlockedCompareExchangeObjectInHandle(OBJECTHANDLE handle, GCObject* obj, GCObject* comparandObject)
-        {
-            Console.WriteLine("GCHandleManager InterlockedCompareExchangeObjectInHandle");
-
-            return null;
-        }
-
-        public HandleType HandleFetchType(OBJECTHANDLE handle)
-        {
-            Console.WriteLine("GCHandleManager HandleFetchType");
-
-            return HandleType.HNDTYPE_WEAK_SHORT;
-        }
-
-        public unsafe void TraceRefCountedHandles(void* callback, uint* param1, uint* param2)
-        {
-            Console.WriteLine("GCHandleManager TraceRefCountedHandles");
-
-        }
+    public unsafe void TraceRefCountedHandles(void* callback, uint* param1, uint* param2)
+    {
+        Write("GCHandleManager TraceRefCountedHandles");
     }
 }

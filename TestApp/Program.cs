@@ -1,6 +1,4 @@
-﻿// See https://aka.ms/new-console-template for more information
-
-using TestApp;
+﻿using TestApp;
 
 Console.WriteLine("Hello, World!");
 
@@ -9,7 +7,12 @@ StaticClass.Root = new MyOwnObject();
 while (true)
 {
     Console.WriteLine("Press return to allocate");
-    Console.ReadLine();
+    
+    if (Console.ReadLine() == "q")
+    {
+        return;
+    }
+
     // var b = new byte[1024 * 1024 * 8];
 
     for (int i = 0; i < 1024 * 1024; i++)

@@ -5,8 +5,6 @@ VisualStudioVersion = 17.3.32519.111
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ManagedDotnetGC", "ManagedDotnetGC\ManagedDotnetGC.csproj", "{EDCE7242-B4EC-4837-9388-6313D6792062}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NativeStubSourceGenerator", "NativeStubSourceGenerator\NativeStubSourceGenerator.csproj", "{8E1242E3-F71B-46FD-8842-168018CAB780}"
-EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestApp", "TestApp\TestApp.csproj", "{194EBA61-D34A-4E5B-A65E-681A08C1FE9D}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ManagedDotnetGCLoader", "ManagedDotnetGCLoader\ManagedDotnetGCLoader.vcxproj", "{B22B0B4B-C3D2-4141-85C1-262AC52218B2}"
@@ -33,18 +31,6 @@ Global
 		{EDCE7242-B4EC-4837-9388-6313D6792062}.Release|x64.Build.0 = Release|Any CPU
 		{EDCE7242-B4EC-4837-9388-6313D6792062}.Release|x86.ActiveCfg = Release|Any CPU
 		{EDCE7242-B4EC-4837-9388-6313D6792062}.Release|x86.Build.0 = Release|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Debug|x64.Build.0 = Debug|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Debug|x86.Build.0 = Debug|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Release|Any CPU.Build.0 = Release|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Release|x64.ActiveCfg = Release|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Release|x64.Build.0 = Release|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Release|x86.ActiveCfg = Release|Any CPU
-		{8E1242E3-F71B-46FD-8842-168018CAB780}.Release|x86.Build.0 = Release|Any CPU
 		{194EBA61-D34A-4E5B-A65E-681A08C1FE9D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{194EBA61-D34A-4E5B-A65E-681A08C1FE9D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{194EBA61-D34A-4E5B-A65E-681A08C1FE9D}.Debug|x64.ActiveCfg = Debug|Any CPU

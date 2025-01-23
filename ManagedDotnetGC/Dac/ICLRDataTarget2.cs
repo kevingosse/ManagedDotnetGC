@@ -1,8 +1,10 @@
-﻿namespace ManagedDotnetGC;
+﻿namespace ManagedDotnetGC.Dac;
 
-[GenerateNativeStub]
-public unsafe interface ICLRDataTarget2 : ICLRDataTarget
+[NativeObject]
+public interface ICLRDataTarget2 : ICLRDataTarget
 {
+    public static readonly Guid Guid = new("6d05fae3-189c-4630-a6dc-1c251e1c01ab");
+
     HResult AllocVirtual(
         CLRDATA_ADDRESS addr,
         uint size,

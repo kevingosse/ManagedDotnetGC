@@ -1,6 +1,6 @@
-﻿namespace ManagedDotnetGC;
+﻿namespace ManagedDotnetGC.Interfaces;
 
-[GenerateNativeStub]
+[NativeObject]
 public unsafe interface IGCToCLR
 {
     // Suspends the EE for the given reason.
@@ -117,7 +117,7 @@ public unsafe interface IGCToCLR
 
     // Informs the EE of changes to the location of the card table, potentially updating the write
     // barrier if it needs to be updated.
-    void StompWriteBarrier(void* args);
+    void StompWriteBarrier(WriteBarrierParameters* args);
 
     // Signals to the finalizer thread that there are objects ready to
     // be finalized.
@@ -209,8 +209,13 @@ public unsafe interface IGCToCLR
     void UpdateGCEventStatus(int publicLevel, int publicKeywords, int privateLEvel, int privateKeywords);
 
     void LogStressMsg(uint level, uint facility, nint msg);
-        
+
     uint GetCurrentProcessCpuCount();
-        
+
     void DiagAddNewRegion(int generation, byte* rangeStart, byte* rangeEnd, byte* rangeEndReserved);
+
+    // The following method is available only with EE_INTERFACE_MAJOR_VERSION >= 1
+    void LogErrorToHost(byte* message);
+
+    ulong GetThreadOSThreadId(IntPtr thread);
 }

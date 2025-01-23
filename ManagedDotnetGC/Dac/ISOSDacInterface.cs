@@ -1,12 +1,14 @@
-﻿namespace ManagedDotnetGC;
+﻿namespace ManagedDotnetGC.Dac;
 
-using ULONG = System.UInt64;
-using WCHAR = System.Char;
-using DWORD = System.Int32;
+using ULONG = UInt64;
+using WCHAR = Char;
+using DWORD = UInt32;
 
-[GenerateNativeStub]
-public unsafe interface ISOSDacInterface : IUnknown
+[NativeObject]
+public unsafe interface ISOSDacInterface : Interfaces.IUnknown
 {
+    public static readonly Guid Guid = new("436f00f2-b42a-4b9f-870c-e73db66ae930");
+
     HResult GetThreadStoreData(out DacpThreadStoreData data);
 
     HResult GetAppDomainStoreData(out DacpAppDomainStoreData data);

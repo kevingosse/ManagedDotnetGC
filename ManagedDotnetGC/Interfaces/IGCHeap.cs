@@ -1,6 +1,6 @@
-﻿namespace ManagedDotnetGC;
+﻿namespace ManagedDotnetGC.Interfaces;
 
-[GenerateNativeStub]
+[NativeObject]
 public unsafe interface IGCHeap
 {
     /*
@@ -96,23 +96,23 @@ today, the VM handles the setting of segment size and max gen 0 size.
     // isConcurrent - concurrent or not.
     // genInfoRaw - info about each generation.
     // pauseInfoRaw - pause info.
-    void GetMemoryInfo(ulong* highMemLoadThresholdBytes,
-                               ulong* totalAvailableMemoryBytes,
-                               ulong* lastRecordedMemLoadBytes,
-                               ulong* lastRecordedHeapSizeBytes,
-                               ulong* lastRecordedFragmentationBytes,
-                               ulong* totalCommittedBytes,
-                               ulong* promotedBytes,
-                               ulong* pinnedObjectCount,
-                               ulong* finalizationPendingCount,
-                               ulong* index,
-                               uint* generation,
-                               uint* pauseTimePct,
-                               bool* isCompaction,
-                               bool* isConcurrent,
-                               ulong* genInfoRaw,
-                               ulong* pauseInfoRaw,
-                               int kind);
+    void GetMemoryInfo(out ulong highMemLoadThresholdBytes,
+                       out ulong totalAvailableMemoryBytes,
+                       out ulong lastRecordedMemLoadBytes,
+                       out ulong lastRecordedHeapSizeBytes,
+                       out ulong lastRecordedFragmentationBytes,
+                       out ulong totalCommittedBytes,
+                       out ulong promotedBytes,
+                       out ulong pinnedObjectCount,
+                       out ulong finalizationPendingCount,
+                       out ulong index,
+                       out uint generation,
+                       out uint pauseTimePct,
+                       out bool isCompaction,
+                       out bool isConcurrent,
+                       out ulong genInfoRaw,
+                       out ulong pauseInfoRaw,
+                       int kind);
 
     // Get the last memory load in percentage observed by the last GC.
     uint GetMemoryLoad();
@@ -198,7 +198,7 @@ today, the VM handles the setting of segment size and max gen 0 size.
     bool IsPromoted(GCObject* obj);
 
     // Returns true if this pointer points into a GC heap, false otherwise.
-    bool IsHeapPointer(void* obj, bool small_heap_only);
+    bool IsHeapPointer(IntPtr obj, bool small_heap_only);
 
     // Return the generation that has been condemned by the current GC.
     uint GetCondemnedGeneration();
@@ -277,7 +277,7 @@ today, the VM handles the setting of segment size and max gen 0 size.
 
     // This is for the allocator to indicate it's done allocating a large object during a
     // background GC as the BGC threads also need to walk UOH.
-    void PublishObject(byte* obj);
+    void PublishObject(IntPtr obj);
 
     // Signals the WaitForGCEvent event, indicating that a GC has completed.
     void SetWaitForGCEvent();
@@ -305,7 +305,7 @@ today, the VM handles the setting of segment size and max gen 0 size.
     // containing that pointer. This is safe to call only when the EE is suspended.
     // When fCollectedGenOnly is true, it only returns the object if it's found in
     // the generation(s) that are being collected.
-    GCObject* GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly);
+    GCObject* GetContainingObject(IntPtr pInteriorPtr, bool fCollectedGenOnly);
 
     /*
     ===========================================================================
@@ -391,4 +391,28 @@ today, the VM handles the setting of segment size and max gen 0 size.
 
     uint GetGenerationWithRange(GCObject* obj, byte** ppStart, byte** ppAllocated, byte** ppReserved);
 
+    // Get the total paused duration.
+    long GetTotalPauseDuration();
+
+    // Gets all the names and values of the GC configurations.
+    void EnumerateConfigurationValues(void* context, IntPtr configurationValueFunc);
+
+    // Updates given frozen segment
+    void UpdateFrozenSegment(IntPtr seg, IntPtr allocated, IntPtr committed);
+
+    // Refresh the memory limit
+    int RefreshMemoryLimit();
+
+    // Enable NoGCRegionCallback
+    enable_no_gc_region_callback_status EnableNoGCRegionCallback(IntPtr callback, ulong callback_threshold);
+
+    // Get extra work for the finalizer
+    IntPtr GetExtraWorkForFinalization();
+
+    ulong GetGenerationBudget(int generation);
+
+    nint GetLOHThreshold();
+
+    // Walk the heap object by object outside of a GC.
+    void DiagWalkHeapWithACHandling(IntPtr fn, void* context, int gen_number, bool walk_large_object_heap_p);
 }
