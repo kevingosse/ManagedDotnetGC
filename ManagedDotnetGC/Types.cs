@@ -117,12 +117,19 @@ public enum GCEventLevel
 
 public unsafe struct OBJECTHANDLE
 {
-    public OBJECTHANDLE(nint value)
+    public OBJECTHANDLE(nint address)
     {
-        Value = value;
+        Address = address;
     }
 
-    public nint Value;
+    public nint Address;
+
+    public void SetObject(nint value)
+    {
+        *(nint*)Address = value;
+    }
+
+    public override string ToString() => $"{Address:x2}";
 }
 
 public enum HandleType

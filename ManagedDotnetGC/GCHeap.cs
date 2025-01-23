@@ -1,6 +1,5 @@
 ﻿using ManagedDotnetGC.Dac;
 using NativeObjects;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 using static ManagedDotnetGC.Log;
@@ -358,11 +357,7 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
 
     public GCObject* Alloc(gc_alloc_context* acontext, nint size, uint flags)
     {
-        var threadId = GetCurrentThreadId();
-
-        Write($"{threadId} Alloc: {size} (alloc context: {(IntPtr)acontext:x2}, start: {acontext->alloc_ptr:x2}, size: {size:x2}, limit: {acontext->alloc_limit:x2})");
-
-        // _gcHandleManager.Store.DumpHandles();
+        Write($"Alloc: {size} (alloc context: {(IntPtr)acontext:x2}, start: {acontext->alloc_ptr:x2}, size: {size:x2}, limit: {acontext->alloc_limit:x2})");
 
         var result = acontext->alloc_ptr;
         var advance = result + size;
@@ -373,34 +368,17 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
             return (GCObject*)result;
         }
 
-        Write($"{threadId} Allocating new segment");
-
         int beginGap = 24;
         int growthSize = 16 * 1024 * 1024;
 
-        var newPages = Marshal.AllocHGlobal(growthSize);
-
-        Write($"{threadId} Allocated {growthSize} bytes at {newPages:x2}");
-
-        // Zero the memory
-        for (int i = 0; i < growthSize / sizeof(nint); i++)
-        {
-            *((nint*)newPages + i) = 0;
-        }
-
-        Write($"{threadId} Zeroed the memory");
+        var newPages = (IntPtr)NativeMemory.AllocZeroed((nuint)growthSize);
 
         var allocationStart = newPages + beginGap;
         acontext->alloc_ptr = allocationStart + size;
         acontext->alloc_limit = newPages + growthSize;
 
-        Write($"{threadId} Returning new alloc context: {(IntPtr)acontext:x2}, start: {acontext->alloc_ptr:x2}, limit: {acontext->alloc_limit:x2}");
-
         return (GCObject*)allocationStart;
     }
-
-    [DllImport("kernel32.dll")]
-    public static extern uint GetCurrentThreadId();
 
     public unsafe void PublishObject(IntPtr obj)
     {

@@ -83,8 +83,8 @@ internal unsafe class GCHandleManager : IGCHandleManager
 
     public unsafe void StoreObjectInHandle(OBJECTHANDLE handle, GCObject* obj)
     {
-        Write($"GCHandleManager StoreObjectInHandle {handle.Value:x2} {(IntPtr)obj:x2}");
-        *((GCObject**)handle.Value) = obj;
+        Write($"GCHandleManager StoreObjectInHandle {handle} {(IntPtr)obj:x2}");
+        handle.SetObject((nint)obj);
     }
 
     public unsafe bool StoreObjectInHandleIfNull(OBJECTHANDLE handle, GCObject* obj)
