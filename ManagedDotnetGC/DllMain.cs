@@ -11,13 +11,7 @@ public class DllMain
     public static unsafe HResult GC_Initialize(IntPtr clrToGC, IntPtr* gcHeap, IntPtr* gcHandleManager, GcDacVars* gcDacVars)
     {
         Write("GC_Initialize");
-
-        var gc = new GCHeap(NativeObjects.IGCToCLR.Wrap(clrToGC));
-
-        *gcHeap = gc.IGCHeapObject;
-        *gcHandleManager = gc.IGCHandleManagerObject;
-
-        return HResult.S_OK;
+        return HResult.E_FAIL;
     }
 
     [UnmanagedCallersOnly(EntryPoint = "GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
