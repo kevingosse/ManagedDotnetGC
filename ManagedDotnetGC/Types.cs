@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace ManagedDotnetGC;
 
+[StructLayout(LayoutKind.Sequential)]
 public readonly struct GcDacVars
 {
     public readonly byte Major_version_number;
@@ -11,12 +12,13 @@ public readonly struct GcDacVars
     public readonly nint Total_generation_count;
 }
 
+[StructLayout(LayoutKind.Sequential)]
 public unsafe struct VersionInfo
 {
     public int MajorVersion;
     public int MinorVersion;
     public int BuildVersion;
-    public char* Name;
+    public byte* Name;
 }
 
 // SUSPEND_REASON is the reason why the GC wishes to suspend the EE,
