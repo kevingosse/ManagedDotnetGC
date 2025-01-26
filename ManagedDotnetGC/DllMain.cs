@@ -15,13 +15,11 @@ public class DllMain
     }
 
     [UnmanagedCallersOnly(EntryPoint = "GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static unsafe HResult GC_VersionInfo(VersionInfo* versionInfo)
+    public static unsafe void GC_VersionInfo(VersionInfo* versionInfo)
     {
         Write($"GC_VersionInfo {versionInfo->MajorVersion}.{versionInfo->MinorVersion}.{versionInfo->BuildVersion}");
 
         versionInfo->MajorVersion = 5;
         versionInfo->MinorVersion = 3;
-
-        return HResult.S_OK;
     }
 }
