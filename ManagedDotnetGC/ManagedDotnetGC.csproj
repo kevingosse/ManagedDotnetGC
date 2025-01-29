@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -6,10 +6,34 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
-    <IlcStandaloneGCSupport>true</IlcStandaloneGCSupport>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="NativeObjects" Version="1.2.1" />
   </ItemGroup>
+
+  <UsingTask TaskName="RegexReplaceFile" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <FilePath ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs">
+        <![CDATA[
+        var lines = File.ReadAllLines(FilePath);
+        for (int i = 0; i < lines.Length; i++)
+        {
+            lines[i] = Regex.Replace(lines[i], @"_GC_(\w+)", "GC_$1=_GC_$1");
+        }
+        File.WriteAllLines(FilePath, lines);
+        ]]>
+      </Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="TransformExportsFile" BeforeTargets="LinkNative">
+    <Message Importance="high" Text="Transforming exports file: $(ExportsFile)" />
+    <RegexReplaceFile FilePath="$(ExportsFile)" />
+  </Target>
 </Project>
