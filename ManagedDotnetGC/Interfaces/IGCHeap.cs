@@ -374,7 +374,7 @@ today, the VM handles the setting of segment size and max gen 0 size.
     /// no lock is needed; callers not using per-thread alloc contexts will need to acquire
     /// a lock to ensure that the calling thread has unique ownership over this alloc context;
     /// </summary>
-    GCObject* Alloc(gc_alloc_context* acontext, nint size, GC_ALLOC_FLAGS flags);
+    GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags);
 
     /// <summary>
     /// This is for the allocator to indicate it's done allocating a large object during a

@@ -340,14 +340,14 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
         return 0;
     }
 
-    public GCObject* Alloc(gc_alloc_context* acontext, nint size, GC_ALLOC_FLAGS flags)
+    public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
     {
-        var result = acontext->alloc_ptr;
+        var result = acontext.alloc_ptr;
         var advance = result + size;
 
-        if (advance <= acontext->alloc_limit)
+        if (advance <= acontext.alloc_limit)
         {
-            acontext->alloc_ptr = advance;
+            acontext.alloc_ptr = advance;
             return (GCObject*)result;
         }
 
@@ -355,8 +355,8 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
         var newPages = (IntPtr)NativeMemory.AllocZeroed((nuint)growthSize);
 
         var allocationStart = newPages + IntPtr.Size;
-        acontext->alloc_ptr = allocationStart + size;
-        acontext->alloc_limit = newPages + growthSize;
+        acontext.alloc_ptr = allocationStart + size;
+        acontext.alloc_limit = newPages + growthSize;
 
         return (GCObject*)allocationStart;
     }
