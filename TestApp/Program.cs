@@ -3,6 +3,8 @@ using TestApp;
 
 Console.WriteLine("Hello, World!");
 
+AppToGc.Initialize();
+
 StaticClass.Root = new MyOwnObject();
 
 var obj1 = new object();

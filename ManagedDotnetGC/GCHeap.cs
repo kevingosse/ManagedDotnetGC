@@ -12,12 +12,16 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
 
     private readonly IGCHeap _nativeObject;
 
+    public static IGCToCLRInvoker GcToClr { get; private set; }
+
     public GCHeap(IGCToCLRInvoker gcToClr)
     {
         _gcToClr = gcToClr;
         _gcHandleManager = new GCHandleManager();
 
         _nativeObject = IGCHeap.Wrap(this);
+
+        GcToClr = _gcToClr;
     }
 
     public IntPtr IGCHeapObject => _nativeObject;

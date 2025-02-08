@@ -47,4 +47,13 @@ public class DllMain
         versionInfo->MajorVersion = 5;
         versionInfo->MinorVersion = 3;
     }
+
+    [UnmanagedCallersOnly(EntryPoint = "SetGetTypeCallback")]
+    public static unsafe void SetGetTypeCallback(IntPtr callback)
+    {
+        Write($"SetGetTypeCallback: {callback:x2}");
+        GetTypeCallback = (delegate* unmanaged<IntPtr, char*, int, int*, void>)callback;
+    }
+
+    internal static unsafe delegate* unmanaged<IntPtr, char*, int, int*, void> GetTypeCallback;
 }

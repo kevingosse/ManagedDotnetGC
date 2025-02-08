@@ -25,10 +25,53 @@ public unsafe class GCHandleStore : IGCHandleStore
     {
         Write("GCHandleStore DumpHandles");
 
-        for (int i = 0; i < _handleCount; i++)
+        bool isPreeptiveGCDisabled = GCHeap.GcToClr.IsPreemptiveGCDisabled();
+
+        if (isPreeptiveGCDisabled)
         {
-            Write($"Handle {i} - {_store[i]}");
+            GCHeap.GcToClr.EnablePreemptiveGC();
         }
+
+        var buffer = new char[1000];
+
+        fixed (char* p = buffer)
+        {
+            for (int i = 0; i < _handleCount; i++)
+            {
+                var handle = _store[i];
+                var output = $"Handle {i} - {_store[i]}";
+
+                if (handle.Object != 0)
+                {
+                    if (DllMain.GetTypeCallback != null)
+                    {
+                        int size = 0;
+                        DllMain.GetTypeCallback(handle.Object, p, buffer.Length, &size);
+                        output += $" - Object type: {new string(buffer[..size])}";
+                    }
+                }
+
+                Write(output);
+            }
+        }
+
+        if (isPreeptiveGCDisabled)
+        {
+            GCHeap.GcToClr.DisablePreemptiveGC();
+        }
+    }
+
+    public static object GetObject()
+    {
+        return new string('x', 5);
+    }
+
+
+    public static nint GetAddress<T>(T obj)
+    {
+        // Get the address of the reference, cast it to a pointer,
+        // then dereference it to get the address of the object
+        return (nint)(*(T**)&obj);
     }
 
     public void Uproot()
