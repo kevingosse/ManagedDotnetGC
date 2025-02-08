@@ -1,4 +1,5 @@
-﻿using NativeObjects;
+﻿using ManagedDotnetGC.Dac;
+using NativeObjects;
 using System.Runtime.InteropServices;
 
 using static ManagedDotnetGC.Log;
@@ -11,6 +12,7 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
     private readonly GCHandleManager _gcHandleManager;
 
     private readonly IGCHeap _nativeObject;
+    private DacManager? _dacManager;
 
     public GCHeap(IGCToCLRInvoker gcToClr)
     {
@@ -188,7 +190,7 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
     public HResult GarbageCollect(int generation, bool low_memory_p, int mode)
     {
         Write("GarbageCollect");
-        _gcHandleManager.Store.DumpHandles();
+        _gcHandleManager.Store.DumpHandles(_dacManager);
         return HResult.S_OK;
     }
 
@@ -224,6 +226,11 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
     public HResult Initialize()
     {
         Write("Initialize GCHeap");
+
+        if (DacManager.TryLoad(out var dacManager))
+        {
+            _dacManager = dacManager;
+        }
 
         var parameters = new WriteBarrierParameters
         {

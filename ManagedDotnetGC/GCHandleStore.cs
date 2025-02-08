@@ -1,4 +1,5 @@
-﻿using ManagedDotnetGC.Interfaces;
+﻿using ManagedDotnetGC.Dac;
+using ManagedDotnetGC.Interfaces;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using static ManagedDotnetGC.Log;
@@ -21,13 +22,22 @@ public unsafe class GCHandleStore : IGCHandleStore
 
     public IntPtr IGCHandleStoreObject => _nativeObject;
 
-    public void DumpHandles()
+    public void DumpHandles(DacManager? dacManager)
     {
         Write("GCHandleStore DumpHandles");
 
         for (int i = 0; i < _handleCount; i++)
         {
-            Write($"Handle {i} - {_store[i]}");
+            ref var handle = ref _store[i];
+
+            var output = $"Handle {i} - {handle}";
+
+            if (dacManager != null && handle.Object != 0)
+            {
+                output += $" - {dacManager.GetObjectName(new(handle.Object))}";
+            }
+
+            Write(output);
         }
     }
 

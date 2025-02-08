@@ -11,7 +11,7 @@ public class DllMain
     public static unsafe HResult GC_Initialize(IntPtr clrToGC, IntPtr* gcHeap, IntPtr* gcHandleManager, GcDacVars* gcDacVars)
     {
         Write("GC_Initialize");
-
+        
         if (Environment.GetEnvironmentVariable("GC_DEBUG") == "1")
         {
             Write($"Waiting for debugger to attach to process {Environment.ProcessId}...");
