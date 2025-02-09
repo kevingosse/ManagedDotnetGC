@@ -29,7 +29,6 @@ public unsafe class GCHandleStore : IGCHandleStore
         for (int i = 0; i < _handleCount; i++)
         {
             ref var handle = ref _store[i];
-
             var output = $"Handle {i} - {handle}";
 
             if (dacManager != null && handle.Object != 0)

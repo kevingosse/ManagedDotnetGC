@@ -95,19 +95,15 @@ public class DacManager : IDisposable
             return null;
         }
 
-        Span<char> str = stackalloc char[(int)needed];
+        char* str = stackalloc char[(int)needed];
+        result = Dac.GetObjectClassName(address, needed, str, out _);
 
-        fixed (char* p = str)
+        if (!result)
         {
-            result = Dac.GetObjectClassName(address, needed, p, out _);
-
-            if (!result)
-            {
-                return null;
-            }
-
-            return new string(str);
+            return null;
         }
+
+        return new string(str);
     }
 
     public void Dispose()

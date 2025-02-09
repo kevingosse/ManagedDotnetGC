@@ -1,9 +1,10 @@
 ﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace ManagedDotnetGC.Dac;
 
-public unsafe class ClrDataTarget : ICLRDataTarget2, IDisposable
+public unsafe class ClrDataTarget : ICLRDataTarget, IDisposable
 {
     private readonly NativeObjects.ICLRDataTarget _clrDataTarget;
     private int _referenceCount;
@@ -22,12 +23,6 @@ public unsafe class ClrDataTarget : ICLRDataTarget2, IDisposable
 
     public HResult QueryInterface(in Guid guid, out IntPtr ptr)
     {
-        if (guid == ICLRDataTarget2.Guid)
-        {
-            ptr = _clrDataTarget;
-            return HResult.S_OK;
-        }
-
         ptr = default;
         return HResult.E_NOINTERFACE;
     }
@@ -51,7 +46,27 @@ public unsafe class ClrDataTarget : ICLRDataTarget2, IDisposable
 
     public HResult GetMachineType(out uint machine)
     {
-        machine = 0x8664; // IMAGE_FILE_MACHINE_AMD64
+        var architecture = RuntimeInformation.ProcessArchitecture;
+
+        // https://learn.microsoft.com/en-us/windows/win32/sysinfo/image-file-machine-constants
+        if (architecture == Architecture.X86)
+        {
+            machine = 0x14c; // IMAGE_FILE_MACHINE_I386
+        }
+        else if (architecture == Architecture.X64)
+        {
+            machine = 0x8664; // IMAGE_FILE_MACHINE_AMD64
+        }
+        else if (architecture == Architecture.Arm64)
+        {
+            machine = 0xaa64; // IMAGE_FILE_MACHINE_ARM64
+        }
+        else
+        {
+            machine = 0;
+            return HResult.E_FAIL;
+        }        
+
         return HResult.S_OK;
     }
 
@@ -119,17 +134,6 @@ public unsafe class ClrDataTarget : ICLRDataTarget2, IDisposable
     }
 
     public HResult Request(uint reqCode, uint inBufferSize, byte* inBuffer, uint outBufferSize, byte* outBuffer)
-    {
-        return HResult.E_NOTIMPL;
-    }
-
-    public HResult AllocVirtual(CLRDATA_ADDRESS addr, uint size, uint typeFlags, uint protectFlags, out CLRDATA_ADDRESS virt)
-    {
-        virt = default;
-        return HResult.E_NOTIMPL;
-    }
-
-    public HResult FreeVirtual(CLRDATA_ADDRESS addr, uint size, uint typeFlags)
     {
         return HResult.E_NOTIMPL;
     }
