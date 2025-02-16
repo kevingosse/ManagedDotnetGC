@@ -510,12 +510,12 @@ today, the VM handles the setting of segment size and max gen 0 size.
     /// <summary>
     /// Registers a frozen segment with the GC.
     /// </summary>
-    void* RegisterFrozenSegment(segment_info* pseginfo);
+    nint RegisterFrozenSegment(segment_info* pseginfo);
 
     /// <summary>
     /// Unregisters a frozen segment.
     /// </summary>
-    void UnregisterFrozenSegment(void* seg);
+    void UnregisterFrozenSegment(nint seg);
 
     /// <summary>
     /// Indicates whether an object is in a frozen segment.

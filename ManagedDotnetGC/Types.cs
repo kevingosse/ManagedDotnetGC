@@ -31,10 +31,10 @@ public struct ObjectHandle
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public readonly struct GCObject
+public unsafe struct GCObject
 {
-    public readonly IntPtr MethodTable;
-    public readonly int Length;
+    public MethodTable* MethodTable;
+    public uint Length;
 }
 
 public enum HandleType

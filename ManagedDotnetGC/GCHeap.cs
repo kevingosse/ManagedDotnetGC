@@ -1,5 +1,7 @@
 ﻿using ManagedDotnetGC.Dac;
 using NativeObjects;
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 using static ManagedDotnetGC.Log;
@@ -8,22 +10,265 @@ namespace ManagedDotnetGC;
 
 internal unsafe class GCHeap : Interfaces.IGCHeap
 {
+    private const int AllocationContextSize = 32 * 1024;
+    private const int SegmentSize = AllocationContextSize * 128;
+    private static int SizeOfObject = sizeof(nint) * 3;
+
     private readonly IGCToCLRInvoker _gcToClr;
     private readonly GCHandleManager _gcHandleManager;
 
     private readonly IGCHeap _nativeObject;
     private DacManager? _dacManager;
 
+    private MethodTable* _freeObjectMethodTable;
+
+    private List<Segment> _segments = new();
+    private Segment _activeSegment;
+
+    private ConcurrentDictionary<nint, StrongBox<(nint start, nint end)>> _frozenSegments = new();
+    private int _frozenSegmentIndex;
+
+    private GCHandle _handle;
+
     public GCHeap(IGCToCLRInvoker gcToClr)
     {
+        _handle = GCHandle.Alloc(this);
         _gcToClr = gcToClr;
         _gcHandleManager = new GCHandleManager();
 
         _nativeObject = IGCHeap.Wrap(this);
+        _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
+        Write($"Free Object Method Table: {(nint)_freeObjectMethodTable:x2}");
     }
 
     public IntPtr IGCHeapObject => _nativeObject;
     public IntPtr IGCHandleManagerObject => _gcHandleManager.IGCHandleManagerObject;
+
+    public HResult Initialize()
+    {
+        Write("Initialize GCHeap");
+
+        if (DacManager.TryLoad(out var dacManager))
+        {
+            _dacManager = dacManager;
+        }
+
+        _activeSegment = new(SegmentSize);
+        _segments.Add(_activeSegment);
+
+        var parameters = new WriteBarrierParameters
+        {
+            operation = WriteBarrierOp.Initialize,
+            is_runtime_suspended = true,
+            ephemeral_low = -1
+        };
+
+        _gcToClr.StompWriteBarrier(&parameters);
+
+        return HResult.S_OK;
+    }
+
+    public unsafe nint RegisterFrozenSegment(segment_info* pseginfo)
+    {
+        var handle = Interlocked.Increment(ref _frozenSegmentIndex);
+        _frozenSegments.TryAdd(handle, new((pseginfo->ibFirstObject, pseginfo->ibCommit)));
+        return handle;
+    }
+
+    public unsafe void UnregisterFrozenSegment(nint seg)
+    {
+        _frozenSegments.TryRemove(seg, out _);
+    }
+
+    public unsafe bool IsInFrozenSegment(GCObject* obj)
+    {
+        foreach (var segment in _frozenSegments.Values)
+        {
+            if ((nint)obj >= segment.Value.start && (nint)obj < segment.Value.end)
+            {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    public void UpdateFrozenSegment(nint seg, nint allocated, nint committed)
+    {
+        if (_frozenSegments.TryGetValue(seg, out var segment))
+        {
+            segment.Value.start = allocated;
+            segment.Value.end = committed;
+        }
+    }
+
+    public HResult GarbageCollect(int generation, bool low_memory_p, int mode)
+    {
+        Write("GarbageCollect");
+
+        _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
+
+        _gcHandleManager.Store.DumpHandles(_dacManager);
+
+        var callback = (delegate* unmanaged<gc_alloc_context*, IntPtr, void>)&EnumAllocContextCallback;
+        _gcToClr.GcEnumAllocContexts((IntPtr)callback, GCHandle.ToIntPtr(_handle));
+
+        TraverseHeap();
+
+        _gcToClr.RestartEE(finishedGC: true);
+
+        return HResult.S_OK;
+    }
+
+    public unsafe void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
+    {
+        FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
+    }
+
+    public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
+    {
+        var result = acontext.alloc_ptr;
+        var advance = result + size;
+
+        if (advance <= acontext.alloc_limit)
+        {
+            // There is enough room left in the allocation context
+            acontext.alloc_ptr = advance;
+            return (GCObject*)result;
+        }
+
+        // We need to allocate a new allocation context
+        FixAllocContext(ref acontext);
+
+        var minimumSize = size + SizeOfObject;
+
+        if (minimumSize > SegmentSize)
+        {
+            // We need a dedicated segment for this allocation
+            var segment = new Segment(size);
+            segment.Current = segment.End;
+
+            lock (_segments)
+            {
+                _segments.Add(segment);
+            }
+
+            acontext.alloc_ptr = 0;
+            acontext.alloc_limit = 0;
+
+            return (GCObject*)(segment.Start + IntPtr.Size);
+        }
+
+        lock (_segments)
+        {
+            if (_activeSegment.Current + minimumSize >= _activeSegment.End)
+            {
+                // The active segment is full, allocate a new one
+                _activeSegment = new Segment(SegmentSize);
+                _segments.Add(_activeSegment);
+            }
+
+            var desiredSize = Math.Min(Math.Max(minimumSize, AllocationContextSize), _activeSegment.End - _activeSegment.Current);
+
+            result = _activeSegment.Current + IntPtr.Size;
+            _activeSegment.Current += desiredSize;
+
+            acontext.alloc_ptr = result + size;
+            acontext.alloc_limit = _activeSegment.Current - IntPtr.Size * 2;
+
+            return (GCObject*)result;
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    private static void EnumAllocContextCallback(gc_alloc_context* acontext, IntPtr arg)
+    {
+        var handle = GCHandle.FromIntPtr(arg);
+        var gcHeap = (GCHeap)handle.Target!;
+        gcHeap.FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
+    }
+
+    private void FixAllocContext(ref gc_alloc_context acontext)
+    {
+        if (acontext.alloc_ptr == 0)
+        {
+            return;
+        }
+
+        AllocateFreeObject(acontext.alloc_ptr, (uint)(acontext.alloc_limit - acontext.alloc_ptr));
+        acontext = new();
+    }
+
+    private void AllocateFreeObject(nint address, uint length)
+    {
+        var freeObject = (GCObject*)address;
+        freeObject->MethodTable = _freeObjectMethodTable;
+        freeObject->Length = length;
+    }
+
+    private void TraverseHeap()
+    {
+        foreach (var segment in _segments)
+        {
+            TraverseHeap(segment.Start, segment.Current);
+        }
+    }
+
+    private void TraverseHeap(nint start, nint end)
+    {
+        var ptr = start + IntPtr.Size;
+
+        while (ptr < end)
+        {
+            var obj = (GCObject*)ptr;
+
+            var name = obj->MethodTable == _freeObjectMethodTable
+                ? "Free"
+                : _dacManager?.GetObjectName(new(ptr));
+
+            Write($"{ptr:x2} - {name}");
+
+            var alignment = sizeof(nint) - 1;
+            ptr += ((nint)ComputeSize(obj) + alignment) & ~alignment;
+        }
+    }
+
+    private void TraverseAllocContext(nint start, nint end)
+    {
+        var ptr = start + IntPtr.Size;
+
+        while (ptr < end)
+        {
+            var obj = (GCObject*)ptr;
+
+            if (obj->MethodTable == null)
+            {
+                break;
+            }
+
+            var name = _dacManager?.GetObjectName(new(ptr));
+            Write($"{ptr:x2} - {name}");
+
+            var alignment = sizeof(nint) - 1;
+            ptr += ((nint)ComputeSize(obj) + alignment) & ~alignment;
+        }
+    }
+
+    private static unsafe uint ComputeSize(GCObject* obj)
+    {
+        var methodTable = obj->MethodTable;
+
+        if (!methodTable->HasComponentSize)
+        {
+            // Fixed-size object
+            return methodTable->BaseSize;
+        }
+
+        // Variable-size object
+        return methodTable->BaseSize + obj->Length * methodTable->ComponentSize;
+    }
+
+    #region Not implemented
 
     public void Destructor()
     {
@@ -187,13 +432,6 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
         return 0;
     }
 
-    public HResult GarbageCollect(int generation, bool low_memory_p, int mode)
-    {
-        Write("GarbageCollect");
-        _gcHandleManager.Store.DumpHandles(_dacManager);
-        return HResult.S_OK;
-    }
-
     public uint GetMaxGeneration()
     {
         Write("GetMaxGeneration");
@@ -221,27 +459,6 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
     {
         Write("GetLastGCGenerationSize");
         return 0;
-    }
-
-    public HResult Initialize()
-    {
-        Write("Initialize GCHeap");
-
-        if (DacManager.TryLoad(out var dacManager))
-        {
-            _dacManager = dacManager;
-        }
-
-        var parameters = new WriteBarrierParameters
-        {
-            operation = WriteBarrierOp.Initialize,
-            is_runtime_suspended = true,
-            ephemeral_low = -1
-        };
-
-        _gcToClr.StompWriteBarrier(&parameters);
-
-        return HResult.S_OK;
     }
 
     public unsafe bool IsPromoted(GCObject* obj)
@@ -288,13 +505,8 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
 
     public uint WaitUntilGCComplete(bool bConsiderGCStart = false)
     {
-        Write("WaitUntilGCComplete");
+        //Write("WaitUntilGCComplete");
         return 0;
-    }
-
-    public unsafe void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
-    {
-        Write("FixAllocContext");
     }
 
     public nint GetCurrentObjSize()
@@ -345,27 +557,6 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
     {
         Write("GetNow");
         return 0;
-    }
-
-    public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
-    {
-        var result = acontext.alloc_ptr;
-        var advance = result + size;
-
-        if (advance <= acontext.alloc_limit)
-        {
-            acontext.alloc_ptr = advance;
-            return (GCObject*)result;
-        }
-
-        var growthSize = Math.Max(size, 32 * 1024) + IntPtr.Size;
-        var newPages = (IntPtr)NativeMemory.AllocZeroed((nuint)growthSize);
-
-        var allocationStart = newPages + IntPtr.Size;
-        acontext.alloc_ptr = allocationStart + size;
-        acontext.alloc_limit = newPages + growthSize;
-
-        return (GCObject*)allocationStart;
     }
 
     public unsafe void PublishObject(IntPtr obj)
@@ -467,23 +658,6 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
         return false;
     }
 
-    public unsafe void* RegisterFrozenSegment(segment_info* pseginfo)
-    {
-        Write("RegisterFrozenSegment");
-        return pseginfo;
-    }
-
-    public unsafe void UnregisterFrozenSegment(void* seg)
-    {
-        Write("UnregisterFrozenSegment");
-    }
-
-    public unsafe bool IsInFrozenSegment(GCObject* obj)
-    {
-        Write("IsInFrozenSegment");
-        return true;
-    }
-
     public void ControlEvents(GCEventKeyword keyword, GCEventLevel level)
     {
         Write("ControlEvents");
@@ -509,10 +683,6 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
     public void EnumerateConfigurationValues(void* context, nint configurationValueFunc)
     {
         Write("EnumerateConfigurationValues");
-    }
-
-    public void UpdateFrozenSegment(nint seg, nint allocated, nint committed)
-    {
     }
 
     public int RefreshMemoryLimit()
@@ -570,4 +740,6 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
         genInfoRaw = 0;
         pauseInfoRaw = 0;
     }
+
+    #endregion
 }

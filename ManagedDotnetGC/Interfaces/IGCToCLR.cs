@@ -12,7 +12,7 @@ public unsafe interface IGCToCLR
     /// Resumes all paused threads, with a boolean indicating
     /// if the EE is being restarted because a GC is complete.
     /// </summary>
-    void RestartEE(bool bFinishedGC);
+    void RestartEE(bool finishedGC);
 
     /// <summary>
     /// Performs a stack walk of all managed threads and invokes the given promote_func
@@ -100,7 +100,7 @@ public unsafe interface IGCToCLR
     /// <summary>
     /// Calls the given enum_alloc_context_func with every active alloc context.
     /// </summary>
-    void GcEnumAllocContexts(void* fn, void* param);
+    void GcEnumAllocContexts(IntPtr fn, IntPtr param);
 
     /// <summary>
     /// Get the Allocator for objects from collectible assemblies
@@ -195,7 +195,7 @@ public unsafe interface IGCToCLR
     /// The free object allows the GC to traverse the heap because it can inspect the numComponents
     /// field to see how many bytes to skip before the next object on a heap segment begins.
     /// </summary>
-    void* GetFreeObjectMethodTable();
+    nint GetFreeObjectMethodTable();
 
     /// <summary>
     /// Asks the EE for the value of a given configuration key. If the EE does not know or does not
