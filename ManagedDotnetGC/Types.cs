@@ -30,13 +30,6 @@ public struct ObjectHandle
     public override string ToString() => $"{Type} - {Object:x2} - {ExtraInfo:x2}";
 }
 
-[StructLayout(LayoutKind.Sequential)]
-public unsafe struct GCObject
-{
-    public MethodTable* MethodTable;
-    public uint Length;
-}
-
 public enum HandleType
 {
     /*
