@@ -19,7 +19,7 @@ public unsafe interface IGCToCLR
     /// on all GC roots encountered on the stack. Depending on the condemned generation,
     /// this function may also enumerate all static GC refs if necessary.
     /// </summary>
-    void GcScanRoots(void* fn, int condemned, int max_gen, void* sc);
+    void GcScanRoots(IntPtr fn, int condemned, int max_gen, ScanContext* sc);
 
     /// <summary>
     /// Callback from the GC informing the EE that it is preparing to start working.

@@ -347,3 +347,24 @@ public enum GC_ALLOC_FLAGS : uint
     GC_ALLOC_PINNED_OBJECT_HEAP = 64,
     GC_ALLOC_USER_OLD_HEAP = GC_ALLOC_LARGE_OBJECT_HEAP | GC_ALLOC_PINNED_OBJECT_HEAP,
 }
+
+[StructLayout(LayoutKind.Sequential)]
+public struct ScanContext
+{
+    public IntPtr thread_under_crawl;
+    public int thread_number;
+    public int thread_count;
+    public IntPtr stack_limit; // Lowest point on the thread stack that the scanning logic is permitted to read
+    public bool promotion; //TRUE: Promotion, FALSE: Relocation.
+    public bool concurrent; //TRUE: concurrent scanning
+    public IntPtr _unused1;
+    public IntPtr pMD;
+    public int _unused3;
+}
+
+[Flags]
+public enum GcCallFlags : uint
+{
+    GC_CALL_INTERIOR = 0x1,
+    GC_CALL_PINNED = 0x2
+}
