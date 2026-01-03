@@ -2,8 +2,8 @@
 
 internal class Log
 {
-    public static void Write(string str)
+    public static void Write(string str, bool newLine = true)
     {
-        Console.WriteLine($"[GC] {str}");
+        Console.Write($"[GC] {str}{(newLine ? Environment.NewLine : string.Empty)}");
     }
 }

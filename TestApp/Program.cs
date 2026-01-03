@@ -1,4 +1,6 @@
-﻿using System.Runtime;
+﻿using Spectre.Console;
+using System.Runtime;
+using System.Runtime.CompilerServices;
 using TestApp;
 
 Console.WriteLine("Hello, World!");
@@ -34,6 +36,12 @@ for (int i = 0; i < array.Length; i++)
     {
         Console.WriteLine("Error");
     }
+}
+
+if (!WeakReferenceTest.Run())
+{
+    AnsiConsole.MarkupLine("[bold red]WeakReferenceTest failed[/]");
+    return;
 }
 
 while (true)
@@ -72,17 +80,22 @@ while (true)
         }
     }
 
-    Console.WriteLine($"Huge array address: {GetAddress(huge_obj):x2}");
+    Console.WriteLine($"Huge array address: {Utils.GetAddress(huge_obj):x2}");
+
+    var weakRef = GetWeakReference();
+    Console.WriteLine($"Before collection, weak reference is alive: {weakRef.IsAlive}");
 
     GC.Collect();
+
+    Console.WriteLine($"After collection, weak reference is alive: {weakRef.IsAlive}");
+    Console.WriteLine($"Target: {Utils.GetAddress(weakRef.Target):x2}");
 }
 
-
-static unsafe nint GetAddress(object obj)
+[MethodImpl(MethodImplOptions.NoInlining)]
+static WeakReference GetWeakReference()
 {
-    return (nint)(*(object**)&obj);
+    return new(new());
 }
-
 
 public class MyOwnObject
 {

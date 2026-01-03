@@ -11,7 +11,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 {
     private const int AllocationContextSize = 32 * 1024;
     private const int SegmentSize = AllocationContextSize * 128;
-    private static int SizeOfObject = sizeof(nint) * 3;
+    private static readonly int SizeOfObject = sizeof(nint) * 3;
 
     private IGCToCLRInvoker _gcToClr;
     private readonly GCHandleManager _gcHandleManager;
@@ -67,7 +67,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     public HResult GarbageCollect(int generation, bool low_memory_p, int mode)
     {
-        Write("GarbageCollect");
+        Write($"GarbageCollect({generation}, {low_memory_p}, {mode})");
 
         _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
 
@@ -76,13 +76,42 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         var callback = (delegate* unmanaged<gc_alloc_context*, IntPtr, void>)&EnumAllocContextCallback;
         _gcToClr.GcEnumAllocContexts((IntPtr)callback, GCHandle.ToIntPtr(_handle));
 
+        // TODO: Check what need to be set on ScanContext
         ScanContext scanContext = default;
         scanContext._unused1 = GCHandle.ToIntPtr(_handle);
 
         var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
 
-        TraverseHeap();
+        // TODO: handles are roots too
+        // TODO: dependent handles
+        // TODO: Weak references (+ short/long weak refs)
+        // TODO: ScanForFinalization
+        // TODO: SyncBlockCache
+
+        // Order in real GC:
+        // Dependent handles
+        // Short weak refs
+        // ScanForFinalization
+        // Long weak refs
+
+        ScanHandles();
+        UpdateWeakReferences();
+
+        //TraverseHeap(p => { });
+        try
+        {
+            Sweep();
+        }
+        catch (Exception ex)
+        {
+            Write($"Exception during sweeping: {ex}");
+        }
+
+        // DumpHeap();
+
+        // TODO: when to call?
+        // _gcToClr.EnableFinalization(true);
 
         _gcToClr.RestartEE(finishedGC: true);
 
@@ -103,6 +132,9 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         var result = acontext.alloc_ptr;
         var advance = result + size;
+
+        // TODO: Add object to finalization queue if needed
+        // TODO: How to recognize critical finalizers?
 
         if (advance <= acontext.alloc_limit)
         {
@@ -130,7 +162,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             acontext.alloc_ptr = 0;
             acontext.alloc_limit = 0;
 
-            return (GCObject*)(segment.Start + IntPtr.Size);
+            return (GCObject*)Align(segment.Start + IntPtr.Size);
         }
 
         lock (_segments)
@@ -147,7 +179,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             result = _activeSegment.Current + IntPtr.Size;
             _activeSegment.Current += desiredSize;
 
-            acontext.alloc_ptr = result + size;
+            acontext.alloc_ptr = Align(result + size);
             acontext.alloc_limit = _activeSegment.Current - IntPtr.Size * 2;
 
             return (GCObject*)result;
@@ -159,20 +191,27 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         var handle = GCHandle.FromIntPtr(context->_unused1);
         var gcHeap = (GCHeap)handle.Target!;
-        gcHeap.ScanRoots(*obj, context, (GcCallFlags)flags);
-        // TODO: handles are roots too
-        // TODO: dependent handles
+        gcHeap.ScanRoots(*obj, context, (GcCallFlags)flags, "root");
     }
 
-    [UnmanagedCallersOnly]
-    private static void EnumAllocContextCallback(gc_alloc_context* acontext, IntPtr arg)
+    private void ScanHandles()
     {
-        var handle = GCHandle.FromIntPtr(arg);
-        var gcHeap = (GCHeap)handle.Target!;
-        gcHeap.FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
+        foreach (var handle in _gcHandleManager.Store.AsSpan())
+        {
+            if (handle.Type < HandleType.HNDTYPE_STRONG)
+            {
+                continue;
+            }
+
+            var obj = (GCObject*)handle.Object;
+            if (obj != null)
+            {
+                ScanRoots(obj, null, default, "handle");
+            }
+        }
     }
 
-    private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags)
+    private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags, string cause)
     {
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
@@ -195,9 +234,43 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             o->EnumerateObjectReferences(_markStack.Push);
 
-            Write($"Marked: {ptr:x2} - {_dacManager?.GetObjectName(new(ptr))}");
+            //Write($"Marked: {ptr:x2} - {_dacManager?.GetObjectName(new(ptr))} from {cause}");
             o->Mark();
         }
+    }
+
+    private void UpdateWeakReferences()
+    {
+        // TODO: Handle long weak references
+
+        var span = _gcHandleManager.Store.AsSpan();
+        
+        for (int i = 0; i < span.Length; i++)
+        {
+            ref var handle = ref span[i];
+            
+            if (handle.Type >= HandleType.HNDTYPE_STRONG)
+            {
+                continue;
+            }
+
+            var obj = (GCObject*)handle.Object;
+            if (obj != null && !obj->IsMarked())
+            {
+                handle.Object = IntPtr.Zero;
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static nint Align(nint address) => (address + (IntPtr.Size - 1)) & ~(IntPtr.Size - 1);
+
+    [UnmanagedCallersOnly]
+    private static void EnumAllocContextCallback(gc_alloc_context* acontext, IntPtr arg)
+    {
+        var handle = GCHandle.FromIntPtr(arg);
+        var gcHeap = (GCHeap)handle.Target!;
+        gcHeap.FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
     }
 
     private void FixAllocContext(ref gc_alloc_context acontext)
@@ -217,33 +290,58 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         freeObject->Length = length;
     }
 
-    private void TraverseHeap()
+    private void TraverseHeap(Action<nint> callback)
     {
         foreach (var segment in _segments)
         {
-            TraverseHeap(segment.Start, segment.Current);
+            Write($"Traversing segment ({_segments.Count})");
+            TraverseHeap(segment.Start, segment.Current, callback);
         }
     }
 
-    private void TraverseHeap(nint start, nint end)
+    private void TraverseHeap(nint start, nint end, Action<IntPtr> callback)
     {
         var ptr = start + IntPtr.Size;
 
         while (ptr < end)
+        {
+            callback(ptr);
+            var obj = (GCObject*)ptr;
+            ptr = Align(ptr + (nint)obj->ComputeSize());
+        }
+    }
+
+    private void DumpHeap()
+    {
+        TraverseHeap(ptr =>
+        {
+            var obj = (GCObject*)ptr;
+            bool isFreeObject = obj->MethodTable == _freeObjectMethodTable;
+
+            var name = isFreeObject ? "Free" : _dacManager?.GetObjectName(new(ptr));
+
+            Write($"{ptr:x2} - {name?.PadRight(50)}");
+        });
+    }
+
+    private void Sweep()
+    {
+        TraverseHeap(ptr =>
         {
             var obj = (GCObject*)ptr;
 
             bool marked = obj->IsMarked();
             obj->Unmark();
 
-            var name = obj->MethodTable == _freeObjectMethodTable
-                ? "Free"
-                : _dacManager?.GetObjectName(new(ptr));
+            bool isFreeObject = obj->MethodTable == _freeObjectMethodTable;
 
-            Write($"{ptr:x2} - {name.PadRight(50)} {(marked ? "(*** marked ***)" : "")}");
+            var nextPtr = Align(ptr + (nint)obj->ComputeSize());
 
-            var alignment = sizeof(nint) - 1;
-            ptr += ((nint)obj->ComputeSize() + alignment) & ~alignment;
-        }
+            if (!marked && !isFreeObject)
+            {
+                new Span<byte>((void*)(ptr - sizeof(nint)), (int)(nextPtr - ptr)).Clear();
+                AllocateFreeObject(ptr, (uint)(nextPtr - ptr - SizeOfObject));
+            }
+        });
     }
 }

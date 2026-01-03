@@ -22,6 +22,8 @@ public unsafe class GCHandleStore : IGCHandleStore
 
     public IntPtr IGCHandleStoreObject => _nativeObject;
 
+    public Span<ObjectHandle> AsSpan() => new(_store, _handleCount);
+
     public void DumpHandles(DacManager? dacManager)
     {
         Write("GCHandleStore DumpHandles");

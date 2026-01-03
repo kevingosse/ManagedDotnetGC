@@ -15,7 +15,7 @@ partial class GCHeap
         return handle;
     }
 
-    public unsafe void UnregisterFrozenSegment(nint seg)
+    public void UnregisterFrozenSegment(nint seg)
     {
         _frozenSegments.TryRemove(seg, out _);
     }

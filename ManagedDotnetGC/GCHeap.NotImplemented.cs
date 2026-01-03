@@ -174,7 +174,7 @@ unsafe partial class GCHeap
 
     public unsafe void SetFinalizationRun(GCObject* obj)
     {
-        Write("SetFinalizationRun");
+        Write($"SetFinalizationRun - {(nint)obj:x2}");
     }
 
     public unsafe bool RegisterForFinalization(int gen, GCObject* obj)
