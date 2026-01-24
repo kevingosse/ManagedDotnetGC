@@ -6,14 +6,16 @@ namespace ManagedDotnetGC;
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct GCObject
 {
-    public MethodTable* MethodTable;
+    public MethodTable* RawMethodTable;
     public uint Length;
 
-    public bool IsMarked() => ((nint)MethodTable & 1) != 0;
+    public readonly MethodTable* MethodTable => (MethodTable*)((nint)RawMethodTable & ~1);
 
-    public void Mark() => MethodTable = (MethodTable*)((nint)MethodTable | 1);
+    public bool IsMarked() => ((nint)RawMethodTable & 1) != 0;
 
-    public void Unmark() => MethodTable = (MethodTable*)((nint)MethodTable & ~1);
+    public void Mark() => RawMethodTable = (MethodTable*)((nint)MethodTable | 1);
+
+    public void Unmark() => RawMethodTable = (MethodTable*)((nint)MethodTable & ~1);
 
     public readonly uint ComputeSize()
     {
@@ -54,7 +56,12 @@ public unsafe struct GCObject
 
                 for (int j = 0; j < seriesSize / IntPtr.Size; j++)
                 {
-                    callback(ptr[j]);
+                    var target = ptr[j];
+
+                    if (target != 0)
+                    {
+                        callback(target);
+                    }
                 }
             }
         }
@@ -74,7 +81,13 @@ public unsafe struct GCObject
 
                     for (int j = 0; j < valSerieItem->Nptrs; j++)
                     {
-                        callback(*ptr);
+                        var target = *ptr;
+
+                        if (target != 0)
+                        {
+                            callback(target);
+                        }
+
                         ptr++;
                     }
 

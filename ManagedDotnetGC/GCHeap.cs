@@ -1,5 +1,6 @@
 ﻿using ManagedDotnetGC.Dac;
 using NativeObjects;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -9,9 +10,9 @@ namespace ManagedDotnetGC;
 
 internal unsafe partial class GCHeap : Interfaces.IGCHeap
 {
-    private const int AllocationContextSize = 32 * 1024;
-    private const int SegmentSize = AllocationContextSize * 128;
-    private static readonly int SizeOfObject = sizeof(nint) * 3;
+    internal const int AllocationContextSize = 32 * 1024;
+    internal const int SegmentSize = AllocationContextSize * 128;
+    internal static readonly int SizeOfObject = sizeof(nint) * 3;
 
     private IGCToCLRInvoker _gcToClr;
     private readonly GCHandleManager _gcHandleManager;
@@ -80,6 +81,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         ScanContext scanContext = default;
         scanContext._unused1 = GCHandle.ToIntPtr(_handle);
 
+        Write("Scan roots");
         var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
 
@@ -96,17 +98,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         // Long weak refs
 
         ScanHandles();
+        Write("Updating weak references");
         UpdateWeakReferences();
 
-        //TraverseHeap(p => { });
-        try
-        {
-            Sweep();
-        }
-        catch (Exception ex)
-        {
-            Write($"Exception during sweeping: {ex}");
-        }
+        Sweep();
 
         // DumpHeap();
 
@@ -162,7 +157,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             acontext.alloc_ptr = 0;
             acontext.alloc_limit = 0;
 
-            return (GCObject*)Align(segment.Start + IntPtr.Size);
+            result = Align(segment.Start + IntPtr.Size);
+
+            segment.MarkObject(result);
+
+            return (GCObject*)result;
         }
 
         lock (_segments)
@@ -181,6 +180,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             acontext.alloc_ptr = Align(result + size);
             acontext.alloc_limit = _activeSegment.Current - IntPtr.Size * 2;
+
+            _activeSegment.MarkObject(result);
 
             return (GCObject*)result;
         }
@@ -211,13 +212,58 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
     }
 
+    private Segment? FindSegmentContaining(IntPtr addr)
+    {
+        for (int i = 0; i < _segments.Count; i++)
+        {
+            var segment = _segments[i];
+
+            if (addr >= segment.Start && addr < segment.End)
+            {
+                return segment;
+            }
+        }
+
+        return null;
+    }
+
     private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags, string cause)
     {
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
-            // TODO
-            Write($"Interior: {(IntPtr)obj:x2}");
+            if ((IntPtr)obj == 0)
+            {
+                return;
+            }
+
+            // Find the segment containing the interior pointer
+            var segment = FindSegmentContaining((IntPtr)obj);
+
+            if (segment == null)
+            {
+                Write($"  No segment found for interior pointer {(IntPtr)obj:x2}");
+                return;
+            }
+
+            var objectStartPtr = segment.FindClosestObjectBelow((IntPtr)obj);
+
+            foreach (var ptr in WalkHeapObjects(objectStartPtr - IntPtr.Size, (IntPtr)obj))
+            {
+                var o = (GCObject*)ptr;
+                var size = o->ComputeSize();
+
+                if ((IntPtr)o <= (IntPtr)obj && (IntPtr)obj < (IntPtr)o + (nint)size)
+                {
+                    obj = o;
+                    goto found;
+                }
+            }
+
+            Write($"  No object found for interior pointer {(IntPtr)obj:x2}");
             return;
+
+        found:
+            ;
         }
 
         _markStack.Push((IntPtr)obj);
@@ -233,8 +279,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
 
             o->EnumerateObjectReferences(_markStack.Push);
-
-            //Write($"Marked: {ptr:x2} - {_dacManager?.GetObjectName(new(ptr))} from {cause}");
             o->Mark();
         }
     }
@@ -244,11 +288,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         // TODO: Handle long weak references
 
         var span = _gcHandleManager.Store.AsSpan();
-        
+
         for (int i = 0; i < span.Length; i++)
         {
             ref var handle = ref span[i];
-            
+
             if (handle.Type >= HandleType.HNDTYPE_STRONG)
             {
                 continue;
@@ -281,39 +325,50 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
 
         AllocateFreeObject(acontext.alloc_ptr, (uint)(acontext.alloc_limit - acontext.alloc_ptr));
+
+        // Invalidate the allocation context so threads get a fresh one
+        acontext.alloc_ptr = 0;
+        acontext.alloc_limit = 0;
     }
 
     private void AllocateFreeObject(nint address, uint length)
     {
         var freeObject = (GCObject*)address;
-        freeObject->MethodTable = _freeObjectMethodTable;
+        freeObject->RawMethodTable = _freeObjectMethodTable;
         freeObject->Length = length;
     }
 
-    private void TraverseHeap(Action<nint> callback)
+    private IEnumerable<IntPtr> WalkHeapObjects()
     {
         foreach (var segment in _segments)
         {
-            Write($"Traversing segment ({_segments.Count})");
-            TraverseHeap(segment.Start, segment.Current, callback);
+            foreach (var obj in WalkHeapObjects(segment.Start, segment.Current))
+            {
+                yield return obj;
+            }
         }
     }
 
-    private void TraverseHeap(nint start, nint end, Action<IntPtr> callback)
+    private IEnumerable<IntPtr> WalkHeapObjects(nint start, nint end)
     {
         var ptr = start + IntPtr.Size;
 
         while (ptr < end)
         {
-            callback(ptr);
-            var obj = (GCObject*)ptr;
-            ptr = Align(ptr + (nint)obj->ComputeSize());
+            yield return ptr;
+            ptr = FindNextObject(ptr);
+        }
+
+        static unsafe nint FindNextObject(nint current)
+        {
+            var obj = (GCObject*)current;
+            return Align(current + (nint)obj->ComputeSize());
         }
     }
 
     private void DumpHeap()
     {
-        TraverseHeap(ptr =>
+        foreach (var ptr in WalkHeapObjects())
         {
             var obj = (GCObject*)ptr;
             bool isFreeObject = obj->MethodTable == _freeObjectMethodTable;
@@ -321,12 +376,12 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var name = isFreeObject ? "Free" : _dacManager?.GetObjectName(new(ptr));
 
             Write($"{ptr:x2} - {name?.PadRight(50)}");
-        });
+        }
     }
 
     private void Sweep()
     {
-        TraverseHeap(ptr =>
+        foreach (var ptr in WalkHeapObjects())
         {
             var obj = (GCObject*)ptr;
 
@@ -342,6 +397,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 new Span<byte>((void*)(ptr - sizeof(nint)), (int)(nextPtr - ptr)).Clear();
                 AllocateFreeObject(ptr, (uint)(nextPtr - ptr - SizeOfObject));
             }
-        });
+        }
     }
 }
