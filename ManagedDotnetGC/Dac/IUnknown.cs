@@ -1,4 +1,4 @@
-﻿namespace ManagedDotnetGC.Interfaces;
+﻿namespace ManagedDotnetGC.Dac;
 
 [NativeObject]
 public interface IUnknown

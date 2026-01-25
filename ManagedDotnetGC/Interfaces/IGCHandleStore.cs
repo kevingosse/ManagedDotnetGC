@@ -5,15 +5,15 @@ public unsafe interface IGCHandleStore
 {
     void Uproot();
 
-    bool ContainsHandle(OBJECTHANDLE handle);
+    bool ContainsHandle(ref ObjectHandle handle);
 
-    OBJECTHANDLE CreateHandleOfType2(GCObject* obj, HandleType type, int heapToAffinitizeTo);
+    ref ObjectHandle CreateHandleOfType2(GCObject* obj, HandleType type, int heapToAffinitizeTo);
 
-    OBJECTHANDLE CreateHandleOfType(GCObject* obj, HandleType type);
+    ref ObjectHandle CreateHandleOfType(GCObject* obj, HandleType type);
 
-    OBJECTHANDLE CreateHandleWithExtraInfo(GCObject* obj, HandleType type, void* pExtraInfo);
+    ref ObjectHandle CreateHandleWithExtraInfo(GCObject* obj, HandleType type, void* pExtraInfo);
 
-    OBJECTHANDLE CreateDependentHandle(GCObject* primary, GCObject* secondary);
+    ref ObjectHandle CreateDependentHandle(GCObject* primary, GCObject* secondary);
 
     void Destructor();
 }

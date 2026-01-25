@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace ManagedDotnetGC;
 
@@ -21,117 +20,14 @@ public unsafe struct VersionInfo
     public byte* Name;
 }
 
-// SUSPEND_REASON is the reason why the GC wishes to suspend the EE,
-// used as an argument to IGCToCLR::SuspendEE.
-public enum SUSPEND_REASON
+[StructLayout(LayoutKind.Sequential)]
+public struct ObjectHandle
 {
-    SUSPEND_FOR_GC = 1,
-    SUSPEND_FOR_GC_PREP = 6
-}
+    public nint Object;
+    public nint ExtraInfo;
+    public HandleType Type;
 
-public readonly struct GCObject
-{
-    public readonly IntPtr MethodTable;
-    public readonly int Length;
-}
-
-public unsafe struct gc_alloc_context
-{
-    public nint alloc_ptr;
-    public nint alloc_limit;
-    public long alloc_bytes; //Number of bytes allocated on SOH by this context
-
-    public long alloc_bytes_uoh; //Number of bytes allocated not on SOH by this context
-
-    // These two fields are deliberately not exposed past the EE-GC interface.
-    public void* gc_reserved_1;
-    public void* gc_reserved_2;
-    public int alloc_count;
-}
-
-public enum enable_no_gc_region_callback_status
-{
-    succeed,
-    not_started,
-    insufficient_budget,
-    already_registered,
-};
-
-public enum walk_surv_type
-{
-    walk_for_gc = 1,
-    walk_for_bgc = 2,
-    walk_for_uoh = 3
-}
-
-public unsafe struct segment_info
-{
-    public void* pvMem; // base of the allocation, not the first object (must add ibFirstObject)
-    public nint ibFirstObject;   // offset to the base of the first object in the segment
-    public nint ibAllocated; // limit of allocated memory in the segment (>= firstobject)
-    public nint ibCommit; // limit of committed memory in the segment (>= allocated)
-    public nint ibReserved; // limit of reserved memory in the segment (>= commit)
-}
-
-// Event keywords corresponding to events that can be fired by the GC. These
-// numbers come from the ETW manifest itself - please make changes to this enum
-// if you add, remove, or change keyword sets that are used by the GC!
-[Flags]
-public enum GCEventKeyword
-{
-    GCEventKeyword_None = 0x0,
-    GCEventKeyword_GC = 0x1,
-    // Duplicate on purpose, GCPrivate is the same keyword as GC,
-    // with a different provider
-    GCEventKeyword_GCPrivate = 0x1,
-    GCEventKeyword_GCHandle = 0x2,
-    GCEventKeyword_GCHandlePrivate = 0x4000,
-    GCEventKeyword_GCHeapDump = 0x100000,
-    GCEventKeyword_GCSampledObjectAllocationHigh = 0x200000,
-    GCEventKeyword_GCHeapSurvivalAndMovement = 0x400000,
-    GCEventKeyword_GCHeapCollect = 0x800000,
-    GCEventKeyword_GCHeapAndTypeNames = 0x1000000,
-    GCEventKeyword_GCSampledObjectAllocationLow = 0x2000000,
-    GCEventKeyword_All = GCEventKeyword_GC
-                         | GCEventKeyword_GCPrivate
-                         | GCEventKeyword_GCHandle
-                         | GCEventKeyword_GCHandlePrivate
-                         | GCEventKeyword_GCHeapDump
-                         | GCEventKeyword_GCSampledObjectAllocationHigh
-                         | GCEventKeyword_GCHeapSurvivalAndMovement
-                         | GCEventKeyword_GCHeapCollect
-                         | GCEventKeyword_GCHeapAndTypeNames
-                         | GCEventKeyword_GCSampledObjectAllocationLow
-}
-
-// Event levels corresponding to events that can be fired by the GC.
-public enum GCEventLevel
-{
-    GCEventLevel_None = 0,
-    GCEventLevel_Fatal = 1,
-    GCEventLevel_Error = 2,
-    GCEventLevel_Warning = 3,
-    GCEventLevel_Information = 4,
-    GCEventLevel_Verbose = 5,
-    GCEventLevel_Max = 6,
-    GCEventLevel_LogAlways = 255
-}
-
-public unsafe struct OBJECTHANDLE
-{
-    public OBJECTHANDLE(nint address)
-    {
-        Address = address;
-    }
-
-    public nint Address;
-
-    public void SetObject(nint value)
-    {
-        *(nint*)Address = value;
-    }
-
-    public override string ToString() => $"{Address:x2}";
+    public override string ToString() => $"{Type} - {Object:x2} - {ExtraInfo:x2}";
 }
 
 public enum HandleType
@@ -306,19 +202,19 @@ public unsafe struct WriteBarrierParameters
 
     // The heap's new low boundary. May or may not be the same as the previous
     // value. Used for WriteBarrierOp::Initialize and WriteBarrierOp::StompResize.
-    public byte* lowest_address;
+    public nint lowest_address;
 
     // The heap's new high boundary. May or may not be the same as the previous
     // value. Used for WriteBarrierOp::Initialize and WriteBarrierOp::StompResize.
-    public byte* highest_address;
+    public nint highest_address;
 
     // The new start of the ephemeral generation.
     // Used for WriteBarrierOp::StompEphemeral.
-    public byte* ephemeral_low;
+    public nint ephemeral_low;
 
     // The new end of the ephemeral generation.
     // Used for WriteBarrierOp::StompEphemeral.
-    public byte* ephemeral_high;
+    public nint ephemeral_high;
 
     // The new write watch table, if we are using our own write watch
     // implementation. Used for WriteBarrierOp::SwitchToWriteWatch only.
@@ -342,4 +238,133 @@ public enum WriteBarrierOp
     Initialize,
     SwitchToWriteWatch,
     SwitchToNonWriteWatch
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct gc_alloc_context
+{
+    public nint alloc_ptr;
+    public nint alloc_limit;
+    public long alloc_bytes; //Number of bytes allocated on SOH by this context
+
+    public long alloc_bytes_uoh; //Number of bytes allocated not on SOH by this context
+
+    // These two fields are deliberately not exposed past the EE-GC interface.
+    public void* gc_reserved_1;
+    public void* gc_reserved_2;
+    public int alloc_count;
+}
+
+public enum walk_surv_type
+{
+    walk_for_gc = 1,
+    walk_for_bgc = 2,
+    walk_for_uoh = 3
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public unsafe struct segment_info
+{
+    public void* pvMem; // base of the allocation, not the first object (must add ibFirstObject)
+    public nint ibFirstObject;   // offset to the base of the first object in the segment
+    public nint ibAllocated; // limit of allocated memory in the segment (>= firstobject)
+    public nint ibCommit; // limit of committed memory in the segment (>= allocated)
+    public nint ibReserved; // limit of reserved memory in the segment (>= commit)
+}
+
+// Event keywords corresponding to events that can be fired by the GC. These
+// numbers come from the ETW manifest itself - please make changes to this enum
+// if you add, remove, or change keyword sets that are used by the GC!
+[Flags]
+public enum GCEventKeyword
+{
+    GCEventKeyword_None = 0x0,
+    GCEventKeyword_GC = 0x1,
+    // Duplicate on purpose, GCPrivate is the same keyword as GC,
+    // with a different provider
+    GCEventKeyword_GCPrivate = 0x1,
+    GCEventKeyword_GCHandle = 0x2,
+    GCEventKeyword_GCHandlePrivate = 0x4000,
+    GCEventKeyword_GCHeapDump = 0x100000,
+    GCEventKeyword_GCSampledObjectAllocationHigh = 0x200000,
+    GCEventKeyword_GCHeapSurvivalAndMovement = 0x400000,
+    GCEventKeyword_GCHeapCollect = 0x800000,
+    GCEventKeyword_GCHeapAndTypeNames = 0x1000000,
+    GCEventKeyword_GCSampledObjectAllocationLow = 0x2000000,
+    GCEventKeyword_All = GCEventKeyword_GC
+                         | GCEventKeyword_GCPrivate
+                         | GCEventKeyword_GCHandle
+                         | GCEventKeyword_GCHandlePrivate
+                         | GCEventKeyword_GCHeapDump
+                         | GCEventKeyword_GCSampledObjectAllocationHigh
+                         | GCEventKeyword_GCHeapSurvivalAndMovement
+                         | GCEventKeyword_GCHeapCollect
+                         | GCEventKeyword_GCHeapAndTypeNames
+                         | GCEventKeyword_GCSampledObjectAllocationLow
+}
+
+// Event levels corresponding to events that can be fired by the GC.
+public enum GCEventLevel
+{
+    GCEventLevel_None = 0,
+    GCEventLevel_Fatal = 1,
+    GCEventLevel_Error = 2,
+    GCEventLevel_Warning = 3,
+    GCEventLevel_Information = 4,
+    GCEventLevel_Verbose = 5,
+    GCEventLevel_Max = 6,
+    GCEventLevel_LogAlways = 255
+}
+
+public enum enable_no_gc_region_callback_status
+{
+    succeed,
+    not_started,
+    insufficient_budget,
+    already_registered,
+}
+
+// SUSPEND_REASON is the reason why the GC wishes to suspend the EE,
+// used as an argument to IGCToCLR::SuspendEE.
+public enum SUSPEND_REASON
+{
+    SUSPEND_FOR_GC = 1,
+    SUSPEND_FOR_GC_PREP = 6
+}
+
+[Flags]
+public enum GC_ALLOC_FLAGS : uint
+{
+    GC_ALLOC_NO_FLAGS = 0,
+    GC_ALLOC_FINALIZE = 1,
+    GC_ALLOC_CONTAINS_REF = 2,
+    GC_ALLOC_ALIGN8_BIAS = 4,
+    GC_ALLOC_ALIGN8 = 8, // Only implies the initial allocation is 8 byte aligned.
+                         // Preserving the alignment across relocation depends on
+                         // RESPECT_LARGE_ALIGNMENT also being defined.
+    GC_ALLOC_ZEROING_OPTIONAL = 16,
+    GC_ALLOC_LARGE_OBJECT_HEAP = 32,
+    GC_ALLOC_PINNED_OBJECT_HEAP = 64,
+    GC_ALLOC_USER_OLD_HEAP = GC_ALLOC_LARGE_OBJECT_HEAP | GC_ALLOC_PINNED_OBJECT_HEAP,
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct ScanContext
+{
+    public IntPtr thread_under_crawl;
+    public int thread_number;
+    public int thread_count;
+    public IntPtr stack_limit; // Lowest point on the thread stack that the scanning logic is permitted to read
+    public bool promotion; //TRUE: Promotion, FALSE: Relocation.
+    public bool concurrent; //TRUE: concurrent scanning
+    public IntPtr _unused1;
+    public IntPtr pMD;
+    public int _unused3;
+}
+
+[Flags]
+public enum GcCallFlags : uint
+{
+    GC_CALL_INTERIOR = 0x1,
+    GC_CALL_PINNED = 0x2
 }

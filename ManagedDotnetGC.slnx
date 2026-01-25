@@ -1,0 +1,13 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Folder Name="/Solution Items/">
+    <File Path="launch.cmd" />
+    <File Path="publish.cmd" />
+  </Folder>
+  <Project Path="ManagedDotnetGC/ManagedDotnetGC.csproj" />
+  <Project Path="TestApp/TestApp.csproj" />
+</Solution>

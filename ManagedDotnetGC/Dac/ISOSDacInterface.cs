@@ -5,7 +5,7 @@ using WCHAR = Char;
 using DWORD = UInt32;
 
 [NativeObject]
-public unsafe interface ISOSDacInterface : Interfaces.IUnknown
+public unsafe interface ISOSDacInterface : IUnknown
 {
     public static readonly Guid Guid = new("436f00f2-b42a-4b9f-870c-e73db66ae930");
 

@@ -1,25 +1,28 @@
 ﻿using ManagedDotnetGC.Dac;
 using ManagedDotnetGC.Interfaces;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-
 using static ManagedDotnetGC.Log;
 
 namespace ManagedDotnetGC;
 
 public unsafe class GCHandleStore : IGCHandleStore
 {
+    private const int MaxHandles = 10_000;
+
     private readonly NativeObjects.IGCHandleStore _nativeObject;
-    private readonly nint* _store;
+    private readonly ObjectHandle* _store;
     private int _handleCount;
 
     public GCHandleStore()
     {
         _nativeObject = NativeObjects.IGCHandleStore.Wrap(this);
-        _store = (nint*)NativeMemory.AllocZeroed((nuint)sizeof(nint) * 65535);
-        Write($"GCHandleStore {(IntPtr)_store:x2}");
+        _store = (ObjectHandle*)NativeMemory.AllocZeroed(MaxHandles, (nuint)sizeof(ObjectHandle));
     }
 
     public IntPtr IGCHandleStoreObject => _nativeObject;
+
+    public Span<ObjectHandle> AsSpan() => new(_store, _handleCount);
 
     public void DumpHandles(DacManager? dacManager)
     {
@@ -27,16 +30,15 @@ public unsafe class GCHandleStore : IGCHandleStore
 
         for (int i = 0; i < _handleCount; i++)
         {
-            var target = _store[i];
+            ref var handle = ref _store[i];
+            var output = $"Handle {i} - {handle}";
 
-            if (dacManager == null)
+            if (dacManager != null && handle.Object != 0)
             {
-                Write($"Handle {i} - {target:x2}");
+                output += $" - {dacManager.GetObjectName(new(handle.Object))}";
             }
-            else
-            {
-                Write($"Handle {i} - {target:x2} - {dacManager.GetObjectName(new(target))}");
-            }
+
+            Write(output);
         }
     }
 
@@ -45,55 +47,47 @@ public unsafe class GCHandleStore : IGCHandleStore
         Write("GCHandleStore Uproot");
     }
 
-    public bool ContainsHandle(OBJECTHANDLE handle)
+    public bool ContainsHandle(ref ObjectHandle handle)
     {
-        Console.WriteLine("GCHandleStore ContainsHandle");
-        return false;
+        var ptr = Unsafe.AsPointer(ref handle);
+        return ptr >= _store && ptr < _store + _handleCount;
     }
 
-    public unsafe OBJECTHANDLE CreateHandleOfType(GCObject* obj, HandleType type)
+    public unsafe ref ObjectHandle CreateHandleOfType(GCObject* obj, HandleType type)
     {
-        Write($"CreateHandleOfType {type} for {(IntPtr)obj:x2}");
-
-        var handle = GetNextAvailableHandle();
-        handle.SetObject((nint)obj);
-
-        Write($"Returning {handle}");
-        return handle;
+        return ref CreateHandleWithExtraInfo(obj, type, null);
     }
 
-    public unsafe OBJECTHANDLE CreateHandleOfType2(GCObject* obj, HandleType type, int heapToAffinitizeTo)
+    public unsafe ref ObjectHandle CreateHandleOfType2(GCObject* obj, HandleType type, int heapToAffinitizeTo)
     {
-        Write($"GCHandleStore CreateHandleOfType2 - {(nint)obj:x2}");
-
-        var handle = GetNextAvailableHandle();
-        handle.SetObject((nint)obj);
-
-        Write($"Returning {handle}");
-        return handle;
+        return ref CreateHandleWithExtraInfo(obj, type, null);
     }
 
-    public unsafe OBJECTHANDLE CreateHandleWithExtraInfo(GCObject* obj, HandleType type, void* pExtraInfo)
+    public unsafe ref ObjectHandle CreateHandleWithExtraInfo(GCObject* obj, HandleType type, void* pExtraInfo)
     {
-        Write("GCHandleStore CreateHandleWithExtraInfo");
-        return GetNextAvailableHandle();
+        var index = Interlocked.Increment(ref _handleCount) - 1;
+
+        if (index >= MaxHandles)
+        {
+            Environment.FailFast("Too many handles");
+        }
+
+        ref var handle = ref _store[index];
+
+        handle.Object = (nint)obj;
+        handle.Type = type;
+        handle.ExtraInfo = (nint)pExtraInfo;
+
+        return ref handle;
     }
 
-    public unsafe OBJECTHANDLE CreateDependentHandle(GCObject* primary, GCObject* secondary)
+    public unsafe ref ObjectHandle CreateDependentHandle(GCObject* primary, GCObject* secondary)
     {
-        Write("GCHandleStore CreateDependentHandle");
-        return GetNextAvailableHandle();
+        return ref CreateHandleWithExtraInfo(primary, HandleType.HNDTYPE_DEPENDENT, secondary);
     }
 
     public void Destructor()
     {
         Write("GCHandleStore Destructor");
-    }
-
-    private OBJECTHANDLE GetNextAvailableHandle()
-    {
-        var handle = (nint)(_store + _handleCount);
-        _handleCount++;
-        return new(handle);
     }
 }

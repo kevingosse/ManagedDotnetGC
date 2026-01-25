@@ -1,7 +1,7 @@
 ﻿namespace ManagedDotnetGC.Dac;
 
 [NativeObject]
-public unsafe interface ICLRDataTarget : Interfaces.IUnknown
+public unsafe interface ICLRDataTarget : IUnknown
 {
     HResult GetMachineType(out uint machine);
 

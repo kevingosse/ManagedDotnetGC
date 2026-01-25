@@ -19,18 +19,22 @@ public class DacManager : IDisposable
 
     public static unsafe HResult TryLoad(out DacManager? dacManager)
     {
+        var coreclr = GetLibraryName("coreclr");
+
         var module = Process.GetCurrentProcess().Modules
             .Cast<ProcessModule>()
-            .FirstOrDefault(m => m.ModuleName == "coreclr.dll");
+            .FirstOrDefault(m => m.ModuleName == coreclr);
 
         if (module == null)
         {
-            Log.Write("coreclr.dll not found");
+            Log.Write($"{coreclr} not found");
             dacManager = null;
             return HResult.E_FAIL;
         }
 
-        var dacPath = Path.Combine(Path.GetDirectoryName(module.FileName)!, "mscordaccore.dll");
+        var dacPath = Path.Combine(
+            Path.GetDirectoryName(module.FileName)!,
+            GetLibraryName("mscordaccore"));
 
         if (!File.Exists(dacPath))
         {
@@ -62,6 +66,26 @@ public class DacManager : IDisposable
         }
     }
 
+    private static string GetLibraryName(string name)
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return $"{name}.dll";
+        }
+        
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return $"lib{name}.so";
+        }
+        
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            return $"lib{name}.dylib";
+        }
+        
+        throw new PlatformNotSupportedException();
+    }
+
     public unsafe string? GetObjectName(CLRDATA_ADDRESS address)
     {
         var result = Dac.GetObjectClassName(address, 0, null, out var needed);
@@ -71,19 +95,15 @@ public class DacManager : IDisposable
             return null;
         }
 
-        Span<char> str = stackalloc char[(int)needed];
+        char* str = stackalloc char[(int)needed];
+        result = Dac.GetObjectClassName(address, needed, str, out _);
 
-        fixed (char* p = str)
+        if (!result)
         {
-            result = Dac.GetObjectClassName(address, needed, p, out _);
-
-            if (!result)
-            {
-                return null;
-            }
-
-            return new string(str);
+            return null;
         }
+
+        return new string(str);
     }
 
     public void Dispose()

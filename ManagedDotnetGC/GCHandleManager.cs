@@ -5,15 +5,12 @@ namespace ManagedDotnetGC;
 
 internal unsafe class GCHandleManager : IGCHandleManager
 {
-    private readonly NativeObjects.IGCToCLRInvoker _gcToClr;
     private readonly NativeObjects.IGCHandleManager _nativeObject;
     private readonly GCHandleStore _gcHandleStore;
 
-
-    public GCHandleManager(NativeObjects.IGCToCLRInvoker gcToClr)
+    public GCHandleManager()
     {
         _gcHandleStore = new GCHandleStore();
-        _gcToClr = gcToClr;
         _nativeObject = NativeObjects.IGCHandleManager.Wrap(this);
     }
 
@@ -23,7 +20,6 @@ internal unsafe class GCHandleManager : IGCHandleManager
 
     public bool Initialize()
     {
-        Write("GCHandleManager Initialize");
         return true;
     }
 
@@ -39,7 +35,6 @@ internal unsafe class GCHandleManager : IGCHandleManager
     public IntPtr CreateHandleStore()
     {
         Write("GCHandleManager CreateHandleStore");
-
         return default;
     }
 
@@ -48,72 +43,67 @@ internal unsafe class GCHandleManager : IGCHandleManager
         Write("GCHandleManager DestroyHandleStore");
     }
 
-    public unsafe OBJECTHANDLE CreateGlobalHandleOfType(GCObject* obj, HandleType type)
+    public unsafe ref ObjectHandle CreateGlobalHandleOfType(GCObject* obj, HandleType type)
     {
-        return _gcHandleStore.CreateHandleOfType(obj, type);
+        return ref _gcHandleStore.CreateHandleOfType(obj, type);
     }
 
-    public OBJECTHANDLE CreateDuplicateHandle(OBJECTHANDLE handle)
+    public ref ObjectHandle CreateDuplicateHandle(ref ObjectHandle handle)
     {
-        Write("GCHandleManager CreateDuplicateHandle");
-
-        return handle;
+        ref var newHandle = ref _gcHandleStore.CreateHandleOfType((GCObject*)handle.Object, handle.Type);
+        newHandle.ExtraInfo = handle.ExtraInfo;
+        return ref newHandle;
     }
 
-    public void DestroyHandleOfType(OBJECTHANDLE handle, HandleType type)
+    public void DestroyHandleOfType(ref ObjectHandle handle, HandleType type)
     {
         Write("GCHandleManager DestroyHandleOfType");
     }
 
-    public void DestroyHandleOfUnknownType(OBJECTHANDLE handle)
+    public void DestroyHandleOfUnknownType(ref ObjectHandle handle)
     {
         Write("GCHandleManager DestroyHandleOfUnknownType");
     }
 
-    public unsafe void SetExtraInfoForHandle(OBJECTHANDLE handle, HandleType type, void* pExtraInfo)
+    public unsafe void SetExtraInfoForHandle(ref ObjectHandle handle, HandleType type, nint extraInfo)
     {
-        Write("GCHandleManager SetExtraInfoForHandle");
+        handle.ExtraInfo = extraInfo;
     }
 
-    public unsafe void* GetExtraInfoFromHandle(OBJECTHANDLE handle)
+    public unsafe nint GetExtraInfoFromHandle(ref ObjectHandle handle)
     {
-        Write("GCHandleManager GetExtraInfoFromHandle");
-        return null;
+        return handle.ExtraInfo;
     }
 
-    public unsafe void StoreObjectInHandle(OBJECTHANDLE handle, GCObject* obj)
+    public unsafe void StoreObjectInHandle(ref ObjectHandle handle, GCObject* obj)
     {
-        Write($"GCHandleManager StoreObjectInHandle {handle} {(IntPtr)obj:x2}");
-        handle.SetObject((nint)obj);
+        handle.Object = (nint)obj;
     }
 
-    public unsafe bool StoreObjectInHandleIfNull(OBJECTHANDLE handle, GCObject* obj)
+    public unsafe bool StoreObjectInHandleIfNull(ref ObjectHandle handle, GCObject* obj)
     {
-        Write("GCHandleManager StoreObjectInHandleIfNull");
-        return false;
+        var result = InterlockedCompareExchangeObjectInHandle(ref handle, obj, null);        
+        return result == null;
     }
 
-    public unsafe void SetDependentHandleSecondary(OBJECTHANDLE handle, GCObject* obj)
+    public unsafe void SetDependentHandleSecondary(ref ObjectHandle handle, GCObject* obj)
     {
-        Write("GCHandleManager SetDependentHandleSecondary");
+        handle.ExtraInfo = (nint)obj;
     }
 
-    public unsafe GCObject* GetDependentHandleSecondary(OBJECTHANDLE handle)
+    public unsafe GCObject* GetDependentHandleSecondary(ref ObjectHandle handle)
     {
-        Write("GCHandleManager GetDependentHandleSecondary");
-        return null;
+        return (GCObject*)handle.ExtraInfo;
     }
 
-    public unsafe GCObject* InterlockedCompareExchangeObjectInHandle(OBJECTHANDLE handle, GCObject* obj, GCObject* comparandObject)
+    public unsafe GCObject* InterlockedCompareExchangeObjectInHandle(ref ObjectHandle handle, GCObject* obj, GCObject* comparandObject)
     {
-        Write("GCHandleManager InterlockedCompareExchangeObjectInHandle");
-        return null;
+        return (GCObject*)Interlocked.CompareExchange(ref handle.Object, (nint)obj, (nint)comparandObject);
     }
 
-    public HandleType HandleFetchType(OBJECTHANDLE handle)
+    public HandleType HandleFetchType(ref ObjectHandle handle)
     {
-        Write("GCHandleManager HandleFetchType");
-        return HandleType.HNDTYPE_WEAK_SHORT;
+        return handle.Type;
     }
 
     public unsafe void TraceRefCountedHandles(void* callback, uint* param1, uint* param2)

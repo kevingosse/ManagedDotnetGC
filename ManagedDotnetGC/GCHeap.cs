@@ -1,229 +1,45 @@
 ﻿using ManagedDotnetGC.Dac;
 using NativeObjects;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 using static ManagedDotnetGC.Log;
 
 namespace ManagedDotnetGC;
 
-internal unsafe class GCHeap : Interfaces.IGCHeap
+internal unsafe partial class GCHeap : Interfaces.IGCHeap
 {
-    private readonly IGCToCLRInvoker _gcToClr;
+    internal const int AllocationContextSize = 32 * 1024;
+    internal const int SegmentSize = AllocationContextSize * 128;
+    internal static readonly int SizeOfObject = sizeof(nint) * 3;
+
+    private IGCToCLRInvoker _gcToClr;
     private readonly GCHandleManager _gcHandleManager;
 
     private readonly IGCHeap _nativeObject;
     private DacManager? _dacManager;
 
+    private MethodTable* _freeObjectMethodTable;
+
+    private List<Segment> _segments = new();
+    private Segment _activeSegment;
+
+    private GCHandle _handle;
+    private Stack<IntPtr> _markStack = new();
+
     public GCHeap(IGCToCLRInvoker gcToClr)
     {
+        _handle = GCHandle.Alloc(this);
         _gcToClr = gcToClr;
-        _gcHandleManager = new GCHandleManager(gcToClr);
+        _gcHandleManager = new GCHandleManager();
 
         _nativeObject = IGCHeap.Wrap(this);
+        _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
+        Write($"Free Object Method Table: {(nint)_freeObjectMethodTable:x2}");
     }
 
     public IntPtr IGCHeapObject => _nativeObject;
     public IntPtr IGCHandleManagerObject => _gcHandleManager.IGCHandleManagerObject;
-
-    public void Destructor()
-    {
-        Write("IGCHeap Destructor");
-    }
-
-    public bool IsValidSegmentSize(nint size)
-    {
-        Write("IsValidSegmentSize");
-        return false;
-    }
-
-    public bool IsValidGen0MaxSize(nint size)
-    {
-        Write("IsValidGen0MaxSize");
-        return false;
-    }
-
-    public nint GetValidSegmentSize(bool large_seg = false)
-    {
-        Write("GetValidSegmentSize");
-        return 0;
-    }
-
-    public void SetReservedVMLimit(nint vmlimit)
-    {
-        Write("SetReservedVMLimit");
-    }
-
-    public void WaitUntilConcurrentGCComplete()
-    {
-        Write("WaitUntilConcurrentGCComplete");
-    }
-
-    public bool IsConcurrentGCInProgress()
-    {
-        Write("IsConcurrentGCInProgress");
-        return false;
-    }
-
-    public void TemporaryEnableConcurrentGC()
-    {
-        Write("TemporaryEnableConcurrentGC");
-    }
-
-    public void TemporaryDisableConcurrentGC()
-    {
-        Write("TemporaryDisableConcurrentGC");
-    }
-
-    public bool IsConcurrentGCEnabled()
-    {
-        Write("IsConcurrentGCEnabled");
-        return false;
-    }
-
-    public HResult WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout)
-    {
-        Write("WaitUntilConcurrentGCCompleteAsync");
-        return default;
-    }
-
-    public nint GetNumberOfFinalizable()
-    {
-        Write("GetNumberOfFinalizable");
-        return 0;
-    }
-
-    public unsafe GCObject* GetNextFinalizable()
-    {
-        Write("GetNextFinalizable");
-        return null;
-    }
-
-    public uint GetMemoryLoad()
-    {
-        Write("GetMemoryLoad");
-        return 0;
-    }
-
-    public int GetGcLatencyMode()
-    {
-        Write("GetGcLatencyMode");
-        return 0;
-    }
-
-    public int SetGcLatencyMode(int newLatencyMode)
-    {
-        Write("SetGcLatencyMode");
-        return 0;
-    }
-
-    public int GetLOHCompactionMode()
-    {
-        Write("GetLOHCompactionMode");
-        return 0;
-    }
-
-    public void SetLOHCompactionMode(int newLOHCompactionMode)
-    {
-        Write("SetLOHCompactionMode");
-    }
-
-    public bool RegisterForFullGCNotification(uint gen2Percentage, uint lohPercentage)
-    {
-        Write("RegisterForFullGCNotification");
-        return false;
-    }
-
-    public bool CancelFullGCNotification()
-    {
-        Write("CancelFullGCNotification");
-        return false;
-    }
-
-    public int WaitForFullGCApproach(int millisecondsTimeout)
-    {
-        Write("WaitForFullGCApproach");
-        return 0;
-    }
-
-    public int WaitForFullGCComplete(int millisecondsTimeout)
-    {
-        Write("WaitForFullGCComplete");
-        return 0;
-    }
-
-    public unsafe uint WhichGeneration(GCObject* obj)
-    {
-        Write("WhichGeneration");
-        return 0;
-    }
-
-    public int CollectionCount(int generation, int get_bgc_fgc_coutn)
-    {
-        Write("CollectionCount");
-        return 0;
-    }
-
-    public int StartNoGCRegion(ulong totalSize, bool lohSizeKnown, ulong lohSize, bool disallowFullBlockingGC)
-    {
-        Write("StartNoGCRegion");
-        return 0;
-    }
-
-    public int EndNoGCRegion()
-    {
-        Write("EndNoGCRegion");
-        return 0;
-    }
-
-    public nint GetTotalBytesInUse()
-    {
-        Write("GetTotalBytesInUse");
-        return 0;
-    }
-
-    public ulong GetTotalAllocatedBytes()
-    {
-        Write("GetTotalAllocatedBytes");
-        return 0;
-    }
-
-    public HResult GarbageCollect(int generation, bool low_memory_p, int mode)
-    {
-        Write("GarbageCollect");
-
-        _gcHandleManager.Store.DumpHandles(_dacManager);
-
-        return HResult.S_OK;
-    }
-
-    public uint GetMaxGeneration()
-    {
-        Write("GetMaxGeneration");
-        return 2;
-    }
-
-    public unsafe void SetFinalizationRun(GCObject* obj)
-    {
-        Write("SetFinalizationRun");
-    }
-
-    public unsafe bool RegisterForFinalization(int gen, GCObject* obj)
-    {
-        Write("RegisterForFinalization");
-        return false;
-    }
-
-    public int GetLastGCPercentTimeInGC()
-    {
-        Write("GetLastGCPercentTimeInGC");
-        return 0;
-    }
-
-    public nint GetLastGCGenerationSize(int gen)
-    {
-        Write("GetLastGCGenerationSize");
-        return 0;
-    }
 
     public HResult Initialize()
     {
@@ -234,353 +50,371 @@ internal unsafe class GCHeap : Interfaces.IGCHeap
             _dacManager = dacManager;
         }
 
-        var parameters = new WriteBarrierParameters();
+        _activeSegment = new(SegmentSize);
+        _segments.Add(_activeSegment);
 
-        parameters.operation = WriteBarrierOp.Initialize;
-        parameters.is_runtime_suspended = true;
-        parameters.requires_upper_bounds_check = false; // Actually ignored because Initialize
-        //parameters.card_table = (uint*)Marshal.AllocHGlobal(sizeof(nint) * 2);
-        parameters.ephemeral_low = (byte*)(~0);
-        //parameters.ephemeral_high = (byte*)1;
+        var parameters = new WriteBarrierParameters
+        {
+            operation = WriteBarrierOp.Initialize,
+            is_runtime_suspended = true,
+            ephemeral_low = -1
+        };
 
         _gcToClr.StompWriteBarrier(&parameters);
-
-        //parameters.operation = WriteBarrierOp.StompResize;
-
-        //_gcToClr.StompWriteBarrier(Unsafe.AsPointer(ref parameters));
 
         return HResult.S_OK;
     }
 
-    public unsafe bool IsPromoted(GCObject* obj)
+    public HResult GarbageCollect(int generation, bool low_memory_p, int mode)
     {
-        Write("IsPromoted");
-        return false;
+        Write($"GarbageCollect({generation}, {low_memory_p}, {mode})");
+
+        _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
+
+        FixAllocContexts();
+
+        Write("Mark phase");
+        MarkPhase();
+
+        Write("Sweep phase");
+        SweepPhase();
+
+        // DumpHeap();
+
+        // TODO: when to call?
+        // _gcToClr.EnableFinalization(true);
+
+        _gcToClr.RestartEE(finishedGC: true);
+
+        return HResult.S_OK;
     }
 
-    public unsafe bool IsHeapPointer(IntPtr obj, bool small_heap_only)
+    private void SweepPhase()
     {
-        Write("IsHeapPointer");
-        return false;
+        Write("Updating weak references");
+        UpdateWeakReferences();
+        Sweep();
     }
 
-    public uint GetCondemnedGeneration()
+    private void MarkPhase()
     {
-        Write("GetCondemnedGeneration");
-        return 0;
+        // TODO: Check what need to be set on ScanContext
+        ScanContext scanContext = default;
+        scanContext.promotion = true;
+        scanContext._unused1 = GCHandle.ToIntPtr(_handle);
+
+        Write("Scan roots");
+        var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
+        _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
+
+        // TODO: handles are roots too
+        // TODO: dependent handles
+        // TODO: Weak references (+ short/long weak refs)
+        // TODO: ScanForFinalization
+        // TODO: SyncBlockCache
+
+        // Order in real GC:
+        // Dependent handles
+        // Short weak refs
+        // ScanForFinalization
+        // Long weak refs
+
+        ScanHandles();
     }
 
-    public bool IsGCInProgressHelper(bool bConsiderGCStart = false)
+    public void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
     {
-        Write("IsGCInProgressHelper");
-        return false;
+        FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
     }
 
-    public uint GetGcCount()
+    public bool IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
     {
-        Write("GetGcCount");
-        return 0;
+        return true;
     }
 
-    public unsafe bool IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
+    public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
     {
-        Write("IsThreadUsingAllocationContextHeap");
-        return false;
-    }
-
-    public unsafe bool IsEphemeral(GCObject* obj)
-    {
-        Write("IsEphemeral");
-        return false;
-    }
-
-    public uint WaitUntilGCComplete(bool bConsiderGCStart = false)
-    {
-        Write("WaitUntilGCComplete");
-        return 0;
-    }
-
-    public unsafe void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
-    {
-        Write("FixAllocContext");
-    }
-
-    public nint GetCurrentObjSize()
-    {
-        Write("GetCurrentObjSize");
-        return 0;
-    }
-
-    public void SetGCInProgress(bool fInProgress)
-    {
-        Write("SetGCInProgress");
-    }
-
-    public bool RuntimeStructuresValid()
-    {
-        Write("RuntimeStructuresValid");
-        return false;
-    }
-
-    public void SetSuspensionPending(bool fSuspensionPending)
-    {
-        Write("SetSuspensionPending");
-    }
-
-    public void SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
-    {
-        Write("SetYieldProcessorScalingFactor");
-    }
-
-    public void Shutdown()
-    {
-        Write("Shutdown");
-    }
-
-    public nint GetLastGCStartTime(int generation)
-    {
-        Write("GetLastGCStartTime");
-        return 0;
-    }
-
-    public nint GetLastGCDuration(int generation)
-    {
-        Write("GetLastGCDuration");
-        return 0;
-    }
-
-    public nint GetNow()
-    {
-        Write("GetNow");
-        return 0;
-    }
-
-    public GCObject* Alloc(gc_alloc_context* acontext, nint size, uint flags)
-    {
-        Write($"Alloc: {size} (alloc context: {(IntPtr)acontext:x2}, start: {acontext->alloc_ptr:x2}, size: {size:x2}, limit: {acontext->alloc_limit:x2})");
-
-        var result = acontext->alloc_ptr;
+        var result = acontext.alloc_ptr;
         var advance = result + size;
 
-        if (advance <= acontext->alloc_limit)
+        // TODO: Add object to finalization queue if needed
+        // TODO: How to recognize critical finalizers?
+
+        if (advance <= acontext.alloc_limit)
         {
-            acontext->alloc_ptr = advance;
+            // There is enough room left in the allocation context
+            acontext.alloc_ptr = advance;
             return (GCObject*)result;
         }
 
-        int beginGap = 24;
-        int growthSize = 16 * 1024 * 1024;
+        // We need to allocate a new allocation context
+        FixAllocContext(ref acontext);
 
-        var newPages = (IntPtr)NativeMemory.AllocZeroed((nuint)growthSize);
+        var minimumSize = size + SizeOfObject;
 
-        var allocationStart = newPages + beginGap;
-        acontext->alloc_ptr = allocationStart + size;
-        acontext->alloc_limit = newPages + growthSize;
+        if (minimumSize > SegmentSize)
+        {
+            // We need a dedicated segment for this allocation
+            var segment = new Segment(size);
+            segment.Current = segment.End;
 
-        return (GCObject*)allocationStart;
+            lock (_segments)
+            {
+                _segments.Add(segment);
+            }
+
+            acontext.alloc_ptr = 0;
+            acontext.alloc_limit = 0;
+
+            result = Align(segment.Start + IntPtr.Size);
+
+            segment.MarkObject(result);
+
+            return (GCObject*)result;
+        }
+
+        lock (_segments)
+        {
+            if (_activeSegment.Current + minimumSize >= _activeSegment.End)
+            {
+                // The active segment is full, allocate a new one
+                _activeSegment = new Segment(SegmentSize);
+                _segments.Add(_activeSegment);
+            }
+
+            var desiredSize = Math.Min(Math.Max(minimumSize, AllocationContextSize), _activeSegment.End - _activeSegment.Current);
+
+            result = _activeSegment.Current + IntPtr.Size;
+            _activeSegment.Current += desiredSize;
+
+            acontext.alloc_ptr = Align(result + size);
+            acontext.alloc_limit = _activeSegment.Current - IntPtr.Size * 2;
+
+            _activeSegment.MarkObject(result);
+
+            return (GCObject*)result;
+        }
     }
 
-    public unsafe void PublishObject(IntPtr obj)
+    [UnmanagedCallersOnly]
+    private static void ScanRootsCallback(GCObject** obj, ScanContext* context, uint flags)
     {
-        Write($"PublishObject: {obj:x2}");
+        var handle = GCHandle.FromIntPtr(context->_unused1);
+        var gcHeap = (GCHeap)handle.Target!;
+        gcHeap.ScanRoots(*obj, context, (GcCallFlags)flags);
     }
 
-    public void SetWaitForGCEvent()
+    private void ScanHandles()
     {
-        Write("SetWaitForGCEvent");
+        foreach (var handle in _gcHandleManager.Store.AsSpan())
+        {
+            if (handle.Type < HandleType.HNDTYPE_STRONG)
+            {
+                continue;
+            }
+
+            var obj = (GCObject*)handle.Object;
+            if (obj != null)
+            {
+                ScanRoots(obj, null, default);
+            }
+        }
     }
 
-    public void ResetWaitForGCEvent()
+    private Segment? FindSegmentContaining(IntPtr addr)
     {
-        Write("ResetWaitForGCEvent");
-    }
+        for (int i = 0; i < _segments.Count; i++)
+        {
+            var segment = _segments[i];
 
-    public unsafe bool IsLargeObject(GCObject* pObj)
-    {
-        Write("IsLargeObject");
-        return false;
-    }
+            if (addr >= segment.Start && addr < segment.End)
+            {
+                return segment;
+            }
+        }
 
-    public unsafe void ValidateObjectMember(GCObject* obj)
-    {
-        Write("ValidateObjectMember");
-    }
-
-    public unsafe GCObject* NextObj(GCObject* obj)
-    {
-        Write("NextObj");
         return null;
     }
 
-    public unsafe GCObject* GetContainingObject(IntPtr pInteriorPtr, bool fCollectedGenOnly)
+    private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags)
     {
-        Write("GetContainingObject");
-        return null;
+        if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
+        {
+            if ((IntPtr)obj == 0)
+            {
+                return;
+            }
+
+            // Find the segment containing the interior pointer
+            var segment = FindSegmentContaining((IntPtr)obj);
+
+            if (segment == null)
+            {
+                Write($"  No segment found for interior pointer {(IntPtr)obj:x2}");
+                return;
+            }
+
+            var objectStartPtr = segment.FindClosestObjectBelow((IntPtr)obj);
+
+            foreach (var ptr in WalkHeapObjects(objectStartPtr - IntPtr.Size, (IntPtr)obj))
+            {
+                var o = (GCObject*)ptr;
+                var size = o->ComputeSize();
+
+                if ((IntPtr)o <= (IntPtr)obj && (IntPtr)obj < (IntPtr)o + (nint)size)
+                {
+                    obj = o;
+                    goto found;
+                }
+            }
+
+            Write($"  No object found for interior pointer {(IntPtr)obj:x2}");
+            return;
+
+        found:
+            ;
+        }
+
+        _markStack.Push((IntPtr)obj);
+
+        while (_markStack.Count > 0)
+        {
+            var ptr = _markStack.Pop();
+            var o = (GCObject*)ptr;
+
+            if (ptr == IntPtr.Zero || o->IsMarked())
+            {
+                continue;
+            }
+
+            o->EnumerateObjectReferences(_markStack.Push);
+            o->Mark();
+        }
     }
 
-    public unsafe void DiagWalkObject(GCObject* obj, void* fn, void* context)
+    private void UpdateWeakReferences()
     {
-        Write("DiagWalkObject");
+        // TODO: Handle long weak references
+
+        var span = _gcHandleManager.Store.AsSpan();
+
+        for (int i = 0; i < span.Length; i++)
+        {
+            ref var handle = ref span[i];
+
+            if (handle.Type >= HandleType.HNDTYPE_STRONG)
+            {
+                continue;
+            }
+
+            var obj = (GCObject*)handle.Object;
+            if (obj != null && !obj->IsMarked())
+            {
+                handle.Object = IntPtr.Zero;
+            }
+        }
     }
 
-    public unsafe void DiagWalkObject2(GCObject* obj, void* fn, void* context)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static nint Align(nint address) => (address + (IntPtr.Size - 1)) & ~(IntPtr.Size - 1);
+
+    [UnmanagedCallersOnly]
+    private static void FixAllocContextCallback(gc_alloc_context* acontext, IntPtr arg)
     {
-        Write("DiagWalkObject2");
+        var handle = GCHandle.FromIntPtr(arg);
+        var gcHeap = (GCHeap)handle.Target!;
+        gcHeap.FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
     }
 
-    public unsafe void DiagWalkHeap(void* fn, void* context, int gen_number, bool walk_large_object_heap_p)
+    private void FixAllocContexts()
     {
-        Write("DiagWalkHeap");
+        var callback = (delegate* unmanaged<gc_alloc_context*, IntPtr, void>)&FixAllocContextCallback;
+        _gcToClr.GcEnumAllocContexts((IntPtr)callback, GCHandle.ToIntPtr(_handle));
     }
 
-    public unsafe void DiagWalkSurvivorsWithType(void* gc_context, void* fn, void* diag_context, walk_surv_type type, int gen_number = -1)
+    private void FixAllocContext(ref gc_alloc_context acontext)
     {
-        Write("DiagWalkSurvivorsWithType");
+        if (acontext.alloc_ptr == 0)
+        {
+            return;
+        }
+
+        AllocateFreeObject(acontext.alloc_ptr, (uint)(acontext.alloc_limit - acontext.alloc_ptr));
+
+        // Invalidate the allocation context so threads get a fresh one
+        acontext.alloc_ptr = 0;
+        acontext.alloc_limit = 0;
     }
 
-    public unsafe void DiagWalkFinalizeQueue(void* gc_context, void* fn)
+    private void AllocateFreeObject(nint address, uint length)
     {
-        Write("DiagWalkFinalizeQueue");
+        var freeObject = (GCObject*)address;
+        freeObject->RawMethodTable = _freeObjectMethodTable;
+        freeObject->Length = length;
     }
 
-    public unsafe void DiagScanFinalizeQueue(void* fn, void* context)
+    private IEnumerable<IntPtr> WalkHeapObjects()
     {
-        Write("DiagScanFinalizeQueue");
+        foreach (var segment in _segments)
+        {
+            foreach (var obj in WalkHeapObjects(segment.Start, segment.Current))
+            {
+                yield return obj;
+            }
+        }
     }
 
-    public unsafe void DiagScanHandles(void* fn, int gen_number, void* context)
+    private IEnumerable<IntPtr> WalkHeapObjects(nint start, nint end)
     {
-        Write("DiagScanHandles");
+        var ptr = start + IntPtr.Size;
+
+        while (ptr < end)
+        {
+            yield return ptr;
+            ptr = FindNextObject(ptr);
+        }
+
+        static unsafe nint FindNextObject(nint current)
+        {
+            var obj = (GCObject*)current;
+            return Align(current + (nint)obj->ComputeSize());
+        }
     }
 
-    public unsafe void DiagScanDependentHandles(void* fn, int gen_number, void* context)
+    private void DumpHeap()
     {
-        Write("DiagScanDependentHandles");
+        foreach (var ptr in WalkHeapObjects())
+        {
+            var obj = (GCObject*)ptr;
+            bool isFreeObject = obj->MethodTable == _freeObjectMethodTable;
+
+            var name = isFreeObject ? "Free" : _dacManager?.GetObjectName(new(ptr));
+
+            Write($"{ptr:x2} - {name?.PadRight(50)}");
+        }
     }
 
-    public unsafe void DiagDescrGenerations(void* fn, void* context)
+    private void Sweep()
     {
-        Write("DiagDescrGenerations");
-    }
+        foreach (var ptr in WalkHeapObjects())
+        {
+            var obj = (GCObject*)ptr;
 
-    public void DiagTraceGCSegments()
-    {
-        Write("DiagTraceGCSegments");
-    }
+            bool marked = obj->IsMarked();
+            obj->Unmark();
 
-    public unsafe void DiagGetGCSettings(void* settings)
-    {
-        Write("DiagGetGCSettings");
-    }
+            bool isFreeObject = obj->MethodTable == _freeObjectMethodTable;
 
-    public unsafe bool StressHeap(gc_alloc_context* acontext)
-    {
-        Write("StressHeap");
-        return false;
-    }
+            if (!marked && !isFreeObject)
+            {
+                var endPtr = Align(ptr + (nint)obj->ComputeSize());
 
-    public unsafe void* RegisterFrozenSegment(segment_info* pseginfo)
-    {
-        Write("RegisterFrozenSegment");
-        return pseginfo;
-    }
+                // Clear the memory
+                new Span<byte>((void*)(ptr - sizeof(nint)), (int)(endPtr - ptr)).Clear();
 
-    public unsafe void UnregisterFrozenSegment(void* seg)
-    {
-        Write("UnregisterFrozenSegment");
-    }
-
-    public unsafe bool IsInFrozenSegment(GCObject* obj)
-    {
-        Write("IsInFrozenSegment");
-        return false;
-    }
-
-    public void ControlEvents(GCEventKeyword keyword, GCEventLevel level)
-    {
-        Write("ControlEvents");
-    }
-
-    public void ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
-    {
-        Write("ControlPrivateEvents");
-    }
-
-    public unsafe uint GetGenerationWithRange(GCObject* obj, byte** ppStart, byte** ppAllocated, byte** ppReserved)
-    {
-        Write("GetGenerationWithRange");
-        return 0;
-    }
-
-    public long GetTotalPauseDuration()
-    {
-        Write("GetTotalPauseDuration");
-        return 0;
-    }
-
-    public void EnumerateConfigurationValues(void* context, nint configurationValueFunc)
-    {
-        Write("EnumerateConfigurationValues");
-    }
-
-    public void UpdateFrozenSegment(nint seg, nint allocated, nint committed)
-    {
-        Write($"UpdateFrozenSegment {seg:x2} {allocated:x2} {committed:x2}");
-    }
-
-    public int RefreshMemoryLimit()
-    {
-        Write("RefreshMemoryLimit");
-        return 0;
-    }
-
-    public enable_no_gc_region_callback_status EnableNoGCRegionCallback(nint callback, ulong callback_threshold)
-    {
-        Write("EnableNoGCRegionCallback");
-        return default;
-    }
-
-    public nint GetExtraWorkForFinalization()
-    {
-        Write("GetExtraWorkForFinalization");
-        return 0;
-    }
-
-    public ulong GetGenerationBudget(int generation)
-    {
-        Write("GetGenerationBudget");
-        return 0;
-    }
-
-    public nint GetLOHThreshold()
-    {
-        Write("GetLOHThreshold");
-        return 0;
-    }
-
-    public void DiagWalkHeapWithACHandling(nint fn, void* context, int gen_number, bool walk_large_object_heap_p)
-    {
-        Write("DiagWalkHeapWithACHandling");
-    }
-
-    public void GetMemoryInfo(out ulong highMemLoadThresholdBytes, out ulong totalAvailableMemoryBytes, out ulong lastRecordedMemLoadBytes, out ulong lastRecordedHeapSizeBytes, out ulong lastRecordedFragmentationBytes, out ulong totalCommittedBytes, out ulong promotedBytes, out ulong pinnedObjectCount, out ulong finalizationPendingCount, out ulong index, out uint generation, out uint pauseTimePct, out bool isCompaction, out bool isConcurrent, out ulong genInfoRaw, out ulong pauseInfoRaw, int kind)
-    {
-        Write("GetMemoryInfo");
-        highMemLoadThresholdBytes = 0;
-        totalAvailableMemoryBytes = 0;
-        lastRecordedMemLoadBytes = 0;
-        lastRecordedHeapSizeBytes = 0;
-        lastRecordedFragmentationBytes = 0;
-        totalCommittedBytes = 0;
-        promotedBytes = 0;
-        pinnedObjectCount = 0;
-        finalizationPendingCount = 0;
-        index = 0;
-        generation = 0;
-        pauseTimePct = 0;
-        isCompaction = false;
-        isConcurrent = false;
-        genInfoRaw = 0;
-        pauseInfoRaw = 0;
+                // Allocate a free object to keep the heap walkable
+                AllocateFreeObject(ptr, (uint)(endPtr - ptr - SizeOfObject));
+            }
+        }
     }
 }
