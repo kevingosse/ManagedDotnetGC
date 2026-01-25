@@ -407,13 +407,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             if (!marked && !isFreeObject)
             {
-                var endPtr = Align(ptr + (nint)obj->ComputeSize());
+                var startPtr = ptr - IntPtr.Size; // Include the header
+                var endPtr = Align(startPtr + (nint)obj->ComputeSize());
 
                 // Clear the memory
-                new Span<byte>((void*)(ptr - sizeof(nint)), (int)(endPtr - ptr)).Clear();
+                new Span<byte>((void*)startPtr, (int)(endPtr - startPtr)).Clear();
 
                 // Allocate a free object to keep the heap walkable
-                AllocateFreeObject(ptr, (uint)(endPtr - ptr - SizeOfObject));
+                AllocateFreeObject(ptr, (uint)(endPtr - startPtr - SizeOfObject));
             }
         }
     }
