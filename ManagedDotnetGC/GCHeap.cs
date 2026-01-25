@@ -238,13 +238,13 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags)
     {
+        if ((IntPtr)obj == 0)
+        {
+            return;
+        }
+
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
-            if ((IntPtr)obj == 0)
-            {
-                return;
-            }
-
             // Find the segment containing the interior pointer
             var segment = FindSegmentContaining((IntPtr)obj);
 
@@ -282,7 +282,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var ptr = _markStack.Pop();
             var o = (GCObject*)ptr;
 
-            if (ptr == IntPtr.Zero || o->IsMarked())
+            if (o->IsMarked())
             {
                 continue;
             }
