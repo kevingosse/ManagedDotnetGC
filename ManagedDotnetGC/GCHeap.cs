@@ -1,6 +1,5 @@
 ﻿using ManagedDotnetGC.Dac;
 using NativeObjects;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -72,13 +71,36 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
 
-        _gcHandleManager.Store.DumpHandles(_dacManager);
+        FixAllocContexts();
 
-        var callback = (delegate* unmanaged<gc_alloc_context*, IntPtr, void>)&EnumAllocContextCallback;
-        _gcToClr.GcEnumAllocContexts((IntPtr)callback, GCHandle.ToIntPtr(_handle));
+        Write("Mark phase");
+        MarkPhase();
 
+        Write("Sweep phase");
+        SweepPhase();
+
+        // DumpHeap();
+
+        // TODO: when to call?
+        // _gcToClr.EnableFinalization(true);
+
+        _gcToClr.RestartEE(finishedGC: true);
+
+        return HResult.S_OK;
+    }
+
+    private void SweepPhase()
+    {
+        Write("Updating weak references");
+        UpdateWeakReferences();
+        Sweep();
+    }
+
+    private void MarkPhase()
+    {
         // TODO: Check what need to be set on ScanContext
         ScanContext scanContext = default;
+        scanContext.promotion = true;
         scanContext._unused1 = GCHandle.ToIntPtr(_handle);
 
         Write("Scan roots");
@@ -98,19 +120,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         // Long weak refs
 
         ScanHandles();
-        Write("Updating weak references");
-        UpdateWeakReferences();
-
-        Sweep();
-
-        // DumpHeap();
-
-        // TODO: when to call?
-        // _gcToClr.EnableFinalization(true);
-
-        _gcToClr.RestartEE(finishedGC: true);
-
-        return HResult.S_OK;
     }
 
     public void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
@@ -192,7 +201,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         var handle = GCHandle.FromIntPtr(context->_unused1);
         var gcHeap = (GCHeap)handle.Target!;
-        gcHeap.ScanRoots(*obj, context, (GcCallFlags)flags, "root");
+        gcHeap.ScanRoots(*obj, context, (GcCallFlags)flags);
     }
 
     private void ScanHandles()
@@ -207,7 +216,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var obj = (GCObject*)handle.Object;
             if (obj != null)
             {
-                ScanRoots(obj, null, default, "handle");
+                ScanRoots(obj, null, default);
             }
         }
     }
@@ -227,7 +236,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         return null;
     }
 
-    private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags, string cause)
+    private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags)
     {
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
@@ -310,11 +319,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private static nint Align(nint address) => (address + (IntPtr.Size - 1)) & ~(IntPtr.Size - 1);
 
     [UnmanagedCallersOnly]
-    private static void EnumAllocContextCallback(gc_alloc_context* acontext, IntPtr arg)
+    private static void FixAllocContextCallback(gc_alloc_context* acontext, IntPtr arg)
     {
         var handle = GCHandle.FromIntPtr(arg);
         var gcHeap = (GCHeap)handle.Target!;
         gcHeap.FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
+    }
+
+    private void FixAllocContexts()
+    {
+        var callback = (delegate* unmanaged<gc_alloc_context*, IntPtr, void>)&FixAllocContextCallback;
+        _gcToClr.GcEnumAllocContexts((IntPtr)callback, GCHandle.ToIntPtr(_handle));
     }
 
     private void FixAllocContext(ref gc_alloc_context acontext)
@@ -390,12 +405,15 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             bool isFreeObject = obj->MethodTable == _freeObjectMethodTable;
 
-            var nextPtr = Align(ptr + (nint)obj->ComputeSize());
-
             if (!marked && !isFreeObject)
             {
-                new Span<byte>((void*)(ptr - sizeof(nint)), (int)(nextPtr - ptr)).Clear();
-                AllocateFreeObject(ptr, (uint)(nextPtr - ptr - SizeOfObject));
+                var endPtr = Align(ptr + (nint)obj->ComputeSize());
+
+                // Clear the memory
+                new Span<byte>((void*)(ptr - sizeof(nint)), (int)(endPtr - ptr)).Clear();
+
+                // Allocate a free object to keep the heap walkable
+                AllocateFreeObject(ptr, (uint)(endPtr - ptr - SizeOfObject));
             }
         }
     }
