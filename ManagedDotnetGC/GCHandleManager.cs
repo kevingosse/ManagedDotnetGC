@@ -43,7 +43,7 @@ internal unsafe class GCHandleManager : IGCHandleManager
         Write("GCHandleManager DestroyHandleStore");
     }
 
-    public unsafe ref ObjectHandle CreateGlobalHandleOfType(GCObject* obj, HandleType type)
+    public ref ObjectHandle CreateGlobalHandleOfType(GCObject* obj, HandleType type)
     {
         return ref _gcHandleStore.CreateHandleOfType(obj, type);
     }
@@ -65,38 +65,38 @@ internal unsafe class GCHandleManager : IGCHandleManager
         Write("GCHandleManager DestroyHandleOfUnknownType");
     }
 
-    public unsafe void SetExtraInfoForHandle(ref ObjectHandle handle, HandleType type, nint extraInfo)
+    public void SetExtraInfoForHandle(ref ObjectHandle handle, HandleType type, nint extraInfo)
     {
         handle.ExtraInfo = extraInfo;
     }
 
-    public unsafe nint GetExtraInfoFromHandle(ref ObjectHandle handle)
+    public nint GetExtraInfoFromHandle(ref ObjectHandle handle)
     {
         return handle.ExtraInfo;
     }
 
-    public unsafe void StoreObjectInHandle(ref ObjectHandle handle, GCObject* obj)
+    public void StoreObjectInHandle(ref ObjectHandle handle, GCObject* obj)
     {
         handle.Object = (nint)obj;
     }
 
-    public unsafe bool StoreObjectInHandleIfNull(ref ObjectHandle handle, GCObject* obj)
+    public bool StoreObjectInHandleIfNull(ref ObjectHandle handle, GCObject* obj)
     {
         var result = InterlockedCompareExchangeObjectInHandle(ref handle, obj, null);        
         return result == null;
     }
 
-    public unsafe void SetDependentHandleSecondary(ref ObjectHandle handle, GCObject* obj)
+    public void SetDependentHandleSecondary(ref ObjectHandle handle, GCObject* obj)
     {
         handle.ExtraInfo = (nint)obj;
     }
 
-    public unsafe GCObject* GetDependentHandleSecondary(ref ObjectHandle handle)
+    public GCObject* GetDependentHandleSecondary(ref ObjectHandle handle)
     {
         return (GCObject*)handle.ExtraInfo;
     }
 
-    public unsafe GCObject* InterlockedCompareExchangeObjectInHandle(ref ObjectHandle handle, GCObject* obj, GCObject* comparandObject)
+    public GCObject* InterlockedCompareExchangeObjectInHandle(ref ObjectHandle handle, GCObject* obj, GCObject* comparandObject)
     {
         return (GCObject*)Interlocked.CompareExchange(ref handle.Object, (nint)obj, (nint)comparandObject);
     }
@@ -106,7 +106,7 @@ internal unsafe class GCHandleManager : IGCHandleManager
         return handle.Type;
     }
 
-    public unsafe void TraceRefCountedHandles(void* callback, uint* param1, uint* param2)
+    public void TraceRefCountedHandles(void* callback, uint* param1, uint* param2)
     {
         Write("GCHandleManager TraceRefCountedHandles");
     }

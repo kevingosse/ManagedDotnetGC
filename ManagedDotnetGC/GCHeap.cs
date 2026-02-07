@@ -108,7 +108,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
 
         // TODO: handles are roots too
-        // TODO: dependent handles
         // TODO: Weak references (+ short/long weak refs)
         // TODO: ScanForFinalization
         // TODO: SyncBlockCache
@@ -120,6 +119,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         // Long weak refs
 
         ScanHandles();
+        ScanDependentHandles();
     }
 
     public void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
@@ -208,7 +208,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         foreach (var handle in _gcHandleManager.Store.AsSpan())
         {
-            if (handle.Type < HandleType.HNDTYPE_STRONG)
+            if (handle.Type < HandleType.HNDTYPE_STRONG || handle.Type == HandleType.HNDTYPE_DEPENDENT)
             {
                 continue;
             }
@@ -219,6 +219,42 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 ScanRoots(obj, null, default);
             }
         }
+    }
+
+    private void ScanDependentHandles()
+    {
+        bool markedObjects;
+        ScanContext scanContext = default;
+
+        do
+        {
+            markedObjects = false;
+
+            foreach (var handle in _gcHandleManager.Store.AsSpan())
+            {
+                if (handle.Type != HandleType.HNDTYPE_DEPENDENT)
+                {
+                    continue;
+                }
+
+                // Target: primary
+                // Dependent: secondary
+                var primary = (GCObject*)handle.Object;
+                var secondary = (GCObject*)handle.ExtraInfo;
+
+                if (primary == null || secondary == null)
+                {
+                    continue;
+                }
+
+                if (primary->IsMarked() && !secondary->IsMarked())
+                {
+                    ScanRoots(secondary, &scanContext, default);
+                    markedObjects = true;
+                }
+            }
+        }
+        while (markedObjects);
     }
 
     private Segment? FindSegmentContaining(IntPtr addr)
