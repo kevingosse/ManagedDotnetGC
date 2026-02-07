@@ -1,20 +1,25 @@
-﻿using Spectre.Console;
 using System.Runtime.CompilerServices;
+using TestApp.TestFramework;
 
-namespace TestApp;
+namespace TestApp.Tests;
 
-internal class WeakReferenceTest
+/// <summary>
+/// Tests weak reference behavior
+/// </summary>
+public class WeakReferenceTest : TestBase
 {
-    public static bool Run()
+    public WeakReferenceTest()
+        : base("Weak References", "Verifies that weak references work correctly with GC")
     {
-        AnsiConsole.MarkupLine("[bold yellow]WeakReference Test[/]");
+    }
 
-        AnsiConsole.MarkupLine("[bold yellow]WeakReference[/]");
+    public override bool Run()
+    {
+        // Test WeakReference
         var weakRef = GetWeakReference();
 
         if (!weakRef.IsAlive)
         {
-            AnsiConsole.MarkupLine("[bold red]Error: Weak reference should be alive initially[/]");
             return false;
         }
 
@@ -22,24 +27,21 @@ internal class WeakReferenceTest
 
         if (weakRef.IsAlive)
         {
-            AnsiConsole.MarkupLine("[bold red]Error: Weak reference should not be alive after GC[/]");
             return false;
         }
 
-        AnsiConsole.MarkupLine("[bold yellow]WeakReference<T>[/]");
+        // Test WeakReference<T>
         var typedWeakRef = GetTypedWeakReference();
 
         if (!IsAlive(typedWeakRef))
         {
-            AnsiConsole.MarkupLine("[bold red]Error: Typed weak reference should be alive initially[/]");
             return false;
         }
 
-        GC.Collect();        
+        GC.Collect();
 
         if (IsAlive(typedWeakRef))
         {
-            AnsiConsole.MarkupLine("[bold red]Error: Typed weak reference should not be alive after GC[/]");
             return false;
         }
 
@@ -60,7 +62,6 @@ internal class WeakReferenceTest
         return new WeakReference<int[]>(target);
     }
 
-    // IsAlive is moved to a separate helper, because the out parameter creates a root that keeps the target alive
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static bool IsAlive<T>(WeakReference<T> weakRef) where T : class
     {

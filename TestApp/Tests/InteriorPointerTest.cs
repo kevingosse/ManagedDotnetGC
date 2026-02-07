@@ -1,13 +1,19 @@
-﻿using Spectre.Console;
+using TestApp.TestFramework;
 
-namespace TestApp;
+namespace TestApp.Tests;
 
-internal class InteriorPointerTest
+/// <summary>
+/// Tests interior pointer handling during GC
+/// </summary>
+public class InteriorPointerTest : TestBase
 {
-    public static bool Run()
+    public InteriorPointerTest()
+        : base("Interior Pointers", "Verifies that objects remain alive when only interior pointers exist")
     {
-        AnsiConsole.MarkupLine("[bold yellow]Interior pointer Test[/]");
+    }
 
+    public override bool Run()
+    {
         ref var interiorPointerSmall = ref GetInteriorPointer(10, out var weakRefSmall);
         ref var interiorPointerLarge = ref GetInteriorPointer(10 * 1024 * 1024, out var weakRefLarge);
 
@@ -15,13 +21,11 @@ internal class InteriorPointerTest
 
         if (!weakRefSmall.IsAlive)
         {
-            AnsiConsole.MarkupLine("[bold red]Error: Weak reference should be alive after GC (small)[/]");
             return false;
         }
 
         if (!weakRefLarge.IsAlive)
         {
-            AnsiConsole.MarkupLine("[bold red]Error: Weak reference should be alive after GC (large)[/]");
             return false;
         }
 
@@ -34,7 +38,6 @@ internal class InteriorPointerTest
     private static ref int GetInteriorPointer(int size, out WeakReference weakRef)
     {
         var array = new int[size];
-        AnsiConsole.WriteLine($"Array address: {Utils.GetAddress(array):x2}");
         weakRef = new WeakReference(array);
         return ref array[5];
     }

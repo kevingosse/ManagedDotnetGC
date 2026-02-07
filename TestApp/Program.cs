@@ -1,120 +1,49 @@
-﻿using Spectre.Console;
-using System.Runtime;
-using System.Runtime.CompilerServices;
-using TestApp;
+using TestApp.TestFramework;
+using TestApp.Tests;
 
-Console.WriteLine("Hello, World!");
+var runner = new TestRunner();
 
-if (!InteriorPointerTest.Run())
-{
-    AnsiConsole.MarkupLine("[bold red]WeakReferenceTest failed[/]");
-    return;
-}
+// Basic Functionality Tests
+runner.RegisterTest(new BasicAllocationTest());
+runner.RegisterTest(new LargeObjectTest());
+runner.RegisterTest(new ArrayVariantTest());
+runner.RegisterTest(new EmptyObjectTest());
+runner.RegisterTest(new ZeroLengthArrayTest());
+runner.RegisterTest(new MultiDimensionalArrayTest());
+runner.RegisterTest(new JaggedArrayTest());
+runner.RegisterTest(new ArrayOfStructsTest());
 
-//while (true)
-//{
-//    new NonFinalizableObject();
-//    new FinalizableObject();
-//    Console.ReadLine();
-//}
+// GC Correctness Tests
+runner.RegisterTest(new WeakReferenceTest());
+runner.RegisterTest(new InteriorPointerTest());
+runner.RegisterTest(new StaticRootTest());
+runner.RegisterTest(new ReferenceGraphTest());
+runner.RegisterTest(new CircularReferenceTest());
+runner.RegisterTest(new SelfReferencingObjectTest());
+runner.RegisterTest(new MultipleCollectionTest());
 
-[MethodImpl(MethodImplOptions.NoInlining)]
-void AllocateStatic()
-{
-    StaticClass.Root = new MyOwnObject();
+// Type System Tests
+runner.RegisterTest(new BoxingTest());
+runner.RegisterTest(new StructWithReferencesTest());
+runner.RegisterTest(new StringTest());
+runner.RegisterTest(new NullReferenceTest());
 
-}
+// GCHandle Tests
+runner.RegisterTest(new GCHandleTest());
+runner.RegisterTest(new PinnedObjectTest());
 
-AllocateStatic();
+// Advanced Tests
+runner.RegisterTest(new FinalizerTest());
+runner.RegisterTest(new DeepCallStackTest());
+runner.RegisterTest(new MixedAllocationPatternTest());
+runner.RegisterTest(new FragmentationTest());
+runner.RegisterTest(new ConcurrentAllocationTest());
 
-var obj1 = new object();
-var obj2 = new object();
-var obj3 = new object();
-//var d1 = new DependentHandle(obj1, obj2);
+// Stress Tests
+runner.RegisterTest(new StressTest());
 
-Console.WriteLine($"Obj1: {obj1.GetHashCode()}, Obj2: {obj2.GetHashCode()}, Obj3: {obj3.GetHashCode()}");
-//Console.WriteLine($"DependentHandle: {d1.Target.GetHashCode()} - {d1.Dependent.GetHashCode()}");
+// Run all tests
+var success = runner.RunAll();
 
-//d1.Dependent = obj3;
-
-//Console.WriteLine($"DependentHandle: {d1.Target.GetHashCode()} - {d1.Dependent.GetHashCode()}");
-
-var array = new byte[32720];
-
-Array.Fill(array, (byte)0xCC);
-
-for (int i = 0; i < array.Length; i++)
-{
-    if (array[i] != 0xCC)
-    {
-        Console.WriteLine("Error");
-    }
-}
-
-if (!WeakReferenceTest.Run())
-{
-    AnsiConsole.MarkupLine("[bold red]WeakReferenceTest failed[/]");
-    return;
-}
-
-while (true)
-{
-    Console.WriteLine("Press return to allocate");
-
-    if (Console.ReadLine() == "q")
-    {
-        return;
-    }
-
-    //for (int i = 0; i < 10; i++)
-    //{
-    //    var obj = new MyOwnObject { Str = new string('c', 10), Obj = new() };
-    //}
-
-    var bigObj = new byte[100_000];
-    Array.Fill(bigObj, (byte)0xFF);
-
-    for (int i = 0; i < bigObj.Length; i++)
-    {
-        if (bigObj[i] != 0xFF)
-        {
-            Console.WriteLine($"Error - {bigObj[i]:x2}");
-        }
-    }
-
-    var huge_obj = new byte[1024 * 1024 * 8];
-    Array.Fill(huge_obj, (byte)0xEE);
-
-    for (int i = 0; i < huge_obj.Length; i++)
-    {
-        if (huge_obj[i] != 0xEE)
-        {
-            Console.WriteLine("Error");
-        }
-    }
-
-    Console.WriteLine($"Huge array address: {Utils.GetAddress(huge_obj):x2}");
-
-    GC.Collect();
-}
-
-public class MyOwnObject
-{
-    public string Str;
-    public Object Obj;
-}
-
-public class FinalizableObject
-{
-    public ulong Value = 0xFFFFFFFFFFFFFFFF;
-
-    ~FinalizableObject()
-    {
-        Console.WriteLine("Finalized");
-    }
-}
-
-public class NonFinalizableObject
-{
-    public ulong Value = 0xCCCCCCCCCCCCCCCC;
-}
+// Return appropriate exit code
+return success ? 0 : 1;

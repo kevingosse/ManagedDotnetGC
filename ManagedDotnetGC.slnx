@@ -7,6 +7,7 @@
   <Folder Name="/Solution Items/">
     <File Path="launch.cmd" />
     <File Path="publish.cmd" />
+    <File Path="run-tests.cmd" />
   </Folder>
   <Project Path="ManagedDotnetGC/ManagedDotnetGC.csproj" />
   <Project Path="TestApp/TestApp.csproj" />
