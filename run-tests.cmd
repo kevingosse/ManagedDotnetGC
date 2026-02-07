@@ -18,7 +18,7 @@ echo Building TestApp
 echo ========================================
 echo.
 
-dotnet build .\TestApp -c Debug
+dotnet build .\TestApp -c Release
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
@@ -28,18 +28,18 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo.
 echo Copying GC DLL to TestApp directory...
-copy .\ManagedDotnetGC\bin\Debug\net10.0\win-x64\publish\* .\TestApp\bin\Debug\net10.0\win-x64\
+copy .\ManagedDotnetGC\bin\Debug\net10.0\win-x64\publish\* .\TestApp\bin\Release\net10.0\win-x64\
 
 echo.
 echo ========================================
-echo Running Test Harness
+echo Running Tests
 echo ========================================
 echo.
 
 @set DOTNET_GCName=ManagedDotnetGC.dll
 @set DOTNET_gcConservative=0
 
-.\TestApp\bin\Debug\net10.0\win-x64\TestApp.exe
+.\TestApp\bin\Release\net10.0\win-x64\TestApp.exe
 
 set TEST_EXIT_CODE=%ERRORLEVEL%
 

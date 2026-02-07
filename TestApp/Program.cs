@@ -31,6 +31,7 @@ runner.RegisterTest(new NullReferenceTest());
 // GCHandle Tests
 runner.RegisterTest(new GCHandleTest());
 runner.RegisterTest(new PinnedObjectTest());
+runner.RegisterTest(new DependentHandleTest());
 
 // Advanced Tests
 runner.RegisterTest(new FinalizerTest());
