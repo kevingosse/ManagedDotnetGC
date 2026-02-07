@@ -33,9 +33,9 @@ public unsafe class GCHandleStore : IGCHandleStore
             ref var handle = ref _store[i];
             var output = $"Handle {i} - {handle}";
 
-            if (dacManager != null && handle.Object != 0)
+            if (dacManager != null && handle.Object != null)
             {
-                output += $" - {dacManager.GetObjectName(new(handle.Object))}";
+                output += $" - {dacManager.GetObjectName(new((nint)handle.Object))}";
             }
 
             Write(output);
@@ -53,17 +53,17 @@ public unsafe class GCHandleStore : IGCHandleStore
         return ptr >= _store && ptr < _store + _handleCount;
     }
 
-    public unsafe ref ObjectHandle CreateHandleOfType(GCObject* obj, HandleType type)
+    public ref ObjectHandle CreateHandleOfType(GCObject* obj, HandleType type)
     {
         return ref CreateHandleWithExtraInfo(obj, type, null);
     }
 
-    public unsafe ref ObjectHandle CreateHandleOfType2(GCObject* obj, HandleType type, int heapToAffinitizeTo)
+    public ref ObjectHandle CreateHandleOfType2(GCObject* obj, HandleType type, int heapToAffinitizeTo)
     {
         return ref CreateHandleWithExtraInfo(obj, type, null);
     }
 
-    public unsafe ref ObjectHandle CreateHandleWithExtraInfo(GCObject* obj, HandleType type, void* pExtraInfo)
+    public ref ObjectHandle CreateHandleWithExtraInfo(GCObject* obj, HandleType type, void* pExtraInfo)
     {
         var index = Interlocked.Increment(ref _handleCount) - 1;
 
@@ -74,14 +74,14 @@ public unsafe class GCHandleStore : IGCHandleStore
 
         ref var handle = ref _store[index];
 
-        handle.Object = (nint)obj;
+        handle.Object = obj;
         handle.Type = type;
         handle.ExtraInfo = (nint)pExtraInfo;
 
         return ref handle;
     }
 
-    public unsafe ref ObjectHandle CreateDependentHandle(GCObject* primary, GCObject* secondary)
+    public ref ObjectHandle CreateDependentHandle(GCObject* primary, GCObject* secondary)
     {
         return ref CreateHandleWithExtraInfo(primary, HandleType.HNDTYPE_DEPENDENT, secondary);
     }

@@ -29,19 +29,25 @@ public class DependentHandleTest : TestBase
             return false;
         }
 
-        // Test 3: Setting target to null releases the dependent
+        // Test 3: Handle properties return null after target is collected
+        if (!TestHandleClearedAfterTargetCollection())
+        {
+            return false;
+        }
+
+        // Test 4: Setting target to null releases the dependent
         if (!TestSetTargetToNull())
         {
             return false;
         }
 
-        // Test 4: TargetAndDependent returns consistent results
+        // Test 5: TargetAndDependent returns consistent results
         if (!TestTargetAndDependentAtomic())
         {
             return false;
         }
 
-        // Test 5: Dispose releases the handle
+        // Test 6: Dispose releases the handle
         if (!TestDispose())
         {
             return false;
@@ -125,6 +131,42 @@ public class DependentHandleTest : TestBase
         var dependent = new object();
         handle = new DependentHandle(target, dependent);
         return (new WeakReference<object>(target), new WeakReference<object>(dependent));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool TestHandleClearedAfterTargetCollection()
+    {
+        var handle = CreateHandleWithCollectibleTarget();
+
+        try
+        {
+            GC.Collect();
+
+            // After target is collected, both Target and Dependent should return null
+            if (handle.Target != null)
+            {
+                return false;
+            }
+
+            if (handle.Dependent != null)
+            {
+                return false;
+            }
+
+            return true;
+        }
+        finally
+        {
+            handle.Dispose();
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static DependentHandle CreateHandleWithCollectibleTarget()
+    {
+        var target = new object();
+        var dependent = new object();
+        return new DependentHandle(target, dependent);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

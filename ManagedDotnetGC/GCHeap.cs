@@ -92,7 +92,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private void SweepPhase()
     {
         Write("Updating weak references");
-        UpdateWeakReferences();
+        ClearHandles();
         Sweep();
     }
 
@@ -213,7 +213,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 continue;
             }
 
-            var obj = (GCObject*)handle.Object;
+            var obj = handle.Object;
             if (obj != null)
             {
                 ScanRoots(obj, null, default);
@@ -239,7 +239,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
                 // Target: primary
                 // Dependent: secondary
-                var primary = (GCObject*)handle.Object;
+                var primary = handle.Object;
                 var secondary = (GCObject*)handle.ExtraInfo;
 
                 if (primary == null || secondary == null)
@@ -328,7 +328,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
     }
 
-    private void UpdateWeakReferences()
+    private void ClearHandles()
     {
         // TODO: Handle long weak references
 
@@ -338,15 +338,25 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         {
             ref var handle = ref span[i];
 
-            if (handle.Type >= HandleType.HNDTYPE_STRONG)
+            if (handle.IsWeakReference)
             {
-                continue;
+                if (handle.Object != null && !handle.Object->IsMarked())
+                {
+                    handle.Clear();
+                }
             }
-
-            var obj = (GCObject*)handle.Object;
-            if (obj != null && !obj->IsMarked())
+            else if (handle.Type == HandleType.HNDTYPE_DEPENDENT)
             {
-                handle.Object = IntPtr.Zero;
+                var primary = handle.Object;
+                var secondary = (GCObject*)handle.ExtraInfo;
+
+                if (primary != null || secondary != null)
+                {
+                    if (primary == null || !primary->IsMarked())
+                    {
+                        handle.Clear();
+                    }
+                }
             }
         }
     }

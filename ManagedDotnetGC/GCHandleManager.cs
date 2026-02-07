@@ -1,4 +1,5 @@
 ﻿using ManagedDotnetGC.Interfaces;
+using System.Runtime.CompilerServices;
 using static ManagedDotnetGC.Log;
 
 namespace ManagedDotnetGC;
@@ -50,7 +51,7 @@ internal unsafe class GCHandleManager : IGCHandleManager
 
     public ref ObjectHandle CreateDuplicateHandle(ref ObjectHandle handle)
     {
-        ref var newHandle = ref _gcHandleStore.CreateHandleOfType((GCObject*)handle.Object, handle.Type);
+        ref var newHandle = ref _gcHandleStore.CreateHandleOfType(handle.Object, handle.Type);
         newHandle.ExtraInfo = handle.ExtraInfo;
         return ref newHandle;
     }
@@ -77,7 +78,7 @@ internal unsafe class GCHandleManager : IGCHandleManager
 
     public void StoreObjectInHandle(ref ObjectHandle handle, GCObject* obj)
     {
-        handle.Object = (nint)obj;
+        handle.Object = obj;
     }
 
     public bool StoreObjectInHandleIfNull(ref ObjectHandle handle, GCObject* obj)
@@ -98,7 +99,7 @@ internal unsafe class GCHandleManager : IGCHandleManager
 
     public GCObject* InterlockedCompareExchangeObjectInHandle(ref ObjectHandle handle, GCObject* obj, GCObject* comparandObject)
     {
-        return (GCObject*)Interlocked.CompareExchange(ref handle.Object, (nint)obj, (nint)comparandObject);
+        return (GCObject*)Interlocked.CompareExchange(ref Unsafe.AsRef<nint>(handle.Object), (nint)obj, (nint)comparandObject);
     }
 
     public HandleType HandleFetchType(ref ObjectHandle handle)

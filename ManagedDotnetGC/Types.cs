@@ -21,15 +21,23 @@ public unsafe struct VersionInfo
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public struct ObjectHandle
+public unsafe struct ObjectHandle
 {
-    public nint Object;
+    public GCObject* Object;
     public nint ExtraInfo;
     public HandleType Type;
         
+    public bool IsWeakReference => Type < HandleType.HNDTYPE_STRONG;
+
     public bool IsStrongReference => Type is HandleType.HNDTYPE_STRONG or HandleType.HNDTYPE_PINNED;
 
-    public override string ToString() => $"{Type} - {Object:x2} - {ExtraInfo:x2}";
+    public void Clear()
+    {
+        Object = null;
+        ExtraInfo = 0;
+    }
+
+    public override string ToString() => $"{Type} - {(nint)Object:x2} - {ExtraInfo:x2}";
 }
 
 public enum HandleType
