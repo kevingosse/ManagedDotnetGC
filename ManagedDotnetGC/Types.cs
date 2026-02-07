@@ -26,6 +26,8 @@ public struct ObjectHandle
     public nint Object;
     public nint ExtraInfo;
     public HandleType Type;
+        
+    public bool IsStrongReference => Type is HandleType.HNDTYPE_STRONG or HandleType.HNDTYPE_PINNED;
 
     public override string ToString() => $"{Type} - {Object:x2} - {ExtraInfo:x2}";
 }
@@ -97,6 +99,7 @@ public enum HandleType
      * but are useful when the handle owner needs an efficient way to change the
      * strength of a handle on the fly.
      *
+     * NOTE: HNDTYPE_VARIABLE is not used currently.
      */
     HNDTYPE_VARIABLE = 4,
 

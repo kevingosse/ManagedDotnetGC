@@ -208,7 +208,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         foreach (var handle in _gcHandleManager.Store.AsSpan())
         {
-            if (handle.Type < HandleType.HNDTYPE_STRONG || handle.Type == HandleType.HNDTYPE_DEPENDENT)
+            if (!handle.IsStrongReference)
             {
                 continue;
             }

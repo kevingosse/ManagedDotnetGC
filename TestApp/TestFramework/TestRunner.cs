@@ -81,8 +81,16 @@ public class TestRunner
 
         var totalTests = _passed + _failed;
         AnsiConsole.MarkupLine($"Total:  {totalTests}");
-        AnsiConsole.MarkupLine($"[green]Passed: {_passed}[/]");
-        AnsiConsole.MarkupLine($"[red]Failed: {_failed}[/]");
+
+        if (_passed != 0)
+        {
+            AnsiConsole.MarkupLine($"[green]Passed: {_passed}[/]");
+        }
+
+        if (_failed != 0)
+        {
+            AnsiConsole.MarkupLine($"[red]Failed: {_failed}[/]");
+        }
 
         if (_failures.Count > 0)
         {
