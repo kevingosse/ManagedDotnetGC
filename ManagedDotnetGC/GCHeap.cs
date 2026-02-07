@@ -135,7 +135,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
     {
         var result = acontext.alloc_ptr;
-        var advance = result + size;
+        var advance = Align(result + size);
 
         // TODO: Add object to finalization queue if needed
         // TODO: How to recognize critical finalizers?
