@@ -21,15 +21,25 @@ public unsafe struct VersionInfo
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct ObjectHandle
+public unsafe ref struct ObjectHandle
 {
     public GCObject* Object;
     public nint ExtraInfo;
     public HandleType Type;
         
-    public bool IsWeakReference => Type < HandleType.HNDTYPE_STRONG;
-
-    public bool IsStrongReference => Type is HandleType.HNDTYPE_STRONG or HandleType.HNDTYPE_PINNED;
+    public static ReadOnlySpan<HandleType> AllTypes =>
+    [
+        HandleType.HNDTYPE_WEAK_SHORT,
+        HandleType.HNDTYPE_WEAK_LONG,
+        HandleType.HNDTYPE_STRONG,
+        HandleType.HNDTYPE_PINNED,
+        HandleType.HNDTYPE_VARIABLE,
+        HandleType.HNDTYPE_REFCOUNTED,
+        HandleType.HNDTYPE_DEPENDENT,
+        HandleType.HNDTYPE_ASYNCPINNED,
+        HandleType.HNDTYPE_SIZEDREF,
+        HandleType.HNDTYPE_WEAK_NATIVE_COM
+    ];
 
     public void Clear()
     {
@@ -42,6 +52,8 @@ public unsafe struct ObjectHandle
 
 public enum HandleType
 {
+    HNDTYPE_FREE = -1,
+
     /*
      * WEAK HANDLES
      *
@@ -177,7 +189,8 @@ public enum HandleType
      * underlying COM object as long as it has not been released by all of its strong
      * references.
      */
-    HNDTYPE_WEAK_NATIVE_COM = 9
+    HNDTYPE_WEAK_NATIVE_COM = 9,
+    Max = HNDTYPE_WEAK_NATIVE_COM
 }
 
 // Arguments to GCToEEInterface::StompWriteBarrier

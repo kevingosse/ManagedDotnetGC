@@ -36,75 +36,78 @@ internal unsafe class GCHandleManager : IGCHandleManager
     public IntPtr CreateHandleStore()
     {
         Write("GCHandleManager CreateHandleStore");
-        return default;
+        throw new NotImplementedException();
     }
 
     public void DestroyHandleStore(IntPtr store)
     {
         Write("GCHandleManager DestroyHandleStore");
+        throw new NotImplementedException();
     }
 
-    public ref ObjectHandle CreateGlobalHandleOfType(GCObject* obj, HandleType type)
+    public ObjectHandle* CreateGlobalHandleOfType(GCObject* obj, HandleType type)
     {
-        return ref _gcHandleStore.CreateHandleOfType(obj, type);
+        return _gcHandleStore.CreateHandleOfType(obj, type);
     }
 
-    public ref ObjectHandle CreateDuplicateHandle(ref ObjectHandle handle)
+    public ObjectHandle* CreateDuplicateHandle(ObjectHandle* handle)
     {
-        ref var newHandle = ref _gcHandleStore.CreateHandleOfType(handle.Object, handle.Type);
-        newHandle.ExtraInfo = handle.ExtraInfo;
-        return ref newHandle;
+        var newHandle = _gcHandleStore.CreateHandleOfType(handle->Object, handle->Type);
+        newHandle->ExtraInfo = handle->ExtraInfo;
+        return newHandle;
     }
 
-    public void DestroyHandleOfType(ref ObjectHandle handle, HandleType type)
+    public void DestroyHandleOfType(ObjectHandle* handle, HandleType type)
     {
         Write("GCHandleManager DestroyHandleOfType");
+        _gcHandleStore.DestroyHandle(handle);
     }
 
-    public void DestroyHandleOfUnknownType(ref ObjectHandle handle)
+    public void DestroyHandleOfUnknownType(ObjectHandle* handle)
     {
         Write("GCHandleManager DestroyHandleOfUnknownType");
+        _gcHandleStore.DestroyHandle(handle);
     }
 
-    public void SetExtraInfoForHandle(ref ObjectHandle handle, HandleType type, nint extraInfo)
+    public void SetExtraInfoForHandle(ObjectHandle* handle, HandleType type, nint extraInfo)
     {
-        handle.ExtraInfo = extraInfo;
+        handle->ExtraInfo = extraInfo;
     }
 
-    public nint GetExtraInfoFromHandle(ref ObjectHandle handle)
+    public nint GetExtraInfoFromHandle(ObjectHandle* handle)
     {
-        return handle.ExtraInfo;
+        return handle->ExtraInfo;
     }
 
-    public void StoreObjectInHandle(ref ObjectHandle handle, GCObject* obj)
+    public void StoreObjectInHandle(ObjectHandle* handle, GCObject* obj)
     {
-        handle.Object = obj;
+        handle->Object = obj;
     }
 
-    public bool StoreObjectInHandleIfNull(ref ObjectHandle handle, GCObject* obj)
+    public bool StoreObjectInHandleIfNull(ObjectHandle* handle, GCObject* obj)
     {
-        var result = InterlockedCompareExchangeObjectInHandle(ref handle, obj, null);        
+        var result = InterlockedCompareExchangeObjectInHandle(handle, obj, null);        
         return result == null;
     }
 
-    public void SetDependentHandleSecondary(ref ObjectHandle handle, GCObject* obj)
+    public void SetDependentHandleSecondary(ObjectHandle* handle, GCObject* obj)
     {
-        handle.ExtraInfo = (nint)obj;
+        handle->ExtraInfo = (nint)obj;
     }
 
-    public GCObject* GetDependentHandleSecondary(ref ObjectHandle handle)
+    public GCObject* GetDependentHandleSecondary(ObjectHandle* handle)
     {
-        return (GCObject*)handle.ExtraInfo;
+        return (GCObject*)handle->ExtraInfo;
     }
 
-    public GCObject* InterlockedCompareExchangeObjectInHandle(ref ObjectHandle handle, GCObject* obj, GCObject* comparandObject)
+    public GCObject* InterlockedCompareExchangeObjectInHandle(ObjectHandle* handle, GCObject* obj, GCObject* comparandObject)
     {
-        return (GCObject*)Interlocked.CompareExchange(ref Unsafe.AsRef<nint>(handle.Object), (nint)obj, (nint)comparandObject);
+        return (GCObject*)Interlocked.CompareExchange(ref Unsafe.AsRef<nint>(handle->Object), (nint)obj, (nint)comparandObject);
     }
 
-    public HandleType HandleFetchType(ref ObjectHandle handle)
+    public HandleType HandleFetchType(ObjectHandle* handle)
     {
-        return handle.Type;
+        return handle->Type;
     }
 
     public void TraceRefCountedHandles(void* callback, uint* param1, uint* param2)

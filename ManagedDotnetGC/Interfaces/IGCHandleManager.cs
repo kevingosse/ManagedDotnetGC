@@ -13,29 +13,29 @@ public unsafe interface IGCHandleManager
 
     void DestroyHandleStore(nint store);
 
-    ref ObjectHandle CreateGlobalHandleOfType(GCObject* obj, HandleType type);
+    ObjectHandle* CreateGlobalHandleOfType(GCObject* obj, HandleType type);
 
-    ref ObjectHandle CreateDuplicateHandle(ref ObjectHandle handle);
+    ObjectHandle* CreateDuplicateHandle(ObjectHandle* handle);
 
-    void DestroyHandleOfType(ref ObjectHandle handle, HandleType type);
+    void DestroyHandleOfType(ObjectHandle* handle, HandleType type);
 
-    void DestroyHandleOfUnknownType(ref ObjectHandle handle);
+    void DestroyHandleOfUnknownType(ObjectHandle* handle);
 
-    void SetExtraInfoForHandle(ref ObjectHandle handle, HandleType type, nint extraInfo);
+    void SetExtraInfoForHandle(ObjectHandle* handle, HandleType type, nint extraInfo);
 
-    nint GetExtraInfoFromHandle(ref ObjectHandle handle);
+    nint GetExtraInfoFromHandle(ObjectHandle* handle);
 
-    void StoreObjectInHandle(ref ObjectHandle handle, GCObject* obj);
+    void StoreObjectInHandle(ObjectHandle* handle, GCObject* obj);
 
-    bool StoreObjectInHandleIfNull(ref ObjectHandle handle, GCObject* obj);
+    bool StoreObjectInHandleIfNull(ObjectHandle* handle, GCObject* obj);
 
-    void SetDependentHandleSecondary(ref ObjectHandle handle, GCObject* obj);
+    void SetDependentHandleSecondary(ObjectHandle* handle, GCObject* obj);
 
-    GCObject* GetDependentHandleSecondary(ref ObjectHandle handle);
+    GCObject* GetDependentHandleSecondary(ObjectHandle* handle);
 
-    GCObject* InterlockedCompareExchangeObjectInHandle(ref ObjectHandle handle, GCObject* obj, GCObject* comparandObject);
+    GCObject* InterlockedCompareExchangeObjectInHandle(ObjectHandle* handle, GCObject* obj, GCObject* comparandObject);
 
-    HandleType HandleFetchType(ref ObjectHandle handle);
+    HandleType HandleFetchType(ObjectHandle* handle);
 
     void TraceRefCountedHandles(void* callback, uint* param1, uint* param2);
 }

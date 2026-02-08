@@ -206,14 +206,9 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private void ScanHandles()
     {
-        foreach (var handle in _gcHandleManager.Store.AsSpan())
+        foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_STRONG, HandleType.HNDTYPE_PINNED]))
         {
-            if (!handle.IsStrongReference)
-            {
-                continue;
-            }
-
-            var obj = handle.Object;
+            var obj = handle->Object;
             if (obj != null)
             {
                 ScanRoots(obj, null, default);
@@ -230,17 +225,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         {
             markedObjects = false;
 
-            foreach (var handle in _gcHandleManager.Store.AsSpan())
+            foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_DEPENDENT]))
             {
-                if (handle.Type != HandleType.HNDTYPE_DEPENDENT)
+                if (handle->Type != HandleType.HNDTYPE_DEPENDENT)
                 {
                     continue;
                 }
 
                 // Target: primary
                 // Dependent: secondary
-                var primary = handle.Object;
-                var secondary = (GCObject*)handle.ExtraInfo;
+                var primary = handle->Object;
+                var secondary = (GCObject*)handle->ExtraInfo;
 
                 if (primary == null || secondary == null)
                 {
@@ -332,30 +327,25 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         // TODO: Handle long weak references
 
-        var span = _gcHandleManager.Store.AsSpan();
-
-        for (int i = 0; i < span.Length; i++)
+        foreach (var weakReference in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_WEAK_SHORT, HandleType.HNDTYPE_WEAK_LONG]))
         {
-            ref var handle = ref span[i];
-
-            if (handle.IsWeakReference)
+            var obj = weakReference->Object;
+            if (obj != null && !obj->IsMarked())
             {
-                if (handle.Object != null && !handle.Object->IsMarked())
-                {
-                    handle.Clear();
-                }
+                weakReference->Clear();
             }
-            else if (handle.Type == HandleType.HNDTYPE_DEPENDENT)
-            {
-                var primary = handle.Object;
-                var secondary = (GCObject*)handle.ExtraInfo;
+        }
 
-                if (primary != null || secondary != null)
+        foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_DEPENDENT]))
+        {
+            var primary = handle->Object;
+            var secondary = (GCObject*)handle->ExtraInfo;
+
+            if (primary != null || secondary != null)
+            {
+                if (primary == null || !primary->IsMarked())
                 {
-                    if (primary == null || !primary->IsMarked())
-                    {
-                        handle.Clear();
-                    }
+                    handle->Clear();
                 }
             }
         }
