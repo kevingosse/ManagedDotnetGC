@@ -33,8 +33,6 @@ public unsafe class HandleSegment : IDisposable
         _freeHead = 0;
     }
 
-    public bool IsFull => Volatile.Read(ref _freeHead) == -1;
-
     public void Dispose()
     {
         NativeMemory.Free(_buffer);
@@ -46,7 +44,7 @@ public unsafe class HandleSegment : IDisposable
     }
 
     /// <summary>
-    /// Try to allocate a slot from this segment using a lock-free CAS loop.
+    /// Try to allocate a slot from this segment.
     /// Returns null if the segment is full.
     /// </summary>
     public ObjectHandle* TryAllocate()
@@ -72,18 +70,18 @@ public unsafe class HandleSegment : IDisposable
     }
 
     /// <summary>
-    /// Return a slot to the freelist using a lock-free CAS loop.
+    /// Return a slot to the freelist.
     /// </summary>
     public void Free(ObjectHandle* handle)
     {
         handle->Object = null;
+        handle->Type = HandleType.HNDTYPE_FREE;
         var index = (int)(handle - _buffer);
 
         while (true)
         {
             var head = Volatile.Read(ref _freeHead);
             handle->ExtraInfo = head;
-            handle->Type = HandleType.HNDTYPE_FREE;
 
             if (Interlocked.CompareExchange(ref _freeHead, index, head) == head)
             {

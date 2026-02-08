@@ -31,8 +31,6 @@ public unsafe class HandleSegmentList : IDisposable
 
     /// <summary>
     /// Allocate a new handle in this list. Grows by adding a new segment if needed.
-    /// The hot path (segment has space) is lock-free. A lock is only taken when
-    /// a new segment must be appended.
     /// </summary>
     public ObjectHandle* Allocate()
     {
@@ -47,7 +45,7 @@ public unsafe class HandleSegmentList : IDisposable
                 return result;
             }
 
-            // Scan all segments lock-free for a slot freed by another thread
+            // Scan all segments to find a free slot
             var segment = _head;
 
             while (segment != null)
@@ -65,20 +63,20 @@ public unsafe class HandleSegmentList : IDisposable
             // Slow path: all segments are full, take a lock to grow
             lock (_growLock)
             {
-                // If tail changed, another thread already grew the list — retry lock-free
+                // If tail changed, another thread already grew the list
                 if (tail != Volatile.Read(ref _tail))
                 {
                     continue;
                 }
 
-                // Still the same tail — append a new segment
+                // Still the same tail, append a new segment
                 var newSegment = new HandleSegment(SegmentCapacity);
 
                 // Allocate the handle *before* publicating the segment
                 // Otherwise there is a small risk that the segment gets full before we allocate
                 var handle = newSegment.TryAllocate()!;
 
-                tail.Next = newSegment;
+                Volatile.Write(ref tail.Next, newSegment);
                 Volatile.Write(ref _tail, newSegment);
 
                 return handle;
