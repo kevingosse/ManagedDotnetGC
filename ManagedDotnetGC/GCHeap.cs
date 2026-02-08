@@ -206,12 +206,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private void ScanHandles()
     {
+        ScanContext scanContext = default;
+
         foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_STRONG, HandleType.HNDTYPE_PINNED]))
         {
             var obj = handle->Object;
             if (obj != null)
             {
-                ScanRoots(obj, null, default);
+                ScanRoots(obj, &scanContext, default);
             }
         }
     }
@@ -227,11 +229,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_DEPENDENT]))
             {
-                if (handle->Type != HandleType.HNDTYPE_DEPENDENT)
-                {
-                    continue;
-                }
-
                 // Target: primary
                 // Dependent: secondary
                 var primary = handle->Object;
@@ -327,26 +324,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         // TODO: Handle long weak references
 
-        foreach (var weakReference in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_WEAK_SHORT, HandleType.HNDTYPE_WEAK_LONG]))
+        foreach (var weakReference in _gcHandleManager.Store.EnumerateHandlesOfType(
+            [HandleType.HNDTYPE_WEAK_SHORT, HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT]))
         {
             var obj = weakReference->Object;
+
             if (obj != null && !obj->IsMarked())
             {
                 weakReference->Clear();
-            }
-        }
-
-        foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_DEPENDENT]))
-        {
-            var primary = handle->Object;
-            var secondary = (GCObject*)handle->ExtraInfo;
-
-            if (primary != null || secondary != null)
-            {
-                if (primary == null || !primary->IsMarked())
-                {
-                    handle->Clear();
-                }
             }
         }
     }
