@@ -9,6 +9,7 @@
     <File Path="publish.cmd" />
     <File Path="run-tests.cmd" />
   </Folder>
+  <Project Path="ManagedDotnetGC.Tests/ManagedDotnetGC.Tests.csproj" />
   <Project Path="ManagedDotnetGC/ManagedDotnetGC.csproj" />
   <Project Path="TestApp/TestApp.csproj" />
 </Solution>

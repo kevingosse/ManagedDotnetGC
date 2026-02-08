@@ -3,7 +3,7 @@ namespace ManagedDotnetGC;
 /// <summary>
 /// A growable, segment-based linked list of handles for a single HandleType.
 /// </summary>
-public unsafe class HandleSegmentList
+public unsafe class HandleSegmentList : IDisposable
 {
     private const int SegmentCapacity = 256;
 
@@ -15,6 +15,18 @@ public unsafe class HandleSegmentList
     {
         _head = new HandleSegment(SegmentCapacity);
         _tail = _head;
+    }
+
+    public void Dispose()
+    {
+        var segment = _head;
+
+        while (segment != null)
+        {
+            var next = segment.Next;
+            segment.Dispose();
+            segment = next;
+        }
     }
 
     /// <summary>

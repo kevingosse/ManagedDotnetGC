@@ -4,7 +4,7 @@ using static ManagedDotnetGC.Log;
 
 namespace ManagedDotnetGC;
 
-internal unsafe class GCHandleManager : IGCHandleManager
+internal unsafe class GCHandleManager : IGCHandleManager, IDisposable
 {
     private readonly NativeObjects.IGCHandleManager _nativeObject;
     private readonly GCHandleStore _gcHandleStore;
@@ -18,6 +18,12 @@ internal unsafe class GCHandleManager : IGCHandleManager
     public IntPtr IGCHandleManagerObject => _nativeObject;
 
     public GCHandleStore Store => _gcHandleStore;
+
+    public void Dispose()
+    {
+        _gcHandleStore.Dispose();
+        _nativeObject.Dispose();
+    }
 
     public bool Initialize()
     {
@@ -102,7 +108,7 @@ internal unsafe class GCHandleManager : IGCHandleManager
 
     public GCObject* InterlockedCompareExchangeObjectInHandle(ObjectHandle* handle, GCObject* obj, GCObject* comparandObject)
     {
-        return (GCObject*)Interlocked.CompareExchange(ref Unsafe.AsRef<nint>(handle->Object), (nint)obj, (nint)comparandObject);
+        return (GCObject*)Interlocked.CompareExchange(ref Unsafe.AsRef<nint>(&handle->Object), (nint)obj, (nint)comparandObject);
     }
 
     public HandleType HandleFetchType(ObjectHandle* handle)

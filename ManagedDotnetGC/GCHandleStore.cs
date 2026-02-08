@@ -4,7 +4,7 @@ using static ManagedDotnetGC.Log;
 
 namespace ManagedDotnetGC;
 
-public unsafe class GCHandleStore : IGCHandleStore
+public unsafe class GCHandleStore : IGCHandleStore, IDisposable
 {
     private const int HandleTypeCount = (int)HandleType.Max + 1;
 
@@ -24,6 +24,16 @@ public unsafe class GCHandleStore : IGCHandleStore
     }
 
     public IntPtr IGCHandleStoreObject => _nativeObject;
+
+    public void Dispose()
+    {
+        foreach (var list in _lists)
+        {
+            list.Dispose();
+        }
+
+        _nativeObject.Dispose();
+    }
 
     /// <summary>
     /// Get the segment list for a specific handle type, for efficient per-type iteration.
@@ -58,6 +68,11 @@ public unsafe class GCHandleStore : IGCHandleStore
 
     public bool ContainsHandle(ObjectHandle* handle)
     {
+        if (handle->Type == HandleType.HNDTYPE_FREE)
+        {
+            return false;
+        }
+
         return _lists[(int)handle->Type].FindSegment(handle) != null;
     }
 

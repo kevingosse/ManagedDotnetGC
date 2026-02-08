@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Threading;
 
 namespace ManagedDotnetGC;
 
@@ -9,7 +8,7 @@ namespace ManagedDotnetGC;
 /// list. Free slots are tracked with an embedded freelist (the ExtraInfo field
 /// holds the next-free index when the slot is vacant, and Type is set to HNDTYPE_FREE).
 /// </summary>
-public unsafe class HandleSegment
+public unsafe class HandleSegment : IDisposable
 {
     private readonly ObjectHandle* _buffer;
     private readonly int _capacity;
@@ -35,6 +34,11 @@ public unsafe class HandleSegment
     }
 
     public bool IsFull => Volatile.Read(ref _freeHead) == -1;
+
+    public void Dispose()
+    {
+        NativeMemory.Free(_buffer);
+    }
 
     public bool ContainsHandle(ObjectHandle* handle)
     {
