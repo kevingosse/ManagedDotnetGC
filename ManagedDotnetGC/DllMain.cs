@@ -8,7 +8,7 @@ namespace ManagedDotnetGC;
 public class DllMain
 {
 #if WINDOWS
-    [UnmanagedCallersOnly(EntryPoint = "GC_Initialize=_GC_Initialize")]
+    [UnmanagedCallersOnly(EntryPoint = "_GC_Initialize")]
 #else
     [UnmanagedCallersOnly(EntryPoint = "GC_Initialize")]
 #endif
@@ -44,7 +44,7 @@ public class DllMain
     }
 
 #if WINDOWS
-    [UnmanagedCallersOnly(EntryPoint = "GC_VersionInfo=_GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
+    [UnmanagedCallersOnly(EntryPoint = "_GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
 #else
     [UnmanagedCallersOnly(EntryPoint = "GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
 #endif
