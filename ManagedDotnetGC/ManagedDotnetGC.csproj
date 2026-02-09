@@ -59,7 +59,7 @@
   </Target>
 
   <!-- For Linux, compile and link the assembly file with symbol aliases -->
-  <Target Name="CompileLinuxAliases" BeforeTargets="IlcCompile" Condition="!$(RuntimeIdentifier.StartsWith('win'))">
+  <Target Name="CompileLinuxAliases" BeforeTargets="IlcCompile" Condition="$(RuntimeIdentifier.StartsWith('linux'))">
     <PropertyGroup>
       <AliasAsmFile>$(MSBuildThisFileDirectory)gc-aliases.s</AliasAsmFile>
       <AliasObjFile>$(IntermediateOutputPath)gc-aliases.o</AliasObjFile>
@@ -69,7 +69,7 @@
   </Target>
 
   <!-- Add the object file to the native compilation -->
-  <ItemGroup Condition="!$(RuntimeIdentifier.StartsWith('win'))">
+  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('linux'))">
     <LinkerArg Include="$(IntermediateOutputPath)gc-aliases.o" />
   </ItemGroup>
 </Project>
