@@ -8,6 +8,11 @@
     <PublishAot>true</PublishAot>
   </PropertyGroup>
   
+  <!-- Define WINDOWS conditional compilation symbol for Windows platforms -->
+  <PropertyGroup Condition="$(RuntimeIdentifier.StartsWith('win'))">
+    <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
+  </PropertyGroup>
+  
   <ItemGroup>
     <PackageReference Include="NativeObjects" Version="1.4.0" />
   </ItemGroup>
@@ -15,6 +20,7 @@
   <UsingTask TaskName="RegexReplaceFile" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <FilePath ParameterType="System.String" Required="true" />
+      <IsWindows ParameterType="System.Boolean" Required="true" />
     </ParameterGroup>
     <Task>
       <Using Namespace="System.IO" />
@@ -24,7 +30,13 @@
         var lines = File.ReadAllLines(FilePath);
         for (int i = 0; i < lines.Length; i++)
         {
-            lines[i] = Regex.Replace(lines[i], @"_GC_(\w+)", "GC_$1=_GC_$1");
+            if (IsWindows)
+            {
+                // Windows: Use alias syntax (NewName=OldName)
+                lines[i] = Regex.Replace(lines[i], @"GC_Initialize", "GC_Initialize=_GC_Initialize");
+                lines[i] = Regex.Replace(lines[i], @"GC_VersionInfo", "GC_VersionInfo=_GC_VersionInfo");
+            }
+            // Linux/Mac: No transformation needed, symbols are already exported as GC_Initialize and GC_VersionInfo
         }
         File.WriteAllLines(FilePath, lines);
         ]]>
@@ -34,6 +46,10 @@
 
   <Target Name="TransformExportsFile" BeforeTargets="LinkNative">
     <Message Importance="high" Text="Transforming exports file: $(ExportsFile)" />
-    <RegexReplaceFile FilePath="$(ExportsFile)" />
+    <PropertyGroup>
+      <IsWindowsRuntime>false</IsWindowsRuntime>
+      <IsWindowsRuntime Condition="$(RuntimeIdentifier.StartsWith('win'))">true</IsWindowsRuntime>
+    </PropertyGroup>
+    <RegexReplaceFile FilePath="$(ExportsFile)" IsWindows="$(IsWindowsRuntime)" />
   </Target>
 </Project>
