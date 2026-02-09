@@ -12,23 +12,11 @@ permissions:
 
 jobs:
   build-and-test:
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            runtime: win-x64
-          - os: ubuntu-latest
-            runtime: linux-x64
-          # ARM64 Linux runner - GitHub provides ARM64 runners for Team/Enterprise or as larger runners
-          # If not available, use a self-hosted ARM64 runner or remove this entry
-          - os: ubuntu-24.04-arm
-            runtime: linux-arm64
-      fail-fast: false
-    
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     
     env:
       DOTNET_TARGET_FRAMEWORK: net10.0
+      RUNTIME: win-x64
     
     steps:
     - name: Checkout code
@@ -44,32 +32,22 @@ jobs:
       run: dotnet restore
     
     - name: Build and publish ManagedDotnetGC in Release mode
-      run: dotnet publish ./ManagedDotnetGC /p:SelfContained=true -r ${{ matrix.runtime }} -c Release
+      run: dotnet publish ./ManagedDotnetGC /p:SelfContained=true -r ${{ env.RUNTIME }} -c Release
     
     - name: Build TestApp in Release mode
-      run: dotnet build ./TestApp -r ${{ matrix.runtime }} -c Release
+      run: dotnet build ./TestApp -r ${{ env.RUNTIME }} -c Release
     
     - name: Copy GC DLL to TestApp directory
       shell: bash
       run: |
-        cp ./ManagedDotnetGC/bin/Release/${{ env.DOTNET_TARGET_FRAMEWORK }}/${{ matrix.runtime }}/publish/* ./TestApp/bin/Release/${{ env.DOTNET_TARGET_FRAMEWORK }}/${{ matrix.runtime }}/
+        cp ./ManagedDotnetGC/bin/Release/${{ env.DOTNET_TARGET_FRAMEWORK }}/${{ env.RUNTIME }}/publish/* ./TestApp/bin/Release/${{ env.DOTNET_TARGET_FRAMEWORK }}/${{ env.RUNTIME }}/
     
     - name: Run unit tests
       run: dotnet test ./ManagedDotnetGC.Tests -c Release --verbosity normal
     
-    - name: Run TestApp with custom GC (Windows)
-      if: runner.os == 'Windows'
+    - name: Run TestApp with custom GC
       shell: cmd
       run: |
         set DOTNET_GCName=ManagedDotnetGC.dll
         set DOTNET_gcConservative=0
-        .\TestApp\bin\Release\${{ env.DOTNET_TARGET_FRAMEWORK }}\${{ matrix.runtime }}\TestApp.exe
-    
-    - name: Run TestApp with custom GC (Linux)
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        export DOTNET_GCName=ManagedDotnetGC.so
-        export DOTNET_gcConservative=0
-        chmod +x ./TestApp/bin/Release/${{ env.DOTNET_TARGET_FRAMEWORK }}/${{ matrix.runtime }}/TestApp
-        ./TestApp/bin/Release/${{ env.DOTNET_TARGET_FRAMEWORK }}/${{ matrix.runtime }}/TestApp
+        .\TestApp\bin\Release\${{ env.DOTNET_TARGET_FRAMEWORK }}\${{ env.RUNTIME }}\TestApp.exe

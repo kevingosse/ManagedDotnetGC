@@ -15,7 +15,6 @@
   <UsingTask TaskName="RegexReplaceFile" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <FilePath ParameterType="System.String" Required="true" />
-      <IsWindows ParameterType="System.Boolean" Required="true" />
     </ParameterGroup>
     <Task>
       <Using Namespace="System.IO" />
@@ -25,23 +24,7 @@
         var lines = File.ReadAllLines(FilePath);
         for (int i = 0; i < lines.Length; i++)
         {
-            if (IsWindows)
-            {
-                // Windows: Use alias syntax (NewName=OldName)
-                lines[i] = Regex.Replace(lines[i], @"_GC_(\w+)", "GC_$1=_GC_$1");
-            }
-            else
-            {
-                // Linux: Keep _GC_ prefix and also export the non-prefixed version (provided by assembly wrapper)
-                var match = Regex.Match(lines[i], @"(\s+)_GC_(\w+);");
-                if (match.Success)
-                {
-                    string indent = match.Groups[1].Value;
-                    string name = match.Groups[2].Value;
-                    // Keep the original line and add the non-prefixed version
-                    lines[i] = indent + "_GC_" + name + ";" + Environment.NewLine + indent + "GC_" + name + ";";
-                }
-            }
+            lines[i] = Regex.Replace(lines[i], @"_GC_(\w+)", "GC_$1=_GC_$1");
         }
         File.WriteAllLines(FilePath, lines);
         ]]>
@@ -51,25 +34,6 @@
 
   <Target Name="TransformExportsFile" BeforeTargets="LinkNative">
     <Message Importance="high" Text="Transforming exports file: $(ExportsFile)" />
-    <PropertyGroup>
-      <IsWindowsRuntime>false</IsWindowsRuntime>
-      <IsWindowsRuntime Condition="$(RuntimeIdentifier.StartsWith('win'))">true</IsWindowsRuntime>
-    </PropertyGroup>
-    <RegexReplaceFile FilePath="$(ExportsFile)" IsWindows="$(IsWindowsRuntime)" />
+    <RegexReplaceFile FilePath="$(ExportsFile)" />
   </Target>
-
-  <!-- For Linux, compile and link the assembly file with symbol aliases -->
-  <Target Name="CompileLinuxAliases" BeforeTargets="IlcCompile" Condition="$(RuntimeIdentifier.StartsWith('linux'))">
-    <PropertyGroup>
-      <AliasAsmFile>$(MSBuildThisFileDirectory)gc-aliases.s</AliasAsmFile>
-      <AliasObjFile>$(IntermediateOutputPath)gc-aliases.o</AliasObjFile>
-    </PropertyGroup>
-    <Message Importance="high" Text="Compiling symbol alias file for Linux" />
-    <Exec Command="as &quot;$(AliasAsmFile)&quot; -o &quot;$(AliasObjFile)&quot;" />
-  </Target>
-
-  <!-- Add the object file to the native compilation -->
-  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('linux'))">
-    <LinkerArg Include="$(IntermediateOutputPath)gc-aliases.o" />
-  </ItemGroup>
 </Project>
