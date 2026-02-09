@@ -69,7 +69,7 @@ jobs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        export DOTNET_GCName=ManagedDotnetGC.dll
+        export DOTNET_GCName=ManagedDotnetGC.so
         export DOTNET_gcConservative=0
         chmod +x ./TestApp/bin/Release/${{ env.DOTNET_TARGET_FRAMEWORK }}/${{ matrix.runtime }}/TestApp
         ./TestApp/bin/Release/${{ env.DOTNET_TARGET_FRAMEWORK }}/${{ matrix.runtime }}/TestApp

@@ -8,11 +8,6 @@
     <PublishAot>true</PublishAot>
   </PropertyGroup>
   
-  <!-- Define WINDOWS conditional compilation symbol for Windows platforms -->
-  <PropertyGroup Condition="$(RuntimeIdentifier.StartsWith('win'))">
-    <DefineConstants>$(DefineConstants);WINDOWS</DefineConstants>
-  </PropertyGroup>
-  
   <ItemGroup>
     <PackageReference Include="NativeObjects" Version="1.4.0" />
   </ItemGroup>
@@ -33,10 +28,20 @@
             if (IsWindows)
             {
                 // Windows: Use alias syntax (NewName=OldName)
-                lines[i] = Regex.Replace(lines[i], @"GC_Initialize", "GC_Initialize=_GC_Initialize");
-                lines[i] = Regex.Replace(lines[i], @"GC_VersionInfo", "GC_VersionInfo=_GC_VersionInfo");
+                lines[i] = Regex.Replace(lines[i], @"_GC_(\w+)", "GC_$1=_GC_$1");
             }
-            // Linux/Mac: No transformation needed, symbols are already exported as GC_Initialize and GC_VersionInfo
+            else
+            {
+                // Linux: Keep _GC_ prefix and also export the non-prefixed version (provided by assembly wrapper)
+                var match = Regex.Match(lines[i], @"(\s+)_GC_(\w+);");
+                if (match.Success)
+                {
+                    string indent = match.Groups[1].Value;
+                    string name = match.Groups[2].Value;
+                    // Keep the original line and add the non-prefixed version
+                    lines[i] = indent + "_GC_" + name + ";" + Environment.NewLine + indent + "GC_" + name + ";";
+                }
+            }
         }
         File.WriteAllLines(FilePath, lines);
         ]]>
@@ -52,4 +57,19 @@
     </PropertyGroup>
     <RegexReplaceFile FilePath="$(ExportsFile)" IsWindows="$(IsWindowsRuntime)" />
   </Target>
+
+  <!-- For Linux, compile and link the assembly file with symbol aliases -->
+  <Target Name="CompileLinuxAliases" BeforeTargets="IlcCompile" Condition="!$(RuntimeIdentifier.StartsWith('win'))">
+    <PropertyGroup>
+      <AliasAsmFile>$(MSBuildThisFileDirectory)gc-aliases.s</AliasAsmFile>
+      <AliasObjFile>$(IntermediateOutputPath)gc-aliases.o</AliasObjFile>
+    </PropertyGroup>
+    <Message Importance="high" Text="Compiling symbol alias file for Linux" />
+    <Exec Command="as &quot;$(AliasAsmFile)&quot; -o &quot;$(AliasObjFile)&quot;" />
+  </Target>
+
+  <!-- Add the object file to the native compilation -->
+  <ItemGroup Condition="!$(RuntimeIdentifier.StartsWith('win'))">
+    <LinkerArg Include="$(IntermediateOutputPath)gc-aliases.o" />
+  </ItemGroup>
 </Project>

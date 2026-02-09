@@ -7,11 +7,7 @@ namespace ManagedDotnetGC;
 
 public class DllMain
 {
-#if WINDOWS
     [UnmanagedCallersOnly(EntryPoint = "_GC_Initialize")]
-#else
-    [UnmanagedCallersOnly(EntryPoint = "GC_Initialize")]
-#endif
     public static unsafe HResult GC_Initialize(IntPtr clrToGC, IntPtr* gcHeap, IntPtr* gcHandleManager, GcDacVars* gcDacVars)
     {
         Write("GC_Initialize");
@@ -43,11 +39,7 @@ public class DllMain
         return HResult.S_OK;
     }
 
-#if WINDOWS
     [UnmanagedCallersOnly(EntryPoint = "_GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
-#else
-    [UnmanagedCallersOnly(EntryPoint = "GC_VersionInfo", CallConvs = new[] { typeof(CallConvCdecl) })]
-#endif
     public static unsafe void GC_VersionInfo(VersionInfo* versionInfo)
     {
         Write($"GC_VersionInfo {versionInfo->MajorVersion}.{versionInfo->MinorVersion}.{versionInfo->BuildVersion}");
