@@ -12,7 +12,7 @@ public unsafe class HandleSegment : IDisposable
 {
     private readonly ObjectHandle* _buffer;
     private readonly int _capacity;
-    private int _freeHead; // index of the first free slot, or -1
+    private long _freeHead; // lower 32 bits = index (or -1), upper 32 bits = version tag
 
     public HandleSegment? Next;
 
@@ -30,8 +30,11 @@ public unsafe class HandleSegment : IDisposable
         }
 
         _buffer[capacity - 1].ExtraInfo = -1;
-        _freeHead = 0;
+        _freeHead = Pack(0, 0);
     }
+
+    private static long Pack(int index, int tag) => ((long)tag << 32) | (uint)index;
+    private static (int Index, int Tag) Unpack(long packed) => ((int)(uint)packed, (int)(packed >> 32));
 
     public void Dispose()
     {
@@ -51,7 +54,8 @@ public unsafe class HandleSegment : IDisposable
     {
         while (true)
         {
-            var head = Volatile.Read(ref _freeHead);
+            var packed = Volatile.Read(ref _freeHead);
+            var (head, tag) = Unpack(packed);
 
             if (head == -1)
             {
@@ -60,8 +64,9 @@ public unsafe class HandleSegment : IDisposable
 
             var slot = _buffer + head;
             var next = (int)slot->ExtraInfo;
+            var newPacked = Pack(next, tag + 1);
 
-            if (Interlocked.CompareExchange(ref _freeHead, next, head) == head)
+            if (Interlocked.CompareExchange(ref _freeHead, newPacked, packed) == packed)
             {
                 slot->Clear();
                 return slot;
@@ -80,10 +85,12 @@ public unsafe class HandleSegment : IDisposable
 
         while (true)
         {
-            var head = Volatile.Read(ref _freeHead);
+            var packed = Volatile.Read(ref _freeHead);
+            var (head, tag) = Unpack(packed);
             handle->ExtraInfo = head;
+            var newPacked = Pack(index, tag + 1);
 
-            if (Interlocked.CompareExchange(ref _freeHead, index, head) == head)
+            if (Interlocked.CompareExchange(ref _freeHead, newPacked, packed) == packed)
             {
                 return;
             }
