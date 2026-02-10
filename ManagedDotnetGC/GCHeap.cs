@@ -13,6 +13,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     internal const int SegmentSize = AllocationContextSize * 128;
     internal static readonly int SizeOfObject = sizeof(nint) * 3;
 
+    private readonly ManualResetEventSlim _gcEvent = new(false);
+
     private IGCToCLRInvoker _gcToClr;
     private readonly GCHandleManager _gcHandleManager;
 
@@ -65,9 +67,13 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         return HResult.S_OK;
     }
 
+    public void Shutdown() => Write("Shutdown");
+
     public HResult GarbageCollect(int generation, bool low_memory_p, int mode)
     {
         Write($"GarbageCollect({generation}, {low_memory_p}, {mode})");
+
+        Interlocked.Increment(ref _gcCount);
 
         _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
 
@@ -89,37 +95,20 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         return HResult.S_OK;
     }
 
-    private void SweepPhase()
+    public void SetWaitForGCEvent() => _gcEvent.Set();
+
+    public void ResetWaitForGCEvent() => _gcEvent.Reset();
+
+    public uint WaitUntilGCComplete(bool considerGCStart = false)
     {
-        Write("Updating weak references");
-        ClearHandles();
-        Sweep();
+        _gcEvent.Wait();
+        return 0;
     }
 
-    private void MarkPhase()
+    public int GetLOHCompactionMode() => 0;
+
+    public void SetLOHCompactionMode(int newLOHCompactionMode)
     {
-        // TODO: Check what need to be set on ScanContext
-        ScanContext scanContext = default;
-        scanContext.promotion = true;
-        scanContext._unused1 = GCHandle.ToIntPtr(_handle);
-
-        Write("Scan roots");
-        var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
-        _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
-
-        // TODO: handles are roots too
-        // TODO: Weak references (+ short/long weak refs)
-        // TODO: ScanForFinalization
-        // TODO: SyncBlockCache
-
-        // Order in real GC:
-        // Dependent handles
-        // Short weak refs
-        // ScanForFinalization
-        // Long weak refs
-
-        ScanHandles();
-        ScanDependentHandles();
     }
 
     public void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
@@ -196,59 +185,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
     }
 
-    [UnmanagedCallersOnly]
-    private static void ScanRootsCallback(GCObject** obj, ScanContext* context, uint flags)
-    {
-        var handle = GCHandle.FromIntPtr(context->_unused1);
-        var gcHeap = (GCHeap)handle.Target!;
-        gcHeap.ScanRoots(*obj, context, (GcCallFlags)flags);
-    }
-
-    private void ScanHandles()
-    {
-        ScanContext scanContext = default;
-
-        foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_STRONG, HandleType.HNDTYPE_PINNED]))
-        {
-            var obj = handle->Object;
-            if (obj != null)
-            {
-                ScanRoots(obj, &scanContext, default);
-            }
-        }
-    }
-
-    private void ScanDependentHandles()
-    {
-        bool markedObjects;
-        ScanContext scanContext = default;
-
-        do
-        {
-            markedObjects = false;
-
-            foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_DEPENDENT]))
-            {
-                // Target: primary
-                // Dependent: secondary
-                var primary = handle->Object;
-                var secondary = (GCObject*)handle->ExtraInfo;
-
-                if (primary == null || secondary == null)
-                {
-                    continue;
-                }
-
-                if (primary->IsMarked() && !secondary->IsMarked())
-                {
-                    ScanRoots(secondary, &scanContext, default);
-                    markedObjects = true;
-                }
-            }
-        }
-        while (markedObjects);
-    }
-
     private Segment? FindSegmentContaining(IntPtr addr)
     {
         for (int i = 0; i < _segments.Count; i++)
@@ -262,78 +198,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
 
         return null;
-    }
-
-    private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags)
-    {
-        if ((IntPtr)obj == 0)
-        {
-            return;
-        }
-
-        if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
-        {
-            // Find the segment containing the interior pointer
-            var segment = FindSegmentContaining((IntPtr)obj);
-
-            if (segment == null)
-            {
-                Write($"  No segment found for interior pointer {(IntPtr)obj:x2}");
-                return;
-            }
-
-            var objectStartPtr = segment.FindClosestObjectBelow((IntPtr)obj);
-
-            foreach (var ptr in WalkHeapObjects(objectStartPtr - IntPtr.Size, (IntPtr)obj))
-            {
-                var o = (GCObject*)ptr;
-                var size = o->ComputeSize();
-
-                if ((IntPtr)o <= (IntPtr)obj && (IntPtr)obj < (IntPtr)o + (nint)size)
-                {
-                    obj = o;
-                    goto found;
-                }
-            }
-
-            Write($"  No object found for interior pointer {(IntPtr)obj:x2}");
-            return;
-
-        found:
-            ;
-        }
-
-        _markStack.Push((IntPtr)obj);
-
-        while (_markStack.Count > 0)
-        {
-            var ptr = _markStack.Pop();
-            var o = (GCObject*)ptr;
-
-            if (o->IsMarked())
-            {
-                continue;
-            }
-
-            o->EnumerateObjectReferences(_markStack.Push);
-            o->Mark();
-        }
-    }
-
-    private void ClearHandles()
-    {
-        // TODO: Handle long weak references
-
-        foreach (var weakReference in _gcHandleManager.Store.EnumerateHandlesOfType(
-            [HandleType.HNDTYPE_WEAK_SHORT, HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT]))
-        {
-            var obj = weakReference->Object;
-
-            if (obj != null && !obj->IsMarked())
-            {
-                weakReference->Clear();
-            }
-        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -385,7 +249,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
     }
 
-    private IEnumerable<IntPtr> WalkHeapObjects(nint start, nint end)
+    private static IEnumerable<IntPtr> WalkHeapObjects(nint start, nint end)
     {
         var ptr = start + IntPtr.Size;
 
@@ -412,31 +276,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var name = isFreeObject ? "Free" : _dacManager?.GetObjectName(new(ptr));
 
             Write($"{ptr:x2} - {name?.PadRight(50)}");
-        }
-    }
-
-    private void Sweep()
-    {
-        foreach (var ptr in WalkHeapObjects())
-        {
-            var obj = (GCObject*)ptr;
-
-            bool marked = obj->IsMarked();
-            obj->Unmark();
-
-            bool isFreeObject = obj->MethodTable == _freeObjectMethodTable;
-
-            if (!marked && !isFreeObject)
-            {
-                var startPtr = ptr - IntPtr.Size; // Include the header
-                var endPtr = Align(startPtr + (nint)obj->ComputeSize());
-
-                // Clear the memory
-                new Span<byte>((void*)startPtr, (int)(endPtr - startPtr)).Clear();
-
-                // Allocate a free object to keep the heap walkable
-                AllocateFreeObject(ptr, (uint)(endPtr - startPtr - SizeOfObject));
-            }
         }
     }
 }

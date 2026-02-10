@@ -7,103 +7,67 @@ unsafe partial class GCHeap
     public void Destructor()
     {
         Write("IGCHeap Destructor");
+        throw new NotImplementedException();
     }
 
     public bool IsValidSegmentSize(nint size)
     {
         Write("IsValidSegmentSize");
-        return false;
+        throw new NotImplementedException();
     }
 
     public bool IsValidGen0MaxSize(nint size)
     {
         Write("IsValidGen0MaxSize");
-        return false;
+        throw new NotImplementedException();
     }
 
     public nint GetValidSegmentSize(bool large_seg = false)
     {
         Write("GetValidSegmentSize");
-        return 0;
+        throw new NotImplementedException();
     }
 
     public void SetReservedVMLimit(nint vmlimit)
     {
         Write("SetReservedVMLimit");
+        throw new NotImplementedException();
     }
 
     public void WaitUntilConcurrentGCComplete()
     {
         Write("WaitUntilConcurrentGCComplete");
-    }
-
-    public bool IsConcurrentGCInProgress()
-    {
-        Write("IsConcurrentGCInProgress");
-        return false;
+        throw new NotImplementedException();
     }
 
     public void TemporaryEnableConcurrentGC()
     {
         Write("TemporaryEnableConcurrentGC");
+        throw new NotImplementedException();
     }
 
     public void TemporaryDisableConcurrentGC()
     {
         Write("TemporaryDisableConcurrentGC");
-    }
-
-    public bool IsConcurrentGCEnabled()
-    {
-        Write("IsConcurrentGCEnabled");
-        return false;
+        throw new NotImplementedException();
     }
 
     public HResult WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout)
     {
         Write("WaitUntilConcurrentGCCompleteAsync");
-        return default;
-    }
-
-    public nint GetNumberOfFinalizable()
-    {
-        Write("GetNumberOfFinalizable");
-        return 0;
-    }
-
-    public unsafe GCObject* GetNextFinalizable()
-    {
-        Write("GetNextFinalizable");
-        return null;
-    }
-
-    public uint GetMemoryLoad()
-    {
-        Write("GetMemoryLoad");
-        return 0;
+        throw new NotImplementedException();
     }
 
     public int GetGcLatencyMode()
     {
         Write("GetGcLatencyMode");
-        return 0;
+        throw new NotImplementedException();
     }
 
     public int SetGcLatencyMode(int newLatencyMode)
     {
         Write("SetGcLatencyMode");
-        return 0;
-    }
-
-    public int GetLOHCompactionMode()
-    {
-        Write("GetLOHCompactionMode");
-        return 0;
-    }
-
-    public void SetLOHCompactionMode(int newLOHCompactionMode)
-    {
-        Write("SetLOHCompactionMode");
+        throw new NotImplementedException();
     }
 
     public bool RegisterForFullGCNotification(uint gen2Percentage, uint lohPercentage)
@@ -115,357 +79,213 @@ unsafe partial class GCHeap
     public bool CancelFullGCNotification()
     {
         Write("CancelFullGCNotification");
-        return false;
+        return true;
     }
 
-    public int WaitForFullGCApproach(int millisecondsTimeout)
-    {
-        Write("WaitForFullGCApproach");
-        return 0;
-    }
+    public int WaitForFullGCApproach(int millisecondsTimeout) => 4;
 
-    public int WaitForFullGCComplete(int millisecondsTimeout)
-    {
-        Write("WaitForFullGCComplete");
-        return 0;
-    }
+    public int WaitForFullGCComplete(int millisecondsTimeout) => 4;
 
-    public unsafe uint WhichGeneration(GCObject* obj)
+    public uint WhichGeneration(GCObject* obj)
     {
         Write("WhichGeneration");
-        return 0;
-    }
-
-    public int CollectionCount(int generation, int get_bgc_fgc_coutn)
-    {
-        Write("CollectionCount");
-        return 0;
+        throw new NotImplementedException();
     }
 
     public int StartNoGCRegion(ulong totalSize, bool lohSizeKnown, ulong lohSize, bool disallowFullBlockingGC)
     {
         Write("StartNoGCRegion");
-        return 0;
+        throw new NotImplementedException();
     }
 
     public int EndNoGCRegion()
     {
         Write("EndNoGCRegion");
-        return 0;
+        throw new NotImplementedException();
     }
 
-    public nint GetTotalBytesInUse()
-    {
-        Write("GetTotalBytesInUse");
-        return 0;
-    }
-
-    public ulong GetTotalAllocatedBytes()
-    {
-        Write("GetTotalAllocatedBytes");
-        return 0;
-    }
-
-    public uint GetMaxGeneration()
-    {
-        Write("GetMaxGeneration");
-        return 2;
-    }
-
-    public unsafe void SetFinalizationRun(GCObject* obj)
-    {
-        Write($"SetFinalizationRun - {(nint)obj:x2}");
-    }
-
-    public unsafe bool RegisterForFinalization(int gen, GCObject* obj)
-    {
-        Write("RegisterForFinalization");
-        return false;
-    }
-
-    public int GetLastGCPercentTimeInGC()
-    {
-        Write("GetLastGCPercentTimeInGC");
-        return 0;
-    }
-
-    public nint GetLastGCGenerationSize(int gen)
-    {
-        Write("GetLastGCGenerationSize");
-        return 0;
-    }
-
-    public unsafe bool IsPromoted(GCObject* obj)
+    public bool IsPromoted(GCObject* obj)
     {
         Write("IsPromoted");
-        return false;
+        throw new NotImplementedException();
     }
 
-    public unsafe bool IsHeapPointer(IntPtr obj, bool small_heap_only)
+    public bool IsHeapPointer(IntPtr obj, bool small_heap_only)
     {
         Write("IsHeapPointer");
-        return false;
+        throw new NotImplementedException();
     }
 
     public uint GetCondemnedGeneration()
     {
         Write("GetCondemnedGeneration");
-        return 0;
+        throw new NotImplementedException();
     }
 
-    public bool IsGCInProgressHelper(bool bConsiderGCStart = false)
-    {
-        Write("IsGCInProgressHelper");
-        return false;
-    }
-
-    public uint GetGcCount()
-    {
-        Write("GetGcCount");
-        return 0;
-    }
-
-    public unsafe bool IsEphemeral(GCObject* obj)
+    public bool IsEphemeral(GCObject* obj)
     {
         Write("IsEphemeral");
-        return false;
-    }
-
-    public uint WaitUntilGCComplete(bool bConsiderGCStart = false)
-    {
-        //Write("WaitUntilGCComplete");
-        return 0;
-    }
-
-    public nint GetCurrentObjSize()
-    {
-        Write("GetCurrentObjSize");
-        return 0;
-    }
-
-    public void SetGCInProgress(bool fInProgress)
-    {
-        Write("SetGCInProgress");
+        throw new NotImplementedException();
     }
 
     public bool RuntimeStructuresValid()
     {
         Write("RuntimeStructuresValid");
-        return false;
+        throw new NotImplementedException();
     }
 
     public void SetSuspensionPending(bool fSuspensionPending)
     {
-        Write("SetSuspensionPending");
+        Write($"SetSuspensionPending({fSuspensionPending})");
     }
 
     public void SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
     {
         Write("SetYieldProcessorScalingFactor");
+        throw new NotImplementedException();
     }
 
-    public void Shutdown()
+    public void PublishObject(IntPtr obj)
     {
-        Write("Shutdown");
     }
 
-    public nint GetLastGCStartTime(int generation)
-    {
-        Write("GetLastGCStartTime");
-        return 0;
-    }
-
-    public nint GetLastGCDuration(int generation)
-    {
-        Write("GetLastGCDuration");
-        return 0;
-    }
-
-    public nint GetNow()
-    {
-        Write("GetNow");
-        return 0;
-    }
-
-    public unsafe void PublishObject(IntPtr obj)
-    {
-        Write($"PublishObject: {obj:x2}");
-    }
-
-    public void SetWaitForGCEvent()
-    {
-        Write("SetWaitForGCEvent");
-    }
-
-    public void ResetWaitForGCEvent()
-    {
-        Write("ResetWaitForGCEvent");
-    }
-
-    public unsafe bool IsLargeObject(GCObject* pObj)
+    public bool IsLargeObject(GCObject* pObj)
     {
         Write("IsLargeObject");
-        return false;
+        throw new NotImplementedException();
     }
 
-    public unsafe void ValidateObjectMember(GCObject* obj)
+    public void ValidateObjectMember(GCObject* obj)
     {
         Write("ValidateObjectMember");
+        throw new NotImplementedException();
     }
 
-    public unsafe GCObject* NextObj(GCObject* obj)
+    public GCObject* NextObj(GCObject* obj)
     {
         Write("NextObj");
-        return null;
+        throw new NotImplementedException();
     }
 
-    public unsafe GCObject* GetContainingObject(IntPtr pInteriorPtr, bool fCollectedGenOnly)
+    public GCObject* GetContainingObject(IntPtr pInteriorPtr, bool fCollectedGenOnly)
     {
         Write("GetContainingObject");
-        return null;
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagWalkObject(GCObject* obj, void* fn, void* context)
+    public void DiagWalkObject(GCObject* obj, void* fn, void* context)
     {
         Write("DiagWalkObject");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagWalkObject2(GCObject* obj, void* fn, void* context)
+    public void DiagWalkObject2(GCObject* obj, void* fn, void* context)
     {
         Write("DiagWalkObject2");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagWalkHeap(void* fn, void* context, int gen_number, bool walk_large_object_heap_p)
+    public void DiagWalkHeap(void* fn, void* context, int gen_number, bool walk_large_object_heap_p)
     {
         Write("DiagWalkHeap");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagWalkSurvivorsWithType(void* gc_context, void* fn, void* diag_context, walk_surv_type type, int gen_number = -1)
+    public void DiagWalkSurvivorsWithType(void* gc_context, void* fn, void* diag_context, walk_surv_type type, int gen_number = -1)
     {
         Write("DiagWalkSurvivorsWithType");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagWalkFinalizeQueue(void* gc_context, void* fn)
+    public void DiagWalkFinalizeQueue(void* gc_context, void* fn)
     {
         Write("DiagWalkFinalizeQueue");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagScanFinalizeQueue(void* fn, void* context)
+    public void DiagScanFinalizeQueue(void* fn, void* context)
     {
         Write("DiagScanFinalizeQueue");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagScanHandles(void* fn, int gen_number, void* context)
+    public void DiagScanHandles(void* fn, int gen_number, void* context)
     {
         Write("DiagScanHandles");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagScanDependentHandles(void* fn, int gen_number, void* context)
+    public void DiagScanDependentHandles(void* fn, int gen_number, void* context)
     {
         Write("DiagScanDependentHandles");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagDescrGenerations(void* fn, void* context)
+    public void DiagDescrGenerations(void* fn, void* context)
     {
         Write("DiagDescrGenerations");
+        throw new NotImplementedException();
     }
 
     public void DiagTraceGCSegments()
     {
         Write("DiagTraceGCSegments");
+        throw new NotImplementedException();
     }
 
-    public unsafe void DiagGetGCSettings(void* settings)
+    public void DiagGetGCSettings(void* settings)
     {
         Write("DiagGetGCSettings");
+        throw new NotImplementedException();
     }
 
-    public unsafe bool StressHeap(gc_alloc_context* acontext)
+    public bool StressHeap(gc_alloc_context* acontext)
     {
         Write("StressHeap");
-        return false;
+        throw new NotImplementedException();
     }
 
     public void ControlEvents(GCEventKeyword keyword, GCEventLevel level)
     {
-        Write("ControlEvents");
     }
 
     public void ControlPrivateEvents(GCEventKeyword keyword, GCEventLevel level)
     {
-        Write("ControlPrivateEvents");
     }
 
-    public unsafe uint GetGenerationWithRange(GCObject* obj, byte** ppStart, byte** ppAllocated, byte** ppReserved)
+    public uint GetGenerationWithRange(GCObject* obj, byte** ppStart, byte** ppAllocated, byte** ppReserved)
     {
         Write("GetGenerationWithRange");
-        return 0;
-    }
-
-    public long GetTotalPauseDuration()
-    {
-        Write("GetTotalPauseDuration");
-        return 0;
-    }
-
-    public void EnumerateConfigurationValues(void* context, nint configurationValueFunc)
-    {
-        Write("EnumerateConfigurationValues");
+        throw new NotImplementedException();
     }
 
     public int RefreshMemoryLimit()
     {
         Write("RefreshMemoryLimit");
-        return 0;
+        throw new NotImplementedException();
     }
 
     public enable_no_gc_region_callback_status EnableNoGCRegionCallback(nint callback, ulong callback_threshold)
     {
         Write("EnableNoGCRegionCallback");
-        return default;
-    }
-
-    public nint GetExtraWorkForFinalization()
-    {
-        Write("GetExtraWorkForFinalization");
-        return 0;
+        throw new NotImplementedException();
     }
 
     public ulong GetGenerationBudget(int generation)
     {
         Write("GetGenerationBudget");
-        return 0;
-    }
-
-    public nint GetLOHThreshold()
-    {
-        Write("GetLOHThreshold");
-        return 0;
+        throw new NotImplementedException();
     }
 
     public void DiagWalkHeapWithACHandling(nint fn, void* context, int gen_number, bool walk_large_object_heap_p)
     {
         Write("DiagWalkHeapWithACHandling");
+        throw new NotImplementedException();
     }
 
     public void GetMemoryInfo(out ulong highMemLoadThresholdBytes, out ulong totalAvailableMemoryBytes, out ulong lastRecordedMemLoadBytes, out ulong lastRecordedHeapSizeBytes, out ulong lastRecordedFragmentationBytes, out ulong totalCommittedBytes, out ulong promotedBytes, out ulong pinnedObjectCount, out ulong finalizationPendingCount, out ulong index, out uint generation, out uint pauseTimePct, out bool isCompaction, out bool isConcurrent, out ulong genInfoRaw, out ulong pauseInfoRaw, int kind)
     {
         Write("GetMemoryInfo");
-        highMemLoadThresholdBytes = 0;
-        totalAvailableMemoryBytes = 0;
-        lastRecordedMemLoadBytes = 0;
-        lastRecordedHeapSizeBytes = 0;
-        lastRecordedFragmentationBytes = 0;
-        totalCommittedBytes = 0;
-        promotedBytes = 0;
-        pinnedObjectCount = 0;
-        finalizationPendingCount = 0;
-        index = 0;
-        generation = 0;
-        pauseTimePct = 0;
-        isCompaction = false;
-        isConcurrent = false;
-        genInfoRaw = 0;
-        pauseInfoRaw = 0;
+        throw new NotImplementedException();
     }
 }

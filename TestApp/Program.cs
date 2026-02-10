@@ -1,7 +1,19 @@
+using System.Runtime;
 using TestApp.TestFramework;
 using TestApp.Tests;
 
 var runner = new TestRunner();
+
+var variables = GC.GetConfigurationVariables();
+
+if (variables.Count > 0)
+{
+    Console.WriteLine($"GC Settings:");
+    foreach (var (key, value) in variables)
+    {
+        Console.WriteLine($" - {key}: {value:x2}");
+    }
+}
 
 // Basic Functionality Tests
 runner.RegisterTest(new BasicAllocationTest());
