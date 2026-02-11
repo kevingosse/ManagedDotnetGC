@@ -12,6 +12,8 @@ public class TestRunner
     private int _failed = 0;
     private readonly List<(string testName, string error)> _failures = new();
 
+    private sealed record TestResult(string Name, string Description, bool Passed, string? Error);
+
     public void RegisterTest(TestBase test)
     {
         _tests.Add(test);
@@ -19,29 +21,43 @@ public class TestRunner
 
     public bool RunAll()
     {
-        AnsiConsole.MarkupLine("[bold cyan]╔══════════════════════════════════════════════════╗[/]");
-        AnsiConsole.MarkupLine("[bold cyan]║    ManagedDotnetGC Tests                         ║[/]");
-        AnsiConsole.MarkupLine("[bold cyan]╚══════════════════════════════════════════════════╝[/]");
+        AnsiConsole.Write(new Rule("[bold cyan]Test Execution[/]").RuleStyle("cyan").Centered());
         AnsiConsole.WriteLine();
 
         AnsiConsole.MarkupLine($"[dim]Running {_tests.Count} test(s)...[/]");
         AnsiConsole.WriteLine();
 
-        foreach (var test in _tests)
-        {
-            RunTest(test);
-        }
+        var results = new List<TestResult>();
 
+        AnsiConsole.Progress()
+            .AutoClear(false)
+            .HideCompleted(false)
+            .Columns(
+            [
+                new TaskDescriptionColumn(),
+                new ProgressBarColumn(),
+                new PercentageColumn(),
+                new SpinnerColumn(Spinner.Known.Dots)
+            ])
+            .Start(ctx =>
+            {
+                var task = ctx.AddTask("[cyan]Executing tests[/]", maxValue: _tests.Count);
+
+                foreach (var test in _tests)
+                {
+                    results.Add(RunTest(test));
+                    task.Increment(1);
+                }
+            });
+
+        PrintResults(results);
         PrintSummary();
 
         return _failed == 0;
     }
 
-    private void RunTest(TestBase test)
+    private TestResult RunTest(TestBase test)
     {
-        AnsiConsole.MarkupLine($"[bold]Test:[/] {test.Name}");
-        AnsiConsole.MarkupLine($"[dim]{test.Description}[/]");
-
         try
         {
             test.Setup();
@@ -53,24 +69,42 @@ public class TestRunner
             if (result)
             {
                 _passed++;
-                AnsiConsole.MarkupLine("[green]✓ PASSED[/]");
+                return new TestResult(test.Name, test.Description, true, null);
             }
-            else
-            {
-                _failed++;
-                _failures.Add((test.Name, "Test returned false"));
-                AnsiConsole.MarkupLine("[red]✗ FAILED[/]");
-            }
+
+            _failed++;
+            _failures.Add((test.Name, "Test returned false"));
+            return new TestResult(test.Name, test.Description, false, "Test returned false");
         }
         catch (Exception ex)
         {
             _failed++;
             _failures.Add((test.Name, ex.ToString()));
-            AnsiConsole.MarkupLine($"[red]✗ FAILED with exception: {ex.Message}[/]");
             test.Cleanup();
+            return new TestResult(test.Name, test.Description, false, ex.Message);
+        }
+    }
+
+    private static void PrintResults(IReadOnlyCollection<TestResult> results)
+    {
+        AnsiConsole.WriteLine();
+        AnsiConsole.Write(new Rule("[bold]Results[/]").RuleStyle("grey"));
+
+        var table = new Table().Border(TableBorder.Rounded).Expand();
+        table.AddColumn("[bold]Test[/]");
+        table.AddColumn("[bold]Status[/]");
+        table.AddColumn("[bold]Details[/]");
+
+        foreach (var result in results)
+        {
+            var status = result.Passed ? "[green]Passed[/]" : "[red]Failed[/]";
+            var details = result.Passed
+                ? Markup.Escape(result.Description)
+                : $"[red]{Markup.Escape(result.Error ?? "Failed")}[/]";
+            table.AddRow(Markup.Escape(result.Name), status, details);
         }
 
-        AnsiConsole.WriteLine();
+        AnsiConsole.Write(table);
     }
 
     private void PrintSummary()

@@ -104,7 +104,7 @@ unsafe partial class GCHeap
 
             var objectStartPtr = segment.FindClosestObjectBelow((IntPtr)obj);
 
-            foreach (var ptr in WalkHeapObjects(objectStartPtr - IntPtr.Size, (IntPtr)obj))
+            foreach (var ptr in WalkHeapObjects(objectStartPtr, (IntPtr)obj))
             {
                 var o = (GCObject*)ptr;
                 var size = o->ComputeSize();

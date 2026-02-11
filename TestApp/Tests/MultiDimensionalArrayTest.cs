@@ -69,7 +69,6 @@ public class MultiDimensionalArrayTest : TestBase
             }
         }
 
-        Console.WriteLine("Second GC collection...");
         GC.Collect();
 
         // Verify objects still there

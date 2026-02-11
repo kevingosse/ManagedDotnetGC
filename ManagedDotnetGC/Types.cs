@@ -289,7 +289,7 @@ public enum walk_surv_type
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct segment_info
 {
-    public void* pvMem; // base of the allocation, not the first object (must add ibFirstObject)
+    public nint pvMem; // base of the allocation, not the first object (must add ibFirstObject)
     public nint ibFirstObject;   // offset to the base of the first object in the segment
     public nint ibAllocated; // limit of allocated memory in the segment (>= firstobject)
     public nint ibCommit; // limit of committed memory in the segment (>= allocated)

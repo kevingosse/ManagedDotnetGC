@@ -1,4 +1,5 @@
-﻿namespace ManagedDotnetGC;
+﻿
+namespace ManagedDotnetGC;
 
 unsafe partial class GCHeap
 {
@@ -62,10 +63,10 @@ unsafe partial class GCHeap
         // void (*)(void* context, void* name, void* publicKey, GCConfigurationType type, int64_t data);
         var callback = (delegate* unmanaged<void*, void*, void*, GCConfigurationType, long, void>)configurationValueFunc;
 
-        fixed (byte* name = "FreeObjectMethodTable"u8)
+        fixed (byte* name = "GC API"u8)
         fixed (byte* publicKey = "internal"u8)
         {
-            callback(context, name, publicKey, GCConfigurationType.Int64, (long)_freeObjectMethodTable);
+            callback(context, name, publicKey, GCConfigurationType.Int64, _managedApi.IGcObject);
         }
     }
 

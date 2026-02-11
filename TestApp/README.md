@@ -1,6 +1,6 @@
-# ManagedDotnetGC Test Harness
+# ManagedDotnetGC Tests
 
-This test harness provides comprehensive testing for the custom .NET garbage collector.
+This project provides comprehensive testing for the custom .NET garbage collector.
 
 ## Running Tests
 
@@ -26,29 +26,10 @@ This script will:
    publish.cmd
    ```
 
-2. Launch the test harness:
+2. Launch the tests:
    ```cmd
    launch.cmd
    ```
-
-## Test Structure
-
-The test harness is organized as follows:
-
-- **TestFramework/**
-  - `TestBase.cs` - Base class for all tests
-  - `TestRunner.cs` - Test execution and reporting
-
-- **Tests/**
-  - `BasicAllocationTest.cs` - Tests basic object allocation and initialization
-  - `LargeObjectTest.cs` - Tests large object heap (LOH) allocations
-  - `WeakReferenceTestNew.cs` - Tests weak reference behavior
-  - `InteriorPointerTestNew.cs` - Tests interior pointer handling
-  - `StaticRootTest.cs` - Tests static field root tracing
-  - `ReferenceGraphTest.cs` - Tests object reference graph tracing
-  - `MultipleCollectionTest.cs` - Tests multiple GC.Collect() calls
-  - `ArrayVariantTest.cs` - Tests various array types and sizes
-  - `StressTest.cs` - Stress test with many allocations
 
 ## Adding New Tests
 
@@ -95,7 +76,7 @@ runner.RegisterTest(new MyNewTest());
 
 ## Environment Variables
 
-The test harness uses the following environment variables:
+The tests use the following environment variables:
 
 - `DOTNET_GCName=ManagedDotnetGC.dll` - Specifies the custom GC to use
 - `DOTNET_gcConservative=0` - Disables conservative GC mode
