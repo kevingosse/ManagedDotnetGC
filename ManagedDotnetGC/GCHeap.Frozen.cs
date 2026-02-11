@@ -11,7 +11,8 @@ partial class GCHeap
     public unsafe nint RegisterFrozenSegment(segment_info* pseginfo)
     {
         var handle = Interlocked.Increment(ref _frozenSegmentIndex);
-        _frozenSegments.TryAdd(handle, new((pseginfo->ibFirstObject, pseginfo->ibCommit)));
+        _frozenSegments.TryAdd(handle, new((pseginfo->pvMem + pseginfo->ibFirstObject, pseginfo->pvMem + pseginfo->ibAllocated)));
+
         return handle;
     }
 
@@ -37,8 +38,7 @@ partial class GCHeap
     {
         if (_frozenSegments.TryGetValue(seg, out var segment))
         {
-            segment.Value.start = allocated;
-            segment.Value.end = committed;
+            segment.Value.end = allocated;
         }
     }
 }

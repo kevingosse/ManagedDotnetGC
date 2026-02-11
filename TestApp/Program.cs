@@ -1,19 +1,18 @@
-using System.Runtime;
+using Spectre.Console;
 using TestApp.TestFramework;
 using TestApp.Tests;
 
 var runner = new TestRunner();
 
-var variables = GC.GetConfigurationVariables();
+ManagedDotnetGC.Api.IGc? managedGc = ManagedDotnetGC.Api.GcApi.TryCreate();
 
-if (variables.Count > 0)
+if (managedGc == null)
 {
-    Console.WriteLine($"GC Settings:");
-    foreach (var (key, value) in variables)
-    {
-        Console.WriteLine($" - {key}: {value:x2}");
-    }
+    AnsiConsole.MarkupLine("[red]Failed to initialize GC API.[/]");
+    return 1;
 }
+
+managedGc.Test();
 
 // Basic Functionality Tests
 runner.RegisterTest(new BasicAllocationTest());

@@ -29,6 +29,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private GCHandle _handle;
     private Stack<IntPtr> _markStack = new();
 
+    private ManagedApi _managedApi;
+
     public GCHeap(IGCToCLRInvoker gcToClr)
     {
         _handle = GCHandle.Alloc(this);
@@ -38,6 +40,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         _nativeObject = IGCHeap.Wrap(this);
         _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
         Write($"Free Object Method Table: {(nint)_freeObjectMethodTable:x2}");
+
+        _managedApi = new ManagedApi(this);
     }
 
     public IntPtr IGCHeapObject => _nativeObject;
@@ -242,16 +246,16 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         foreach (var segment in _segments)
         {
-            foreach (var obj in WalkHeapObjects(segment.Start, segment.Current))
+            foreach (var obj in WalkHeapObjects(segment.Start + IntPtr.Size, segment.Current))
             {
                 yield return obj;
             }
         }
     }
 
-    private static IEnumerable<IntPtr> WalkHeapObjects(nint start, nint end)
+    private static IEnumerable<IntPtr> WalkHeapObjects(nint objectStart, nint end)
     {
-        var ptr = start + IntPtr.Size;
+        var ptr = objectStart;
 
         while (ptr < end)
         {
