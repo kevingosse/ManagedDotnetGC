@@ -104,7 +104,7 @@ public class TestRunner
             table.AddRow(Markup.Escape(result.Name), status, details);
         }
 
-        AnsiConsole.Render(table);
+        AnsiConsole.Write(table);
     }
 
     private void PrintSummary()
