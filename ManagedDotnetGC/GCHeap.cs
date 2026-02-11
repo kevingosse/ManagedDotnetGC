@@ -29,7 +29,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private GCHandle _handle;
     private Stack<IntPtr> _markStack = new();
 
-    private ManagedApi _managedApi;
+    private readonly ManagedApi _managedApi;
 
     public GCHeap(IGCToCLRInvoker gcToClr)
     {
