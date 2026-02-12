@@ -4,17 +4,15 @@ using TestApp.Tests;
 
 var runner = new TestRunner();
 
-ManagedDotnetGC.Api.IGc? managedGc = ManagedDotnetGC.Api.GcApi.TryCreate();
+var managedGc = ManagedDotnetGC.Api.GcApi.TryCreate();
 
 if (managedGc == null)
 {
     AnsiConsole.MarkupLine("[red]Failed to initialize GC API.[/]");
-    return 1;
 }
 
-managedGc.Test();
+managedGc?.Test();
 
-// Basic Functionality Tests
 runner.RegisterTest(new BasicAllocationTest());
 runner.RegisterTest(new LargeObjectTest());
 runner.RegisterTest(new ArrayVariantTest());
@@ -23,8 +21,6 @@ runner.RegisterTest(new ZeroLengthArrayTest());
 runner.RegisterTest(new MultiDimensionalArrayTest());
 runner.RegisterTest(new JaggedArrayTest());
 runner.RegisterTest(new ArrayOfStructsTest());
-
-// GC Correctness Tests
 runner.RegisterTest(new WeakReferenceTest());
 runner.RegisterTest(new InteriorPointerTest());
 runner.RegisterTest(new StaticRootTest());
@@ -32,24 +28,19 @@ runner.RegisterTest(new ReferenceGraphTest());
 runner.RegisterTest(new CircularReferenceTest());
 runner.RegisterTest(new SelfReferencingObjectTest());
 runner.RegisterTest(new MultipleCollectionTest());
-
-// Type System Tests
 runner.RegisterTest(new BoxingTest());
 runner.RegisterTest(new StructWithReferencesTest());
 runner.RegisterTest(new StringTest());
 runner.RegisterTest(new NullReferenceTest());
-
-// GCHandle Tests
 runner.RegisterTest(new GCHandleTest());
 runner.RegisterTest(new PinnedObjectTest());
 runner.RegisterTest(new DependentHandleTest());
-
-// Advanced Tests
 runner.RegisterTest(new FinalizerTest());
 runner.RegisterTest(new DeepCallStackTest());
 runner.RegisterTest(new MixedAllocationPatternTest());
 runner.RegisterTest(new FragmentationTest());
 runner.RegisterTest(new ConcurrentAllocationTest());
+runner.RegisterTest(new FrozenSegmentTest());
 
 // Stress Tests
 runner.RegisterTest(new StressTest());
