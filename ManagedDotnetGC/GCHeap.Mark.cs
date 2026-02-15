@@ -109,6 +109,8 @@ unsafe partial class GCHeap
 
             var objectStartPtr = segment.FindClosestObjectBelow((IntPtr)obj);
 
+            bool found = false;
+
             foreach (var ptr in WalkHeapObjects(objectStartPtr, (IntPtr)obj))
             {
                 var o = (GCObject*)ptr;
@@ -117,15 +119,16 @@ unsafe partial class GCHeap
                 if ((IntPtr)o <= (IntPtr)obj && (IntPtr)obj < (IntPtr)o + (nint)size)
                 {
                     obj = o;
-                    goto found;
+                    found = true;
+                    break;
                 }
             }
 
-            Write($"  No object found for interior pointer {(IntPtr)obj:x2}");
-            return;
-
-        found:
-            ;
+            if (!found)
+            {
+                Write($"  No object found for interior pointer {(IntPtr)obj:x2}");
+                return;
+            }
         }
 
         _markStack.Push((IntPtr)obj);
