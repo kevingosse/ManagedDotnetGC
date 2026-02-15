@@ -56,6 +56,36 @@ public class TestRunner
         return _failed == 0;
     }
 
+    public bool RunSingle(string testName)
+    {
+        AnsiConsole.Write(new Rule("[bold cyan]Test Execution[/]").RuleStyle("cyan").Centered());
+        AnsiConsole.WriteLine();
+
+        var test = _tests.FirstOrDefault(t => t.Name.Equals(testName, StringComparison.OrdinalIgnoreCase));
+
+        if (test == null)
+        {
+            AnsiConsole.MarkupLine($"[red]Test '{Markup.Escape(testName)}' not found.[/]");
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[yellow]Available tests:[/]");
+            foreach (var t in _tests)
+            {
+                AnsiConsole.MarkupLine($"  • {Markup.Escape(t.Name)}");
+            }
+            return false;
+        }
+
+        AnsiConsole.MarkupLine($"[dim]Running test: {Markup.Escape(test.Name)}...[/]");
+        AnsiConsole.WriteLine();
+
+        var result = RunTest(test);
+        
+        PrintResults([result]);
+        PrintSummary();
+
+        return _failed == 0;
+    }
+
     private TestResult RunTest(TestBase test)
     {
         try

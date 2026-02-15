@@ -45,8 +45,17 @@ runner.RegisterTest(new FrozenSegmentTest());
 // Stress Tests
 runner.RegisterTest(new StressTest());
 
-// Run all tests
-var success = runner.RunAll();
+// Check if a specific test was requested via command-line argument
+bool success;
+if (args.Length > 0)
+{
+    success = runner.RunSingle(args[0]);
+}
+else
+{
+    // Run all tests
+    success = runner.RunAll();
+}
 
 // Return appropriate exit code
 return success ? 0 : 1;
