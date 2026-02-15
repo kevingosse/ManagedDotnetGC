@@ -30,12 +30,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private Stack<IntPtr> _markStack = new();
 
     private readonly ManagedApi _managedApi;
+    private readonly NativeAllocator _nativeAllocator;
 
     public GCHeap(IGCToCLRInvoker gcToClr)
     {
         _handle = GCHandle.Alloc(this);
         _gcToClr = gcToClr;
         _gcHandleManager = new GCHandleManager();
+        _nativeAllocator = new(2L * 1024 * 1024 * 1024 * 1024 /* 2TB */);
 
         _nativeObject = IGCHeap.Wrap(this);
         _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
@@ -56,7 +58,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             _dacManager = dacManager;
         }
 
-        _activeSegment = new(SegmentSize);
+        _activeSegment = new(SegmentSize, _nativeAllocator);
         _segments.Add(_activeSegment);
 
         var parameters = new WriteBarrierParameters
@@ -148,7 +150,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         if (minimumSize > SegmentSize)
         {
             // We need a dedicated segment for this allocation
-            var segment = new Segment(size);
+            var segment = new Segment(size, _nativeAllocator);
             segment.Current = segment.End;
 
             lock (_segments)
@@ -171,7 +173,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             if (_activeSegment.Current + minimumSize >= _activeSegment.End)
             {
                 // The active segment is full, allocate a new one
-                _activeSegment = new Segment(SegmentSize);
+                _activeSegment = new Segment(SegmentSize, _nativeAllocator);
                 _segments.Add(_activeSegment);
             }
 

@@ -91,6 +91,11 @@ unsafe partial class GCHeap
             return;
         }
 
+        if (_nativeAllocator.IsAddressRangeExclusive && !_nativeAllocator.IsInRange((IntPtr)obj))
+        {
+            return;
+        }
+        
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
             // Find the segment containing the interior pointer
@@ -129,6 +134,11 @@ unsafe partial class GCHeap
         {
             var ptr = _markStack.Pop();
             var o = (GCObject*)ptr;
+
+            if (_nativeAllocator.IsAddressRangeExclusive && !_nativeAllocator.IsInRange(ptr))
+            {
+                continue;
+            }
 
             if (o->IsMarked())
             {

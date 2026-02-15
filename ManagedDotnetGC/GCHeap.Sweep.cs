@@ -39,6 +39,11 @@ unsafe partial class GCHeap
 
     private void UnmarkFrozenSegments()
     {
+        if (_nativeAllocator.IsAddressRangeExclusive)
+        {
+            return;
+        }
+
         foreach (var segment in _frozenSegments.Values)
         {
             foreach (var obj in WalkHeapObjects(segment.Value.start, segment.Value.end))

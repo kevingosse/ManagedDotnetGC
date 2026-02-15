@@ -1,17 +1,15 @@
-﻿using System.Runtime.InteropServices;
+﻿namespace ManagedDotnetGC;
 
-namespace ManagedDotnetGC;
-
-public unsafe class Segment
+internal class Segment
 {
     public IntPtr Start;
     public IntPtr Current;
     public IntPtr End;
     public byte[] Map;
 
-    public Segment(nint size)
+    public Segment(nint size, NativeAllocator allocator)
     {
-        Start = (IntPtr)NativeMemory.AllocZeroed((nuint)size);
+        Start = allocator.Allocate(size);
         Current = Start;
         End = Start + size;
 
