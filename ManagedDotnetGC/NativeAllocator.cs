@@ -154,11 +154,22 @@ internal unsafe class NativeAllocator : IDisposable
 
     public void Dispose()
     {
-        if (_reservedLowestAddress != IntPtr.Zero)
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        var address = Interlocked.Exchange(ref _reservedLowestAddress, IntPtr.Zero);
+        if (address != IntPtr.Zero)
         {
-            VirtualFree(_reservedLowestAddress, UIntPtr.Zero, MEM_RELEASE);
-            _reservedLowestAddress = IntPtr.Zero;
+            VirtualFree(address, UIntPtr.Zero, MEM_RELEASE);
             _reservedHighestAddress = IntPtr.Zero;
         }
+    }
+
+    ~NativeAllocator()
+    {
+        Dispose(false);
     }
 }
