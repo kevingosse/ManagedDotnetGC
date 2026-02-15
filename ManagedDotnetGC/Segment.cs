@@ -1,50 +1,73 @@
 ﻿namespace ManagedDotnetGC;
 
-internal class Segment
+internal class Segment : IDisposable
 {
-    public IntPtr Start;
+    private readonly NativeAllocator _allocator;
+    public readonly IntPtr Start;
+    public readonly IntPtr ObjectStart;
+    public readonly IntPtr End;
     public IntPtr Current;
-    public IntPtr End;
-    public byte[] Map;
+
+    // Each byte covers 255 pointer-aligned slots (~2040 bytes on 64-bit).
+    // Byte value 0 = no object. Values 1-255 = 1-based position of the last object in the chunk.
+    private const int SlotsPerChunk = 255;
 
     public Segment(nint size, NativeAllocator allocator)
     {
-        Start = allocator.Allocate(size);
-        Current = Start;
-        End = Start + size;
+        _allocator = allocator;
 
-        // Every alloc context is aligned on IntPtr.Size
-        // Map is a bitmap indicating where alloc contexts are located
-        // The size of the map is (size / AlignSize) / 8 bytes
-        Map = new byte[size / IntPtr.Size / 8];
+        var totalSlots = size / IntPtr.Size;
+        var brickTableLength = (int)((totalSlots + SlotsPerChunk - 1) / SlotsPerChunk);
+        var brickTableAlignedSize = (nint)((brickTableLength + IntPtr.Size - 1) & ~(IntPtr.Size - 1));
+
+        Start = allocator.Allocate(size + brickTableAlignedSize);
+        ObjectStart = Start + brickTableAlignedSize;
+        Current = ObjectStart;
+        End = Start + size + brickTableAlignedSize;
+    }
+
+    // The brick table is stored at [Start, ObjectStart) in native memory.
+    public unsafe Span<byte> GetBrickTable() => new((void*)Start, (int)(ObjectStart - Start));
+
+    public void Dispose()
+    {
+        _allocator.Free(Start, End - Start);
     }
 
     public void MarkObject(IntPtr addr)
     {
-        var index = (addr - Start) / IntPtr.Size;
-        var byteIndex = index / 8;
-        var bitIndex = (byte)(index % 8);
-        Map[byteIndex] |= (byte)(1 << bitIndex);
+        var slotIndex = (addr - ObjectStart) / IntPtr.Size;
+        var chunkIndex = (int)(slotIndex / SlotsPerChunk);
+        var posInChunk = (byte)(slotIndex % SlotsPerChunk + 1);
+
+        var brickTable = GetBrickTable();
+
+        if (brickTable[chunkIndex] == 0 || posInChunk > brickTable[chunkIndex])
+        {
+            brickTable[chunkIndex] = posInChunk;
+        }
     }
 
     public IntPtr FindClosestObjectBelow(IntPtr addr)
     {
-        var index = (addr - Start) / IntPtr.Size;
-        var byteIndex = index / 8;
-        var bitIndex = (byte)(index % 8);
-        for (var i = byteIndex; i >= 0; i--)
+        var slotIndex = (addr - ObjectStart) / IntPtr.Size;
+        var chunkIndex = (int)(slotIndex / SlotsPerChunk);
+        var posInChunk = slotIndex % SlotsPerChunk;
+
+        var brickTable = GetBrickTable();
+
+        if (brickTable[chunkIndex] != 0 && brickTable[chunkIndex] - 1 <= posInChunk)
         {
-            var b = Map[i];
-            for (var j = (i == byteIndex ? bitIndex : (byte)7); j < 8; j--)
-            {
-                if ((b & (1 << j)) != 0)
-                {
-                    var foundIndex = i * 8 + j;
-                    return Start + foundIndex * IntPtr.Size;
-                }
-            }
+            return ObjectStart + (chunkIndex * SlotsPerChunk + (brickTable[chunkIndex] - 1)) * IntPtr.Size;
         }
 
-        return Start;
+        var i = brickTable[..chunkIndex].LastIndexOfAnyExcept((byte)0);
+
+        if (i >= 0)
+        {
+            return ObjectStart + (i * SlotsPerChunk + (brickTable[i] - 1)) * IntPtr.Size;
+        }
+
+        return ObjectStart;
     }
 }
