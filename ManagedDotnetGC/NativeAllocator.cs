@@ -164,7 +164,7 @@ internal unsafe class NativeAllocator : IDisposable
         if (address != IntPtr.Zero)
         {
             VirtualFree(address, UIntPtr.Zero, MEM_RELEASE);
-            _reservedHighestAddress = IntPtr.Zero;
+            Interlocked.Exchange(ref _reservedHighestAddress, IntPtr.Zero);
         }
     }
 
