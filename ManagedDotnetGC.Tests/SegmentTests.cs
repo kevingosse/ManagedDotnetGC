@@ -15,6 +15,12 @@ public class SegmentTests
         _allocator = new NativeAllocator(16 * 1024 * 1024);
     }
 
+    [TearDown]
+    public void TearDown()
+    {
+        _allocator?.Dispose();
+    }
+
     [Test]
     public void Constructor_InitializesFields()
     {

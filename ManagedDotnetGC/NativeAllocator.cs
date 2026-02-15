@@ -2,12 +2,13 @@
 
 namespace ManagedDotnetGC;
 
-internal unsafe class NativeAllocator
+internal unsafe class NativeAllocator : IDisposable
 {
     private const uint MEM_COMMIT = 0x00001000;
     private const uint MEM_RESERVE = 0x00002000;
     private const uint MEM_RESET = 0x00080000;
     private const uint MEM_DECOMMIT = 0x00004000;
+    private const uint MEM_RELEASE = 0x00008000;
 
     private const uint PAGE_READWRITE = 0x04;
 
@@ -149,5 +150,26 @@ internal unsafe class NativeAllocator
         } while (Interlocked.CompareExchange(ref _highestAddress, ptrEnd, current) != current);
 
         return ptr;
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        var address = Interlocked.Exchange(ref _reservedLowestAddress, IntPtr.Zero);
+        if (address != IntPtr.Zero)
+        {
+            VirtualFree(address, UIntPtr.Zero, MEM_RELEASE);
+            Interlocked.Exchange(ref _reservedHighestAddress, IntPtr.Zero);
+        }
+    }
+
+    ~NativeAllocator()
+    {
+        Dispose(false);
     }
 }
