@@ -13,6 +13,9 @@ internal unsafe class NativeAllocator
     private static readonly int PageSize = Environment.SystemPageSize;
 
     private nint _nextFreeAddress;
+    private nint _lowestAddress;
+    private nint _highestAddress;
+    private int _isAddressRangeExclusive;
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr VirtualAlloc(
@@ -23,22 +26,22 @@ internal unsafe class NativeAllocator
 
     public NativeAllocator(long size)
     {
-        LowestAddress = VirtualAlloc(IntPtr.Zero, (UIntPtr)size, MEM_RESERVE, PAGE_READWRITE);
+        _lowestAddress = VirtualAlloc(IntPtr.Zero, (UIntPtr)size, MEM_RESERVE, PAGE_READWRITE);
 
-        IsAddressRangeExclusive = LowestAddress != IntPtr.Zero;
+        _isAddressRangeExclusive = _lowestAddress != IntPtr.Zero ? 1 : 0;
 
         if (IsAddressRangeExclusive)
         {
-            HighestAddress = LowestAddress + (nint)size;
-            _nextFreeAddress = LowestAddress;
+            _highestAddress = _lowestAddress + (nint)size;
+            _nextFreeAddress = _lowestAddress;
         }
     }
 
-    public bool IsAddressRangeExclusive { get; private set; }
+    public bool IsAddressRangeExclusive => Volatile.Read(ref _isAddressRangeExclusive) == 1;
 
-    public nint LowestAddress { get; private set; }
+    public nint LowestAddress => Volatile.Read(ref _lowestAddress);
 
-    public nint HighestAddress { get; private set; }
+    public nint HighestAddress => Volatile.Read(ref _highestAddress);
 
     public bool IsInRange(nint ptr) => ptr >= LowestAddress && ptr < HighestAddress;
 
@@ -51,44 +54,67 @@ internal unsafe class NativeAllocator
 
         if (!IsAddressRangeExclusive)
         {
-            // Fallback to regular heap
-            var ptr = (nint)NativeMemory.AllocZeroed((nuint)size);
-
-            if (ptr < LowestAddress)
-            {
-                LowestAddress = ptr;
-            }
-
-            if (ptr + size > HighestAddress)
-            {
-                HighestAddress = ptr + size;
-            }
-
-            return ptr;
+            return AllocateFallback(size);
         }
 
-        var alignedSize = (size + (nint.Size - 1)) & ~(nint.Size - 1);
+        var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
+        nint address;
 
-        var address = _nextFreeAddress;
-        var end = address + alignedSize;
-
-        if (end > HighestAddress)
+        while (true)
         {
-            IsAddressRangeExclusive = false;
-            return Allocate(size);
+            address = Volatile.Read(ref _nextFreeAddress);
+            var end = address + alignedSize;
+
+            if (end > HighestAddress)
+            {
+                Interlocked.Exchange(ref _isAddressRangeExclusive, 0);
+                return AllocateFallback(size);
+            }
+
+            if (Interlocked.CompareExchange(ref _nextFreeAddress, end, address) == address)
+            {
+                break;
+            }
         }
 
-        var commitStart = address & ~(nint)(PageSize - 1);
-        var commitEnd = (end + PageSize - 1) & ~(nint)(PageSize - 1);
-
-        var result = VirtualAlloc(commitStart, (UIntPtr)(commitEnd - commitStart), MEM_COMMIT, PAGE_READWRITE);
+        var result = VirtualAlloc(address, (UIntPtr)alignedSize, MEM_COMMIT, PAGE_READWRITE);
 
         if (result == IntPtr.Zero)
         {
             throw new OutOfMemoryException("VirtualAlloc failed to commit memory");
         }
 
-        _nextFreeAddress = end;
         return address;
+    }
+
+    private nint AllocateFallback(nint size)
+    {
+        var ptr = (nint)NativeMemory.AllocZeroed((nuint)size);
+
+        nint current;
+
+        do
+        {
+            current = Volatile.Read(ref _lowestAddress);
+
+            if (ptr >= current)
+            {
+                break;
+            }
+        } while (Interlocked.CompareExchange(ref _lowestAddress, ptr, current) != current);
+
+        var ptrEnd = ptr + size;
+
+        do
+        {
+            current = Volatile.Read(ref _highestAddress);
+
+            if (ptrEnd <= current)
+            {
+                break;
+            }
+        } while (Interlocked.CompareExchange(ref _highestAddress, ptrEnd, current) != current);
+
+        return ptr;
     }
 }
