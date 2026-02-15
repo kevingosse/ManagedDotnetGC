@@ -161,7 +161,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             acontext.alloc_ptr = 0;
             acontext.alloc_limit = 0;
 
-            result = Align(segment.Start + IntPtr.Size);
+            result = Align(segment.ObjectStart + IntPtr.Size);
 
             segment.MarkObject(result);
 
@@ -248,7 +248,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         foreach (var segment in _segments)
         {
-            foreach (var obj in WalkHeapObjects(segment.Start + IntPtr.Size, segment.Current))
+            foreach (var obj in WalkHeapObjects(segment.ObjectStart + IntPtr.Size, segment.Current))
             {
                 yield return obj;
             }

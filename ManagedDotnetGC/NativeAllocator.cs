@@ -2,11 +2,13 @@
 
 namespace ManagedDotnetGC;
 
-internal unsafe class NativeAllocator
+internal unsafe class NativeAllocator : IDisposable
 {
     private const uint MEM_COMMIT = 0x00001000;
     private const uint MEM_RESERVE = 0x00002000;
     private const uint MEM_RESET = 0x00080000;
+    private const uint MEM_DECOMMIT = 0x00004000;
+    private const uint MEM_RELEASE = 0x00008000;
 
     private const uint PAGE_READWRITE = 0x04;
 
@@ -15,6 +17,8 @@ internal unsafe class NativeAllocator
     private nint _nextFreeAddress;
     private nint _lowestAddress;
     private nint _highestAddress;
+    private nint _reservedLowestAddress;
+    private nint _reservedHighestAddress;
     private int _isAddressRangeExclusive;
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -23,6 +27,12 @@ internal unsafe class NativeAllocator
         UIntPtr dwSize,
         uint flAllocationType,
         uint flProtect);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool VirtualFree(
+        IntPtr lpAddress,
+        UIntPtr dwSize,
+        uint dwFreeType);
 
     public NativeAllocator(long size)
     {
@@ -34,6 +44,8 @@ internal unsafe class NativeAllocator
         {
             _highestAddress = _lowestAddress + (nint)size;
             _nextFreeAddress = _lowestAddress;
+            _reservedLowestAddress = _lowestAddress;
+            _reservedHighestAddress = _highestAddress;
         }
     }
 
@@ -87,6 +99,28 @@ internal unsafe class NativeAllocator
         return address;
     }
 
+    public void Free(nint address, nint size)
+    {
+        if (address == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (_reservedLowestAddress != IntPtr.Zero && address >= _reservedLowestAddress && address < _reservedHighestAddress)
+        {
+            var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
+
+            if (!VirtualFree(address, (UIntPtr)alignedSize, MEM_DECOMMIT))
+            {
+                throw new InvalidOperationException("VirtualFree failed to decommit memory");
+            }
+
+            return;
+        }
+
+        NativeMemory.Free((void*)address);
+    }
+
     private nint AllocateFallback(nint size)
     {
         var ptr = (nint)NativeMemory.AllocZeroed((nuint)size);
@@ -116,5 +150,26 @@ internal unsafe class NativeAllocator
         } while (Interlocked.CompareExchange(ref _highestAddress, ptrEnd, current) != current);
 
         return ptr;
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        var address = Interlocked.Exchange(ref _reservedLowestAddress, IntPtr.Zero);
+        if (address != IntPtr.Zero)
+        {
+            VirtualFree(address, UIntPtr.Zero, MEM_RELEASE);
+            Interlocked.Exchange(ref _reservedHighestAddress, IntPtr.Zero);
+        }
+    }
+
+    ~NativeAllocator()
+    {
+        Dispose(false);
     }
 }
