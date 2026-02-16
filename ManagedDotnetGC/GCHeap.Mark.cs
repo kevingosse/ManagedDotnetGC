@@ -91,7 +91,7 @@ unsafe partial class GCHeap
             return;
         }
 
-        if (_nativeAllocator.IsAddressRangeExclusive && !_nativeAllocator.IsInRange((IntPtr)obj))
+        if (!_nativeAllocator.IsInRange((IntPtr)obj))
         {
             return;
         }
@@ -138,7 +138,7 @@ unsafe partial class GCHeap
             var ptr = _markStack.Pop();
             var o = (GCObject*)ptr;
 
-            if (_nativeAllocator.IsAddressRangeExclusive && !_nativeAllocator.IsInRange(ptr))
+            if (!_nativeAllocator.IsInRange(ptr))
             {
                 continue;
             }
