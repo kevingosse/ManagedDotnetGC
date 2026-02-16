@@ -79,6 +79,52 @@ internal partial class NativeAllocator : IDisposable
         return address;
     }
 
+    public nint Reserve(nint size)
+    {
+        if (size <= 0)
+        {
+            return IntPtr.Zero;
+        }
+
+        var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
+        nint address;
+
+        while (true)
+        {
+            address = Volatile.Read(ref _nextFreeAddress);
+            var end = address + alignedSize;
+
+            if (end > HighestAddress)
+            {
+                throw new OutOfMemoryException("Not enough memory to reserve");
+            }
+
+            if (Interlocked.CompareExchange(ref _nextFreeAddress, end, address) == address)
+            {
+                break;
+            }
+        }
+
+        return address;
+    }
+
+    public void Commit(nint address, nint size)
+    {
+        if (size <= 0)
+        {
+            return;
+        }
+
+        var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
+
+        var result = VirtualAlloc(address, (UIntPtr)alignedSize, MEM_COMMIT, PAGE_READWRITE);
+
+        if (result == IntPtr.Zero)
+        {
+            throw new OutOfMemoryException("VirtualAlloc failed to commit memory");
+        }
+    }
+
     public void Free(nint address, nint size)
     {
         if (address == IntPtr.Zero || _lowestAddress == IntPtr.Zero)
