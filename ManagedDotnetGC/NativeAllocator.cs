@@ -2,11 +2,10 @@
 
 namespace ManagedDotnetGC;
 
-internal unsafe class NativeAllocator : IDisposable
+internal partial class NativeAllocator : IDisposable
 {
     private const uint MEM_COMMIT = 0x00001000;
     private const uint MEM_RESERVE = 0x00002000;
-    private const uint MEM_RESET = 0x00080000;
     private const uint MEM_DECOMMIT = 0x00004000;
     private const uint MEM_RELEASE = 0x00008000;
 
@@ -17,43 +16,30 @@ internal unsafe class NativeAllocator : IDisposable
     private nint _nextFreeAddress;
     private nint _lowestAddress;
     private nint _highestAddress;
-    private nint _reservedLowestAddress;
-    private nint _reservedHighestAddress;
-    private int _isAddressRangeExclusive;
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr VirtualAlloc(
-        IntPtr lpAddress,
-        UIntPtr dwSize,
-        uint flAllocationType,
-        uint flProtect);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial IntPtr VirtualAlloc(IntPtr lpAddress, UIntPtr dwSize, uint flAllocationType, uint flProtect);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool VirtualFree(
-        IntPtr lpAddress,
-        UIntPtr dwSize,
-        uint dwFreeType);
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool VirtualFree(IntPtr lpAddress, UIntPtr dwSize, uint dwFreeType);
 
     public NativeAllocator(long size)
     {
         _lowestAddress = VirtualAlloc(IntPtr.Zero, (UIntPtr)size, MEM_RESERVE, PAGE_READWRITE);
 
-        _isAddressRangeExclusive = _lowestAddress != IntPtr.Zero ? 1 : 0;
-
-        if (IsAddressRangeExclusive)
+        if (_lowestAddress == IntPtr.Zero)
         {
-            _highestAddress = _lowestAddress + (nint)size;
-            _nextFreeAddress = _lowestAddress;
-            _reservedLowestAddress = _lowestAddress;
-            _reservedHighestAddress = _highestAddress;
+            throw new OutOfMemoryException("Failed to reserve memory");
         }
+
+        _highestAddress = _lowestAddress + (nint)size;
+        _nextFreeAddress = _lowestAddress;
     }
 
-    public bool IsAddressRangeExclusive => Volatile.Read(ref _isAddressRangeExclusive) == 1;
+    public nint LowestAddress => _lowestAddress;
 
-    public nint LowestAddress => Volatile.Read(ref _lowestAddress);
-
-    public nint HighestAddress => Volatile.Read(ref _highestAddress);
+    public nint HighestAddress => _highestAddress;
 
     public bool IsInRange(nint ptr) => ptr >= LowestAddress && ptr < HighestAddress;
 
@@ -62,11 +48,6 @@ internal unsafe class NativeAllocator : IDisposable
         if (size <= 0)
         {
             return IntPtr.Zero;
-        }
-
-        if (!IsAddressRangeExclusive)
-        {
-            return AllocateFallback(size);
         }
 
         var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
@@ -79,8 +60,7 @@ internal unsafe class NativeAllocator : IDisposable
 
             if (end > HighestAddress)
             {
-                Interlocked.Exchange(ref _isAddressRangeExclusive, 0);
-                return AllocateFallback(size);
+                throw new OutOfMemoryException("Not enough memory to allocate");
             }
 
             if (Interlocked.CompareExchange(ref _nextFreeAddress, end, address) == address)
@@ -101,75 +81,31 @@ internal unsafe class NativeAllocator : IDisposable
 
     public void Free(nint address, nint size)
     {
-        if (address == IntPtr.Zero)
+        if (address == IntPtr.Zero || _lowestAddress == IntPtr.Zero)
         {
             return;
         }
 
-        if (_reservedLowestAddress != IntPtr.Zero && address >= _reservedLowestAddress && address < _reservedHighestAddress)
+        if (address < _lowestAddress || address >= _highestAddress)
         {
-            var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
-
-            if (!VirtualFree(address, (UIntPtr)alignedSize, MEM_DECOMMIT))
-            {
-                throw new InvalidOperationException("VirtualFree failed to decommit memory");
-            }
-
-            return;
+            throw new InvalidOperationException($"Address {address:x2} is out of reserved range");
         }
 
-        NativeMemory.Free((void*)address);
-    }
+        var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
 
-    private nint AllocateFallback(nint size)
-    {
-        var ptr = (nint)NativeMemory.AllocZeroed((nuint)size);
-
-        nint current;
-
-        do
+        if (!VirtualFree(address, (UIntPtr)alignedSize, MEM_DECOMMIT))
         {
-            current = Volatile.Read(ref _lowestAddress);
-
-            if (ptr >= current)
-            {
-                break;
-            }
-        } while (Interlocked.CompareExchange(ref _lowestAddress, ptr, current) != current);
-
-        var ptrEnd = ptr + size;
-
-        do
-        {
-            current = Volatile.Read(ref _highestAddress);
-
-            if (ptrEnd <= current)
-            {
-                break;
-            }
-        } while (Interlocked.CompareExchange(ref _highestAddress, ptrEnd, current) != current);
-
-        return ptr;
+            throw new InvalidOperationException("VirtualFree failed to decommit memory");
+        }
     }
 
     public void Dispose()
     {
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
-
-    protected virtual void Dispose(bool disposing)
-    {
-        var address = Interlocked.Exchange(ref _reservedLowestAddress, IntPtr.Zero);
-        if (address != IntPtr.Zero)
+        if (_lowestAddress != IntPtr.Zero)
         {
-            VirtualFree(address, UIntPtr.Zero, MEM_RELEASE);
-            Interlocked.Exchange(ref _reservedHighestAddress, IntPtr.Zero);
+            VirtualFree(_lowestAddress, UIntPtr.Zero, MEM_RELEASE);
+            _lowestAddress = IntPtr.Zero;
+            _highestAddress = IntPtr.Zero;
         }
-    }
-
-    ~NativeAllocator()
-    {
-        Dispose(false);
     }
 }
