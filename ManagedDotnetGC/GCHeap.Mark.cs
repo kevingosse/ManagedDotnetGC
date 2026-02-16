@@ -99,9 +99,9 @@ unsafe partial class GCHeap
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
             // Find the segment containing the interior pointer
-            var segment = FindSegmentContaining((IntPtr)obj);
+            var segment = _segmentManager.FindSegmentContaining((nint)obj);
 
-            if (segment == null)
+            if (segment.IsNull)
             {
                 Write($"  No segment found for interior pointer {(IntPtr)obj:x2}");
                 return;

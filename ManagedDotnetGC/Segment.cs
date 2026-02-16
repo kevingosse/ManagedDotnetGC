@@ -1,37 +1,39 @@
-﻿namespace ManagedDotnetGC;
+using System.Runtime.InteropServices;
 
-internal class Segment : IDisposable
+namespace ManagedDotnetGC;
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct SegmentHeader
 {
-    private readonly NativeAllocator _allocator;
-    public readonly IntPtr Start;
-    public readonly IntPtr ObjectStart;
-    public readonly IntPtr End;
-    public IntPtr Current;
+    public nint ObjectStart;
+    public nint End;
+    public nint Current;
+}
+
+internal readonly unsafe struct Segment
+{
+    private readonly nint _start;
 
     // Each byte covers 255 pointer-aligned slots (~2040 bytes on 64-bit).
     // Byte value 0 = no object. Values 1-255 = 1-based position of the last object in the chunk.
-    private const int SlotsPerChunk = 255;
+    internal const int SlotsPerChunk = 255;
 
-    public Segment(nint size, NativeAllocator allocator)
+    internal Segment(nint start) => _start = start;
+
+    private SegmentHeader* Header => (SegmentHeader*)_start;
+
+    public bool IsNull => _start == 0;
+
+    public nint Start => _start;
+    public nint ObjectStart => Header->ObjectStart;
+    public nint End => Header->End;
+    public ref nint Current => ref Header->Current;
+
+    // The brick table is stored between the header and ObjectStart.
+    public Span<byte> GetBrickTable()
     {
-        _allocator = allocator;
-
-        var totalSlots = size / IntPtr.Size;
-        var brickTableLength = (int)((totalSlots + SlotsPerChunk - 1) / SlotsPerChunk);
-        var brickTableAlignedSize = (nint)((brickTableLength + IntPtr.Size - 1) & ~(IntPtr.Size - 1));
-
-        Start = allocator.Allocate(size + brickTableAlignedSize);
-        ObjectStart = Start + brickTableAlignedSize;
-        Current = ObjectStart;
-        End = Start + size + brickTableAlignedSize;
-    }
-
-    // The brick table is stored at [Start, ObjectStart) in native memory.
-    public unsafe Span<byte> GetBrickTable() => new((void*)Start, (int)(ObjectStart - Start));
-
-    public void Dispose()
-    {
-        _allocator.Free(Start, End - Start);
+        var brickTableStart = _start + sizeof(SegmentHeader);
+        return new Span<byte>((void*)brickTableStart, (int)(ObjectStart - brickTableStart));
     }
 
     public void MarkObject(IntPtr addr)

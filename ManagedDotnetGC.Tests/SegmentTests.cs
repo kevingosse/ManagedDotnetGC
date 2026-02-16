@@ -8,23 +8,25 @@ public class SegmentTests
 {
     private const nint SegmentSize = 64 * 1024; // 64 KB
     private NativeAllocator _allocator = null!;
+    private SegmentManager _segmentManager = null!;
 
     [SetUp]
     public void SetUp()
     {
         _allocator = new NativeAllocator(16 * 1024 * 1024);
+        _segmentManager = new SegmentManager(_allocator);
     }
 
     [TearDown]
     public void TearDown()
     {
-        _allocator?.Dispose();
+        _allocator.Dispose();
     }
 
     [Test]
     public void Constructor_InitializesFields()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         segment.Start.ShouldNotBe(IntPtr.Zero);
         segment.ObjectStart.ShouldBeGreaterThan(segment.Start);
@@ -38,7 +40,7 @@ public class SegmentTests
     [Test]
     public void Constructor_BrickTableStartsEmpty()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         segment.GetBrickTable().ToArray().ShouldAllBe(b => b == 0);
     }
@@ -46,7 +48,7 @@ public class SegmentTests
     [Test]
     public void MarkObject_SetsBrickTableEntry()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var addr = segment.ObjectStart + IntPtr.Size;
         segment.MarkObject(addr);
@@ -57,7 +59,7 @@ public class SegmentTests
     [Test]
     public void MarkObject_KeepsLatestObjectInChunk()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var first = segment.ObjectStart + IntPtr.Size;
         var second = segment.ObjectStart + IntPtr.Size * 10;
@@ -75,7 +77,7 @@ public class SegmentTests
     [Test]
     public void MarkObject_DoesNotOverwriteWithEarlierObject()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var first = segment.ObjectStart + IntPtr.Size;
         var second = segment.ObjectStart + IntPtr.Size * 10;
@@ -92,7 +94,7 @@ public class SegmentTests
     [Test]
     public void FindClosestObjectBelow_ReturnsMarkedObject()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var objAddr = segment.ObjectStart + IntPtr.Size * 5;
         segment.MarkObject(objAddr);
@@ -105,7 +107,7 @@ public class SegmentTests
     [Test]
     public void FindClosestObjectBelow_ReturnsLastObjectWhenQueryIsAboveInSameChunk()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var first = segment.ObjectStart + IntPtr.Size * 5;
         var last = segment.ObjectStart + IntPtr.Size * 80;
@@ -121,7 +123,7 @@ public class SegmentTests
     [Test]
     public void FindClosestObjectBelow_ReturnsStartWhenNoObjectsMarked()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var queryAddr = segment.ObjectStart + IntPtr.Size * 100;
         var result = segment.FindClosestObjectBelow(queryAddr);
@@ -132,7 +134,7 @@ public class SegmentTests
     [Test]
     public void FindClosestObjectBelow_ReturnsObjectFromPreviousChunk()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         // Mark an object in chunk 0
         var objAddr = segment.ObjectStart + IntPtr.Size * 10;
@@ -148,7 +150,7 @@ public class SegmentTests
     [Test]
     public void FindClosestObjectBelow_PicksClosestChunkObject()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         // Mark an object in chunk 0
         var obj1 = segment.ObjectStart + IntPtr.Size * 5;
@@ -170,7 +172,7 @@ public class SegmentTests
     [Test]
     public void FindClosestObjectBelow_AtExactChunkBoundary()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var objAddr = segment.ObjectStart + IntPtr.Size * 255;
         segment.MarkObject(objAddr);
@@ -183,7 +185,7 @@ public class SegmentTests
     [Test]
     public void FindClosestObjectBelow_MultipleChunks_SkipsEmptyChunks()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         // Mark object in chunk 0 only
         var objAddr = segment.ObjectStart + IntPtr.Size * 3;
@@ -199,7 +201,7 @@ public class SegmentTests
     [Test]
     public void MarkObject_DifferentChunks_AreIndependent()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var obj1 = segment.ObjectStart + IntPtr.Size * 10;   // chunk 0
         var obj2 = segment.ObjectStart + IntPtr.Size * 260;  // chunk 1
@@ -221,7 +223,7 @@ public class SegmentTests
     [Test]
     public void FindClosestObjectBelow_AtStartOfSegment()
     {
-        using var segment = new Segment(SegmentSize, _allocator);
+        var segment = _segmentManager.AllocateSegment(SegmentSize);
 
         var objAddr = segment.ObjectStart;
         segment.MarkObject(objAddr);

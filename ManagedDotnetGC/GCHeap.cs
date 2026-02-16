@@ -11,6 +11,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 {
     internal const int AllocationContextSize = 32 * 1024;
     internal const int SegmentSize = AllocationContextSize * 128;
+    internal const long HeapReserveSize = 2L * 1024 * 1024 * 1024 * 1024;
     internal static readonly int SizeOfObject = sizeof(nint) * 3;
 
     private readonly ManualResetEventSlim _gcEvent = new(false);
@@ -23,7 +24,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private MethodTable* _freeObjectMethodTable;
 
-    private List<Segment> _segments = new();
+    private readonly SegmentManager _segmentManager;
+    private readonly object _allocationLock = new();
     private Segment _activeSegment;
 
     private GCHandle _handle;
@@ -37,7 +39,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         _handle = GCHandle.Alloc(this);
         _gcToClr = gcToClr;
         _gcHandleManager = new GCHandleManager();
-        _nativeAllocator = new(2L * 1024 * 1024 * 1024 * 1024 /* 2TB */);
+        _nativeAllocator = new(HeapReserveSize);
+        _segmentManager = new SegmentManager(_nativeAllocator);
 
         _nativeObject = IGCHeap.Wrap(this);
         _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
@@ -58,8 +61,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             _dacManager = dacManager;
         }
 
-        _activeSegment = new(SegmentSize, _nativeAllocator);
-        _segments.Add(_activeSegment);
+        _activeSegment = _segmentManager.AllocateSegment(SegmentSize);
 
         var parameters = new WriteBarrierParameters
         {
@@ -150,13 +152,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         if (minimumSize > SegmentSize)
         {
             // We need a dedicated segment for this allocation
-            var segment = new Segment(size, _nativeAllocator);
-            segment.Current = segment.End;
+            Segment segment;
 
-            lock (_segments)
+            lock (_allocationLock)
             {
-                _segments.Add(segment);
+                segment = _segmentManager.AllocateSegment(size);
             }
+
+            segment.Current = segment.End;
 
             acontext.alloc_ptr = 0;
             acontext.alloc_limit = 0;
@@ -168,13 +171,12 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             return (GCObject*)result;
         }
 
-        lock (_segments)
+        lock (_allocationLock)
         {
             if (_activeSegment.Current + minimumSize >= _activeSegment.End)
             {
                 // The active segment is full, allocate a new one
-                _activeSegment = new Segment(SegmentSize, _nativeAllocator);
-                _segments.Add(_activeSegment);
+                _activeSegment = _segmentManager.AllocateSegment(SegmentSize);
             }
 
             var desiredSize = Math.Min(Math.Max(minimumSize, AllocationContextSize), _activeSegment.End - _activeSegment.Current);
@@ -189,21 +191,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             return (GCObject*)result;
         }
-    }
-
-    private Segment? FindSegmentContaining(IntPtr addr)
-    {
-        for (int i = 0; i < _segments.Count; i++)
-        {
-            var segment = _segments[i];
-
-            if (addr >= segment.Start && addr < segment.End)
-            {
-                return segment;
-            }
-        }
-
-        return null;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -246,7 +233,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private IEnumerable<IntPtr> WalkHeapObjects()
     {
-        foreach (var segment in _segments)
+        foreach (var segment in _segmentManager.Segments)
         {
             foreach (var obj in WalkHeapObjects(segment.ObjectStart + IntPtr.Size, segment.Current))
             {
