@@ -84,14 +84,14 @@ unsafe partial class GCHeap
         while (markedObjects);
     }
 
-    private void ScanRoots(GCObject* obj, ScanContext* context, GcCallFlags flags)
+    private void ScanRoots(GCObject* root, ScanContext* context, GcCallFlags flags)
     {
-        if ((IntPtr)obj == 0)
+        if ((IntPtr)root == 0)
         {
             return;
         }
 
-        if (!_nativeAllocator.IsInRange((IntPtr)obj))
+        if (!_nativeAllocator.IsInRange((IntPtr)root))
         {
             return;
         }
@@ -99,26 +99,26 @@ unsafe partial class GCHeap
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
             // Find the segment containing the interior pointer
-            var segment = _segmentManager.FindSegmentContaining((nint)obj);
+            var segment = _segmentManager.FindSegmentContaining((nint)root);
 
             if (segment.IsNull)
             {
-                Write($"  No segment found for interior pointer {(IntPtr)obj:x2}");
+                Write($"  No segment found for interior pointer {(IntPtr)root:x2}");
                 return;
             }
 
-            var objectStartPtr = segment.FindClosestObjectBelow((IntPtr)obj);
+            var objectStartPtr = segment.FindClosestObjectBelow((IntPtr)root);
 
             bool found = false;
 
-            foreach (var ptr in WalkHeapObjects(objectStartPtr, (IntPtr)obj))
+            foreach (var ptr in WalkHeapObjects(objectStartPtr, (IntPtr)root))
             {
                 var o = (GCObject*)ptr;
                 var size = o->ComputeSize();
 
-                if ((IntPtr)o <= (IntPtr)obj && (IntPtr)obj < (IntPtr)o + (nint)size)
+                if ((IntPtr)o <= (IntPtr)root && (IntPtr)root < (IntPtr)o + (nint)size)
                 {
-                    obj = o;
+                    root = o;
                     found = true;
                     break;
                 }
@@ -126,30 +126,33 @@ unsafe partial class GCHeap
 
             if (!found)
             {
-                Write($"  No object found for interior pointer {(IntPtr)obj:x2}");
+                Write($"  No object found for interior pointer {(IntPtr)root:x2}");
                 return;
             }
         }
 
-        _markStack.Push((IntPtr)obj);
+        _markStack.Push((IntPtr)root);
 
         while (_markStack.Count > 0)
         {
             var ptr = _markStack.Pop();
             var o = (GCObject*)ptr;
 
-            if (!_nativeAllocator.IsInRange(ptr))
+            if (o->IsMarked())
             {
                 continue;
             }
 
-            if (o->IsMarked())
+            var segment = _segmentManager.FindSegmentContaining((nint)o);
+
+            if (segment.IsNull)
             {
                 continue;
             }
 
             o->EnumerateObjectReferences(_markStack.Push);
             o->Mark();
+            segment.MarkObject((IntPtr)o);
         }
     }
 }
