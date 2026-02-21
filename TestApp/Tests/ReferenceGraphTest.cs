@@ -9,28 +9,28 @@ namespace TestApp.Tests;
 public class ReferenceGraphTest : TestBase
 {
     public ReferenceGraphTest()
-        : base("Reference Graph", "Verifies that the GC correctly traces object references")
+        : base("Reference Graph")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Create a reference chain: root -> child1 -> child2
         var (weakRoot, weakChild1, weakChild2) = CreateReferenceChain(out var root);
 
         // All should be alive
         if (!weakRoot.IsAlive || !weakChild1.IsAlive || !weakChild2.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("One or more nodes not alive before first GC");
 
         // Collect - all should survive because root is still alive
         GC.Collect();
 
-        if (!weakRoot.IsAlive || !weakChild1.IsAlive || !weakChild2.IsAlive)
-        {
-            return false;
-        }
+        if (!weakRoot.IsAlive)
+            throw new Exception("Root not alive after GC while root is still referenced");
+        if (!weakChild1.IsAlive)
+            throw new Exception("child1 not alive after GC while root is still referenced");
+        if (!weakChild2.IsAlive)
+            throw new Exception("child2 not alive after GC while root is still referenced");
 
         // Keep root alive
         GC.KeepAlive(root);
@@ -40,12 +40,9 @@ public class ReferenceGraphTest : TestBase
         GC.Collect();
 
         // All should be collected now
-        if (weakRoot.IsAlive || weakChild1.IsAlive || weakChild2.IsAlive)
-        {
-            return false;
-        }
-
-        return true;
+        if (weakRoot.IsAlive) throw new Exception("Root still alive after GC with no roots");
+        if (weakChild1.IsAlive) throw new Exception("child1 still alive after GC with no roots");
+        if (weakChild2.IsAlive) throw new Exception("child2 still alive after GC with no roots");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class EmptyObjectTest : TestBase
 {
     public EmptyObjectTest()
-        : base("Empty Objects", "Verifies that objects with no fields can be allocated")
+        : base("Empty Objects")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Allocate many empty objects
         var objects = new EmptyClass[1000];
@@ -26,9 +26,7 @@ public class EmptyObjectTest : TestBase
         for (int i = 0; i < objects.Length; i++)
         {
             if (objects[i] == null)
-            {
-                return false;
-            }
+                throw new Exception($"objects[{i}] is null after allocation");
         }
 
         // Trigger GC while objects are alive
@@ -38,12 +36,8 @@ public class EmptyObjectTest : TestBase
         for (int i = 0; i < objects.Length; i++)
         {
             if (objects[i] == null)
-            {
-                return false;
-            }
+                throw new Exception($"objects[{i}] is null after GC");
         }
-
-        return true;
     }
 
     private class EmptyClass

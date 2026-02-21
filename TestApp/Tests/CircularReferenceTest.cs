@@ -9,51 +9,43 @@ namespace TestApp.Tests;
 public class CircularReferenceTest : TestBase
 {
     public CircularReferenceTest()
-        : base("Circular References", "Verifies that objects in circular reference chains are collected when unreachable")
+        : base("Circular References")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Create a simple circular reference: A -> B -> A
         var weakRefs = CreateSimpleCircle();
 
         // Both should be alive initially
         if (!weakRefs.Item1.IsAlive || !weakRefs.Item2.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("Simple circle nodes not alive before GC");
 
         // After GC, both should be collected since there's no external root
         GC.Collect();
 
-        if (weakRefs.Item1.IsAlive || weakRefs.Item2.IsAlive)
-        {
-            return false;
-        }
+        if (weakRefs.Item1.IsAlive)
+            throw new Exception("nodeA of simple circle still alive after GC");
+        if (weakRefs.Item2.IsAlive)
+            throw new Exception("nodeB of simple circle still alive after GC");
 
         // Test a more complex circle: A -> B -> C -> D -> A
         var complexWeakRefs = CreateComplexCircle();
 
-        foreach (var weakRef in complexWeakRefs)
+        for (int i = 0; i < complexWeakRefs.Length; i++)
         {
-            if (!weakRef.IsAlive)
-            {
-                return false;
-            }
+            if (!complexWeakRefs[i].IsAlive)
+                throw new Exception($"Complex circle node[{i}] not alive before GC");
         }
 
         GC.Collect();
 
-        foreach (var weakRef in complexWeakRefs)
+        for (int i = 0; i < complexWeakRefs.Length; i++)
         {
-            if (weakRef.IsAlive)
-            {
-                return false;
-            }
+            if (complexWeakRefs[i].IsAlive)
+                throw new Exception($"Complex circle node[{i}] still alive after GC");
         }
-
-        return true;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

@@ -11,26 +11,22 @@ public class StaticRootTest : TestBase
     private static object? _staticRoot;
 
     public StaticRootTest()
-        : base("Static Roots", "Verifies that objects referenced by static fields survive GC")
+        : base("Static Roots")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         var weakRef = AllocateAndSetStaticRoot();
 
         if (!weakRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("Object not alive immediately after allocation");
 
         // Object should survive GC because it's referenced by a static field
         GC.Collect();
 
         if (!weakRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("Object not alive after GC while referenced by static field");
 
         // Clear the static root
         _staticRoot = null;
@@ -39,11 +35,7 @@ public class StaticRootTest : TestBase
         GC.Collect();
 
         if (weakRef.IsAlive)
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception("Object still alive after GC when static root was cleared");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

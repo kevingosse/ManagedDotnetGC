@@ -9,21 +9,17 @@ namespace TestApp.Tests;
 public class DeepCallStackTest : TestBase
 {
     public DeepCallStackTest()
-        : base("Deep Call Stack", "Verifies GC scans stack references at various depths")
+        : base("Deep Call Stack")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         var weakRef = RecursiveAllocate(50);
 
         // Object should still be alive (it's on the stack)
         if (!weakRef.IsAlive)
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception("Object not alive after recursive GC at depth 50");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

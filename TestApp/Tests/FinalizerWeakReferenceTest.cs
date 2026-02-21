@@ -17,11 +17,15 @@ namespace TestApp.Tests;
 ///   A finalizer can store a new strong reference to 'this', preventing collection.
 ///   A long weak reference created before resurrection remains valid after the finalizer runs.
 /// </summary>
-public class FinalizerWeakReferenceTest()
-    : TestBase("Finalizer Weak References", "Verifies short/long weak handle behavior during finalization and object resurrection")
+public class FinalizerWeakReferenceTest : TestBase
 {
     private static int _finalizerCallCount;
     private static ResurrectableObject? _resurrectedInstance;
+
+    public FinalizerWeakReferenceTest()
+        : base("Finalizer Weak References")
+    {
+    }
 
     public override void Setup()
     {
@@ -29,24 +33,11 @@ public class FinalizerWeakReferenceTest()
         _resurrectedInstance = null;
     }
 
-    public override bool Run()
+    public override void Run()
     {
-        if (!TestShortWeakRefClearedBeforeFinalization())
-        {
-            return false;
-        }
-
-        if (!TestLongWeakRefTracksFinalization())
-        {
-            return false;
-        }
-
-        if (!TestResurrection())
-        {
-            return false;
-        }
-
-        return true;
+        TestShortWeakRefClearedBeforeFinalization();
+        TestLongWeakRefTracksFinalization();
+        TestResurrection();
     }
 
     /// <summary>
@@ -56,7 +47,7 @@ public class FinalizerWeakReferenceTest()
     /// normal roots, so the short weak reference is cleared immediately.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestShortWeakRefClearedBeforeFinalization()
+    private static void TestShortWeakRefClearedBeforeFinalization()
     {
         _finalizerCallCount = 0;
         CreateShortWeakRef(out var shortRef);
@@ -65,19 +56,14 @@ public class FinalizerWeakReferenceTest()
 
         // Short weak ref must already be null: object is f-reachable, not reachable
         if (shortRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("TestShortWeakRefClearedBeforeFinalization: short weak ref still alive after GC (expected cleared before finalizer runs)");
 
         GC.WaitForPendingFinalizers();
 
         // Confirm the finalizer actually ran (distinguishes from plain collection)
-        if (Volatile.Read(ref _finalizerCallCount) != 1)
-        {
-            return false;
-        }
-
-        return true;
+        var count = Volatile.Read(ref _finalizerCallCount);
+        if (count != 1)
+            throw new Exception($"TestShortWeakRefClearedBeforeFinalization: finalizer ran {count} time(s), expected 1");
     }
 
     /// <summary>
@@ -86,7 +72,7 @@ public class FinalizerWeakReferenceTest()
     /// finalization has completed and a subsequent collection reclaims the object.
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestLongWeakRefTracksFinalization()
+    private static void TestLongWeakRefTracksFinalization()
     {
         _finalizerCallCount = 0;
         CreateLongWeakRef(out var longRef);
@@ -95,20 +81,14 @@ public class FinalizerWeakReferenceTest()
 
         // Long weak ref must still be alive: object is pending finalization
         if (!longRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("TestLongWeakRefTracksFinalization: long weak ref cleared after GC (expected alive while object is pending finalization)");
 
         GC.WaitForPendingFinalizers();
         GC.Collect(); // reclaim the now-finalized object
 
         // Long weak ref must now be null
         if (longRef.IsAlive)
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception("TestLongWeakRefTracksFinalization: long weak ref still alive after finalization and second GC");
     }
 
     /// <summary>
@@ -119,7 +99,7 @@ public class FinalizerWeakReferenceTest()
     /// unless GC.ReRegisterForFinalize is called).
     /// </summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestResurrection()
+    private static void TestResurrection()
     {
         _resurrectedInstance = null;
         _finalizerCallCount = 0;
@@ -130,23 +110,19 @@ public class FinalizerWeakReferenceTest()
         GC.WaitForPendingFinalizers();
 
         // Finalizer ran exactly once
-        if (Volatile.Read(ref _finalizerCallCount) != 1)
-        {
-            return false;
-        }
+        var count = Volatile.Read(ref _finalizerCallCount);
+        if (count != 1)
+            throw new Exception($"TestResurrection: finalizer ran {count} time(s) before resurrection check, expected 1");
 
         // Object was resurrected
         if (_resurrectedInstance == null)
-        {
-            return false;
-        }
+            throw new Exception("TestResurrection: object was not resurrected (static root not set in finalizer)");
+
         GC.Collect();
 
         // Long weak ref is still alive because the object is now strongly reachable
         if (!longRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("TestResurrection: long weak ref not alive after resurrection (object should be strongly reachable)");
 
         // Drop the last strong reference and verify final collection
         _resurrectedInstance = null;
@@ -155,11 +131,7 @@ public class FinalizerWeakReferenceTest()
         GC.Collect();
 
         if (longRef.IsAlive)
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception("TestResurrection: long weak ref still alive after dropping resurrected reference and final GC");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

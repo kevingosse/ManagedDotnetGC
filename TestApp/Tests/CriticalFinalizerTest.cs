@@ -21,7 +21,7 @@ public class CriticalFinalizerTest : TestBase
     private static int _criticalSeq;
 
     public CriticalFinalizerTest()
-        : base("Critical Finalizers", "Verifies that CriticalFinalizerObject finalizers run after all regular finalizers")
+        : base("Critical Finalizers")
     {
     }
 
@@ -34,36 +34,29 @@ public class CriticalFinalizerTest : TestBase
         _criticalSeq = 0;
     }
 
-    public override bool Run()
+    public override void Run()
     {
-        if (!TestCriticalFinalizerRuns())
-        {
-            return false;
-        }
-
-        if (!TestCriticalRunsAfterRegular())
-        {
-            return false;
-        }
-
-        return true;
+        TestCriticalFinalizerRuns();
+        TestCriticalRunsAfterRegular();
     }
 
     // A CriticalFinalizerObject subclass must have its finalizer invoked.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestCriticalFinalizerRuns()
+    private static void TestCriticalFinalizerRuns()
     {
         _criticalFinalizerCount = 0;
         AllocateCriticalObject();
         GC.Collect();
         GC.WaitForPendingFinalizers();
-        return Volatile.Read(ref _criticalFinalizerCount) == 1;
+        var count = Volatile.Read(ref _criticalFinalizerCount);
+        if (count != 1)
+            throw new Exception($"TestCriticalFinalizerRuns: critical finalizer ran {count} time(s), expected 1");
     }
 
     // When both a regular finalizable object and a critical finalizable object are
     // collected in the same GC cycle, the regular finalizer must run first.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestCriticalRunsAfterRegular()
+    private static void TestCriticalRunsAfterRegular()
     {
         _seqCounter = 0;
         _regularSeq = 0;
@@ -77,13 +70,14 @@ public class CriticalFinalizerTest : TestBase
         int critical = Volatile.Read(ref _criticalSeq);
 
         // Both must have run
-        if (regular == 0 || critical == 0)
-        {
-            return false;
-        }
+        if (regular == 0)
+            throw new Exception("TestCriticalRunsAfterRegular: regular finalizer did not run");
+        if (critical == 0)
+            throw new Exception("TestCriticalRunsAfterRegular: critical finalizer did not run");
 
         // Critical must have a higher (later) sequence number
-        return critical > regular;
+        if (critical <= regular)
+            throw new Exception($"TestCriticalRunsAfterRegular: critical seq={critical} <= regular seq={regular}; critical finalizer must run after regular");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

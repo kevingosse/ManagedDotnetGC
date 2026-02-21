@@ -9,11 +9,11 @@ namespace TestApp.Tests;
 public class BoxingTest : TestBase
 {
     public BoxingTest()
-        : base("Boxing/Unboxing", "Verifies that value types can be boxed and unboxed correctly")
+        : base("Boxing/Unboxing")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Box primitive types
         object boxedInt = 42;
@@ -23,24 +23,16 @@ public class BoxingTest : TestBase
 
         // Verify boxed values
         if ((int)boxedInt != 42)
-        {
-            return false;
-        }
+            throw new Exception($"Unboxed int = {(int)boxedInt}, expected 42");
 
         if ((long)boxedLong != 12345678901234L)
-        {
-            return false;
-        }
+            throw new Exception($"Unboxed long = {(long)boxedLong}, expected 12345678901234");
 
         if ((double)boxedDouble != 3.14159)
-        {
-            return false;
-        }
+            throw new Exception($"Unboxed double = {(double)boxedDouble}, expected 3.14159");
 
         if ((bool)boxedBool != true)
-        {
-            return false;
-        }
+            throw new Exception("Unboxed bool was not true");
 
         // Box custom struct
         var myStruct = new MyStruct { X = 100, Y = 200, Name = "Test" };
@@ -52,9 +44,7 @@ public class BoxingTest : TestBase
         // Unbox and verify
         var unboxedStruct = (MyStruct)boxedStruct;
         if (unboxedStruct.X != 100 || unboxedStruct.Y != 200 || unboxedStruct.Name != "Test")
-        {
-            return false;
-        }
+            throw new Exception($"Unboxed struct fields: X={unboxedStruct.X}, Y={unboxedStruct.Y}, Name={unboxedStruct.Name}; expected X=100, Y=200, Name=Test");
 
         // Create weak reference to boxed value
         var weakRef = CreateBoxedValue();
@@ -63,11 +53,7 @@ public class BoxingTest : TestBase
 
         // Boxed value should be collected
         if (weakRef.IsAlive)
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception("Boxed value still alive after GC with no roots");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

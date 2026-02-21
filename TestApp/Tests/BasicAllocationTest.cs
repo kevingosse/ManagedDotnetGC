@@ -9,20 +9,17 @@ namespace TestApp.Tests;
 public class BasicAllocationTest : TestBase
 {
     public BasicAllocationTest()
-        : base("Basic Allocation", "Verifies that objects can be allocated and memory is properly initialized")
+        : base("Basic Allocation")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
-        // Test simple object allocation
         var obj1 = new object();
         var obj2 = new object();
 
         if (obj1 == null || obj2 == null)
-        {
-            return false;
-        }
+            throw new Exception("Object allocation returned null");
 
         // Test array allocation with initialization
         var array = new byte[1024];
@@ -31,9 +28,7 @@ public class BasicAllocationTest : TestBase
         for (int i = 0; i < array.Length; i++)
         {
             if (array[i] != 0xAA)
-            {
-                return false;
-            }
+                throw new Exception($"array[{i}] = 0x{array[i]:X2}, expected 0xAA after Fill");
         }
 
         // Test larger array
@@ -43,11 +38,7 @@ public class BasicAllocationTest : TestBase
         for (int i = 0; i < largeArray.Length; i++)
         {
             if (largeArray[i] != 0xCC)
-            {
-                return false;
-            }
+                throw new Exception($"largeArray[{i}] = 0x{largeArray[i]:X2}, expected 0xCC after Fill");
         }
-
-        return true;
     }
 }

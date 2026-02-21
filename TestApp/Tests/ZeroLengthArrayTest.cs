@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class ZeroLengthArrayTest : TestBase
 {
     public ZeroLengthArrayTest()
-        : base("Zero-Length Arrays", "Verifies that zero-length arrays can be allocated")
+        : base("Zero-Length Arrays")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Test various zero-length array types
         var byteArray = new byte[0];
@@ -22,39 +22,25 @@ public class ZeroLengthArrayTest : TestBase
         var stringArray = new string[0];
 
         if (byteArray == null || byteArray.Length != 0)
-        {
-            return false;
-        }
+            throw new Exception($"byte[0]: null={byteArray == null}, Length={byteArray?.Length}");
 
         if (intArray == null || intArray.Length != 0)
-        {
-            return false;
-        }
+            throw new Exception($"int[0]: null={intArray == null}, Length={intArray?.Length}");
 
         if (longArray == null || longArray.Length != 0)
-        {
-            return false;
-        }
+            throw new Exception($"long[0]: null={longArray == null}, Length={longArray?.Length}");
 
         if (objectArray == null || objectArray.Length != 0)
-        {
-            return false;
-        }
+            throw new Exception($"object[0]: null={objectArray == null}, Length={objectArray?.Length}");
 
         if (stringArray == null || stringArray.Length != 0)
-        {
-            return false;
-        }
+            throw new Exception($"string[0]: null={stringArray == null}, Length={stringArray?.Length}");
 
         // Trigger GC
         GC.Collect();
 
         // Verify arrays still valid
         if (byteArray.Length != 0 || intArray.Length != 0)
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception("Zero-length arrays have non-zero length after GC");
     }
 }

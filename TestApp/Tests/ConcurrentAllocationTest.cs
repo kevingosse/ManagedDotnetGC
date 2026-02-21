@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class ConcurrentAllocationTest : TestBase
 {
     public ConcurrentAllocationTest()
-        : base("Concurrent Allocation", "Tests allocation from multiple threads simultaneously")
+        : base("Concurrent Allocation")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         const int threadCount = 4;
         const int allocationsPerThread = 100;
@@ -50,15 +50,11 @@ public class ConcurrentAllocationTest : TestBase
             for (int j = 0; j < allocationsPerThread; j++)
             {
                 if (results[i][j] == null)
-                {
-                    return false;
-                }
+                    throw new Exception($"Thread {i} allocation {j} is null");
 
                 var array = (byte[])results[i][j];
                 if (array.Length != 1000 + j)
-                {
-                    return false;
-                }
+                    throw new Exception($"Thread {i} allocation {j}: length = {array.Length}, expected {1000 + j}");
             }
         }
 
@@ -70,12 +66,8 @@ public class ConcurrentAllocationTest : TestBase
             for (int j = 0; j < allocationsPerThread; j++)
             {
                 if (results[i][j] == null)
-                {
-                    return false;
-                }
+                    throw new Exception($"Thread {i} allocation {j} is null after GC");
             }
         }
-
-        return true;
     }
 }

@@ -9,27 +9,23 @@ namespace TestApp.Tests;
 public class StringTest : TestBase
 {
     public StringTest()
-        : base("String Handling", "Verifies string allocation, comparison, and GC behavior")
+        : base("String Handling")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Test string allocation
         var str1 = "Hello, World!";
         var str2 = new string('x', 1000);
 
         if (str1.Length != 13 || str2.Length != 1000)
-        {
-            return false;
-        }
+            throw new Exception($"Unexpected lengths: str1={str1.Length} (expected 13), str2={str2.Length} (expected 1000)");
 
         // Test string concatenation creates new objects
         var str3 = str1 + str2;
         if (str3.Length != 1013)
-        {
-            return false;
-        }
+            throw new Exception($"str3.Length = {str3.Length}, expected 1013");
 
         // Weak reference to temporary string
         var weakRef = CreateTemporaryString();
@@ -38,16 +34,12 @@ public class StringTest : TestBase
 
         // Temporary string should be collected
         if (weakRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("Temporary string still alive after GC with no roots");
 
         // Test empty string
         var emptyStr = string.Empty;
         if (emptyStr == null || emptyStr.Length != 0)
-        {
-            return false;
-        }
+            throw new Exception($"string.Empty is null or non-empty: Length={emptyStr?.Length}");
 
         // Test array of strings
         var stringArray = new string[100];
@@ -62,12 +54,8 @@ public class StringTest : TestBase
         for (int i = 0; i < 100; i++)
         {
             if (stringArray[i] != $"String number {i}")
-            {
-                return false;
-            }
+                throw new Exception($"stringArray[{i}] = \"{stringArray[i]}\" after GC, expected \"String number {i}\"");
         }
-
-        return true;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

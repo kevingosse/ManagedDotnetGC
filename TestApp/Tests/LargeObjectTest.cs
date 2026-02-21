@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class LargeObjectTest : TestBase
 {
     public LargeObjectTest()
-        : base("Large Object Allocation", "Verifies that large objects (>85KB) are properly allocated and initialized")
+        : base("Large Object Allocation")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Allocate a 100KB object
         var mediumObj = new byte[100_000];
@@ -21,9 +21,7 @@ public class LargeObjectTest : TestBase
         for (int i = 0; i < mediumObj.Length; i++)
         {
             if (mediumObj[i] != 0xFF)
-            {
-                return false;
-            }
+                throw new Exception($"mediumObj[{i}] = 0x{mediumObj[i]:X2}, expected 0xFF after Fill");
         }
 
         // Allocate an 8MB object
@@ -33,11 +31,7 @@ public class LargeObjectTest : TestBase
         for (int i = 0; i < hugeObj.Length; i++)
         {
             if (hugeObj[i] != 0xEE)
-            {
-                return false;
-            }
+                throw new Exception($"hugeObj[{i}] = 0x{hugeObj[i]:X2}, expected 0xEE after Fill");
         }
-
-        return true;
     }
 }

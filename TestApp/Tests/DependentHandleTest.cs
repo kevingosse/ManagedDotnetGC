@@ -11,57 +11,25 @@ namespace TestApp.Tests;
 public class DependentHandleTest : TestBase
 {
     public DependentHandleTest()
-        : base("DependentHandle", "Verifies that DependentHandle correctly ties dependent lifetime to target lifetime")
+        : base("DependentHandle")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
-        // Test 1: Dependent stays alive while target is alive
-        if (!TestDependentKeptAliveByTarget())
-        {
-            return false;
-        }
-
-        // Test 2: Dependent is collected when target is collected
-        if (!TestDependentCollectedWithTarget())
-        {
-            return false;
-        }
-
-        // Test 3: Handle properties return null after target is collected
-        if (!TestHandleClearedAfterTargetCollection())
-        {
-            return false;
-        }
-
-        // Test 4: Setting target to null releases the dependent
-        if (!TestSetTargetToNull())
-        {
-            return false;
-        }
-
-        // Test 5: TargetAndDependent returns consistent results
-        if (!TestTargetAndDependentAtomic())
-        {
-            return false;
-        }
-
-        // Test 6: Dispose releases the handle
-        if (!TestDispose())
-        {
-            return false;
-        }
-
-        return true;
+        TestDependentKeptAliveByTarget();
+        TestDependentCollectedWithTarget();
+        TestHandleClearedAfterTargetCollection();
+        TestSetTargetToNull();
+        TestTargetAndDependentAtomic();
+        TestDispose();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestDependentKeptAliveByTarget()
+    private static void TestDependentKeptAliveByTarget()
     {
         var target = new object();
-        var result = CreateHandleAndGetWeakRef(target, out var handle);
-        var weakDependent = result;
+        var weakDependent = CreateHandleAndGetWeakRef(target, out var handle);
 
         try
         {
@@ -69,18 +37,12 @@ public class DependentHandleTest : TestBase
 
             // The dependent should still be alive because the target is alive
             if (!weakDependent.TryGetTarget(out _))
-            {
-                return false;
-            }
+                throw new Exception("DependentKeptAliveByTarget: dependent was collected while target is still alive");
 
-            // The handle should report the dependent
             if (handle.Dependent == null)
-            {
-                return false;
-            }
+                throw new Exception("DependentKeptAliveByTarget: handle.Dependent is null while target is still alive");
 
             GC.KeepAlive(target);
-            return true;
         }
         finally
         {
@@ -97,7 +59,7 @@ public class DependentHandleTest : TestBase
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestDependentCollectedWithTarget()
+    private static void TestDependentCollectedWithTarget()
     {
         var refs = CreateHandleWithNoRoots(out var handle);
 
@@ -105,18 +67,11 @@ public class DependentHandleTest : TestBase
         {
             GC.Collect();
 
-            // Both target and dependent should be collected
             if (refs.weakTarget.TryGetTarget(out _))
-            {
-                return false;
-            }
+                throw new Exception("DependentCollectedWithTarget: target was not collected");
 
             if (refs.weakDependent.TryGetTarget(out _))
-            {
-                return false;
-            }
-
-            return true;
+                throw new Exception("DependentCollectedWithTarget: dependent was not collected when target was collected");
         }
         finally
         {
@@ -134,7 +89,7 @@ public class DependentHandleTest : TestBase
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestHandleClearedAfterTargetCollection()
+    private static void TestHandleClearedAfterTargetCollection()
     {
         var handle = CreateHandleWithCollectibleTarget();
 
@@ -142,18 +97,11 @@ public class DependentHandleTest : TestBase
         {
             GC.Collect();
 
-            // After target is collected, both Target and Dependent should return null
             if (handle.Target != null)
-            {
-                return false;
-            }
+                throw new Exception("HandleClearedAfterTargetCollection: handle.Target is non-null after target was collected");
 
             if (handle.Dependent != null)
-            {
-                return false;
-            }
-
-            return true;
+                throw new Exception("HandleClearedAfterTargetCollection: handle.Dependent is non-null after target was collected");
         }
         finally
         {
@@ -170,7 +118,7 @@ public class DependentHandleTest : TestBase
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestSetTargetToNull()
+    private static void TestSetTargetToNull()
     {
         var target = new object();
         var weakDependent = CreateHandleAndSetTargetNull(target, out var handle);
@@ -179,14 +127,10 @@ public class DependentHandleTest : TestBase
         {
             GC.Collect();
 
-            // After setting target to null, the dependent should be collectible
             if (weakDependent.TryGetTarget(out _))
-            {
-                return false;
-            }
+                throw new Exception("SetTargetToNull: dependent still alive after target was set to null and GC ran");
 
             GC.KeepAlive(target);
-            return true;
         }
         finally
         {
@@ -207,7 +151,7 @@ public class DependentHandleTest : TestBase
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestTargetAndDependentAtomic()
+    private static void TestTargetAndDependentAtomic()
     {
         var target = new object();
         var dependent = new object();
@@ -216,41 +160,31 @@ public class DependentHandleTest : TestBase
         var (t, d) = handle.TargetAndDependent;
 
         if (!ReferenceEquals(t, target))
-        {
-            return false;
-        }
+            throw new Exception("TargetAndDependentAtomic: TargetAndDependent.Target is not the original target");
 
         if (!ReferenceEquals(d, dependent))
-        {
-            return false;
-        }
+            throw new Exception("TargetAndDependentAtomic: TargetAndDependent.Dependent is not the original dependent");
 
         GC.KeepAlive(target);
         GC.KeepAlive(dependent);
-        return true;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestDispose()
+    private static void TestDispose()
     {
         var target = new object();
         var dependent = new object();
         var handle = new DependentHandle(target, dependent);
 
         if (!handle.IsAllocated)
-        {
-            return false;
-        }
+            throw new Exception("Dispose: handle.IsAllocated is false before Dispose");
 
         handle.Dispose();
 
         if (handle.IsAllocated)
-        {
-            return false;
-        }
+            throw new Exception("Dispose: handle.IsAllocated is true after Dispose");
 
         GC.KeepAlive(target);
         GC.KeepAlive(dependent);
-        return true;
     }
 }

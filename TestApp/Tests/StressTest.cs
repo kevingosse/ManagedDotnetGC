@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class StressTest : TestBase
 {
     public StressTest()
-        : base("Stress Test", "Allocates many objects to stress test the GC")
+        : base("Stress Test")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Allocate many small objects
         for (int i = 0; i < 1000; i++)
@@ -26,9 +26,7 @@ public class StressTest : TestBase
                 for (int j = 0; j < obj.Length; j++)
                 {
                     if (obj[j] != (byte)i)
-                    {
-                        return false;
-                    }
+                        throw new Exception($"Small alloc {i}: obj[{j}] = {obj[j]}, expected {(byte)i}");
                 }
             }
         }
@@ -47,16 +45,12 @@ public class StressTest : TestBase
                 for (int j = 0; j < obj.Length; j++)
                 {
                     if (obj[j] != (byte)(i % 256))
-                    {
-                        return false;
-                    }
+                        throw new Exception($"Medium alloc {i}: obj[{j}] = {obj[j]}, expected {(byte)(i % 256)}");
                 }
             }
         }
 
         // Final collection
         GC.Collect();
-
-        return true;
     }
 }

@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class MultiDimensionalArrayTest : TestBase
 {
     public MultiDimensionalArrayTest()
-        : base("Multi-Dimensional Arrays", "Verifies that multi-dimensional arrays can be allocated and used")
+        : base("Multi-Dimensional Arrays")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // 2D array
         var array2D = new int[10, 20];
@@ -31,9 +31,7 @@ public class MultiDimensionalArrayTest : TestBase
             for (int j = 0; j < 20; j++)
             {
                 if (array2D[i, j] != i * 100 + j)
-                {
-                    return false;
-                }
+                    throw new Exception($"array2D[{i},{j}] = {array2D[i, j]}, expected {i * 100 + j}");
             }
         }
 
@@ -55,9 +53,7 @@ public class MultiDimensionalArrayTest : TestBase
 
         // Verify 3D array still valid
         if (array3D[2, 3, 4] != 20304)
-        {
-            return false;
-        }
+            throw new Exception($"array3D[2,3,4] = {array3D[2, 3, 4]} after GC, expected 20304");
 
         // 2D array of objects
         var objectArray = new object[3, 3];
@@ -77,12 +73,8 @@ public class MultiDimensionalArrayTest : TestBase
             for (int j = 0; j < 3; j++)
             {
                 if (objectArray[i, j] == null)
-                {
-                    return false;
-                }
+                    throw new Exception($"objectArray[{i},{j}] is null after GC");
             }
         }
-
-        return true;
     }
 }

@@ -9,11 +9,11 @@ namespace TestApp.Tests;
 public class FragmentationTest : TestBase
 {
     public FragmentationTest()
-        : base("Fragmentation Handling", "Tests allocate-free-allocate patterns that cause fragmentation")
+        : base("Fragmentation Handling")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Allocate many objects
         var phase1 = AllocateMany(100);
@@ -30,9 +30,7 @@ public class FragmentationTest : TestBase
         for (int i = 1; i < phase1.Length; i += 2)
         {
             if (phase1[i] == null)
-            {
-                return false;
-            }
+                throw new Exception($"phase1[{i}] (odd index) is null after GC");
         }
 
         // Allocate more objects (should fit in gaps)
@@ -41,15 +39,11 @@ public class FragmentationTest : TestBase
         GC.Collect();
 
         // Verify phase2 objects alive
-        foreach (var obj in phase2)
+        for (int i = 0; i < phase2.Length; i++)
         {
-            if (obj == null)
-            {
-                return false;
-            }
+            if (phase2[i] == null)
+                throw new Exception($"phase2[{i}] is null after GC");
         }
-
-        return true;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
