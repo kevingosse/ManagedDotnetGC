@@ -21,5 +21,5 @@ public class GcApi : IGc
         return new GcApi(new((nint)(long)address));
     }
 
-    public void Test() => _gc.Test();
+    public uint GetSyncBlockCacheCount() => _gc.GetSyncBlockCacheCount();
 }

@@ -31,7 +31,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private GCHandle _handle;
     private Stack<IntPtr> _markStack = new();
 
-    private readonly ManagedApi _managedApi;
     private readonly NativeAllocator _nativeAllocator;
 
     public GCHeap(IGCToCLRInvoker gcToClr)
@@ -46,7 +45,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
         Write($"Free Object Method Table: {(nint)_freeObjectMethodTable:x2}");
 
-        _managedApi = new ManagedApi(this);
+        InitializeManagedApi();
     }
 
     public IntPtr IGCHeapObject => _nativeObject;

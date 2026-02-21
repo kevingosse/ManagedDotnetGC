@@ -66,7 +66,7 @@ unsafe partial class GCHeap
         fixed (byte* name = "GC API"u8)
         fixed (byte* publicKey = "internal"u8)
         {
-            callback(context, name, publicKey, GCConfigurationType.Int64, _managedApi.IGcObject);
+            callback(context, name, publicKey, GCConfigurationType.Int64, _managedApiObject);
         }
     }
 

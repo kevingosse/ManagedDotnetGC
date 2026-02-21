@@ -24,6 +24,18 @@ unsafe partial class GCHeap
         ScanForFinalization();
         ScanDependentHandles();
         ClearHandles([HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT]);
+
+        var weakPtrScanCallback = (delegate* unmanaged<GCObject**, nint, nint, nint, void>)&WeakPtrScanCallback;
+        _gcToClr.SyncBlockCacheWeakPtrScan(weakPtrScanCallback, 0, 0);
+    }
+
+    [UnmanagedCallersOnly]
+    private static void WeakPtrScanCallback(GCObject** obj, nint extraInfo, nint lp1, nint lp2)
+    {
+        if (!(*obj)->IsMarked())
+        {
+            *obj = null;
+        }
     }
 
     [UnmanagedCallersOnly]
