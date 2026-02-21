@@ -286,6 +286,21 @@ unsafe partial class GCHeap
     public void GetMemoryInfo(out ulong highMemLoadThresholdBytes, out ulong totalAvailableMemoryBytes, out ulong lastRecordedMemLoadBytes, out ulong lastRecordedHeapSizeBytes, out ulong lastRecordedFragmentationBytes, out ulong totalCommittedBytes, out ulong promotedBytes, out ulong pinnedObjectCount, out ulong finalizationPendingCount, out ulong index, out uint generation, out uint pauseTimePct, out bool isCompaction, out bool isConcurrent, out ulong genInfoRaw, out ulong pauseInfoRaw, int kind)
     {
         Write("GetMemoryInfo");
-        throw new NotImplementedException();
+        highMemLoadThresholdBytes = 0;
+        totalAvailableMemoryBytes = 0;
+        lastRecordedMemLoadBytes = 0;
+        lastRecordedHeapSizeBytes = 0;
+        lastRecordedFragmentationBytes = 0;
+        totalCommittedBytes = 0;
+        promotedBytes = 0;
+        pinnedObjectCount = 0;
+        finalizationPendingCount = 0;
+        index = 0;
+        generation = 0;
+        pauseTimePct = 0;
+        isCompaction = false;
+        isConcurrent = false;
+        genInfoRaw = 0;
+        pauseInfoRaw = 0;
     }
 }
