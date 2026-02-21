@@ -9,43 +9,33 @@ namespace TestApp.Tests;
 public class WeakReferenceTest : TestBase
 {
     public WeakReferenceTest()
-        : base("Weak References", "Verifies that weak references work correctly with GC")
+        : base("Weak References")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Test WeakReference
         var weakRef = GetWeakReference();
 
         if (!weakRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("WeakReference not alive immediately after creation");
 
         GC.Collect();
 
         if (weakRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("WeakReference still alive after GC with no strong roots");
 
         // Test WeakReference<T>
         var typedWeakRef = GetTypedWeakReference();
 
         if (!IsAlive(typedWeakRef))
-        {
-            return false;
-        }
+            throw new Exception("WeakReference<T> not alive immediately after creation");
 
         GC.Collect();
 
         if (IsAlive(typedWeakRef))
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception("WeakReference<T> still alive after GC with no strong roots");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

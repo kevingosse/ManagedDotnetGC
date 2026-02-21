@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class InteriorPointerTest : TestBase
 {
     public InteriorPointerTest()
-        : base("Interior Pointers", "Verifies that objects remain alive when only interior pointers exist")
+        : base("Interior Pointers")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         ref var interiorPointerSmall = ref GetInteriorPointer(10, out var weakRefSmall);
         ref var interiorPointerLarge = ref GetInteriorPointer(10 * 1024 * 1024, out var weakRefLarge);
@@ -20,19 +20,13 @@ public class InteriorPointerTest : TestBase
         GC.Collect();
 
         if (!weakRefSmall.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("Small array not alive when interior pointer is held on stack");
 
         if (!weakRefLarge.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("Large array not alive when interior pointer is held on stack");
 
         GC.KeepAlive(interiorPointerSmall);
         GC.KeepAlive(interiorPointerLarge);
-
-        return true;
     }
 
     private static ref int GetInteriorPointer(int size, out WeakReference weakRef)

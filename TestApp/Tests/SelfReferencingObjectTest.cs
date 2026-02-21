@@ -9,28 +9,24 @@ namespace TestApp.Tests;
 public class SelfReferencingObjectTest : TestBase
 {
     public SelfReferencingObjectTest()
-        : base("Self-Referencing Objects", "Verifies objects that reference themselves are handled correctly")
+        : base("Self-Referencing Objects")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Create object that references itself
         var weakRef = CreateSelfReferencingObject();
 
         // Should be alive initially
         if (!weakRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("Self-referencing object not alive before GC");
 
         // After GC, should be collected (no external root)
         GC.Collect();
 
         if (weakRef.IsAlive)
-        {
-            return false;
-        }
+            throw new Exception("Self-referencing object still alive after GC with no external root");
 
         // Create self-referencing object with external root
         var node = new Node { Value = 42 };
@@ -40,11 +36,7 @@ public class SelfReferencingObjectTest : TestBase
 
         // Should survive because we have a root
         if (node.Self != node || node.Value != 42)
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception($"Self-referencing node corrupted after GC: Value={node.Value}, Self=={(node.Self == node ? "self" : "other")}");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

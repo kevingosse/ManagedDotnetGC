@@ -6,18 +6,16 @@ namespace TestApp.TestFramework;
 public abstract class TestBase
 {
     public string Name { get; }
-    public string Description { get; }
 
-    protected TestBase(string name, string description)
+    protected TestBase(string name)
     {
         Name = name;
-        Description = description;
     }
 
     /// <summary>
-    /// Run the test and return true if it passes
+    /// Run the test. Throws an exception with a descriptive message if the test fails.
     /// </summary>
-    public abstract bool Run();
+    public abstract void Run();
 
     /// <summary>
     /// Optional setup before the test runs

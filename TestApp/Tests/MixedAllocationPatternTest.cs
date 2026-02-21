@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class MixedAllocationPatternTest : TestBase
 {
     public MixedAllocationPatternTest()
-        : base("Mixed Allocation Patterns", "Verifies GC handles mixed small/medium/large allocations")
+        : base("Mixed Allocation Patterns")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         var objects = new object[300];
 
@@ -41,17 +41,11 @@ public class MixedAllocationPatternTest : TestBase
         for (int i = 0; i < objects.Length; i++)
         {
             if (objects[i] == null)
-            {
-                return false;
-            }
+                throw new Exception($"objects[{i}] is null after final GC");
 
             var array = (byte[])objects[i];
             if (array.Length == 0)
-            {
-                return false;
-            }
+                throw new Exception($"objects[{i}] has zero length after final GC");
         }
-
-        return true;
     }
 }

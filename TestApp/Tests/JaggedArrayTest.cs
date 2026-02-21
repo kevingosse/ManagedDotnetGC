@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class JaggedArrayTest : TestBase
 {
     public JaggedArrayTest()
-        : base("Jagged Arrays", "Verifies jagged arrays (arrays of arrays) work correctly")
+        : base("Jagged Arrays")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Create jagged array
         var jaggedArray = new int[10][];
@@ -33,21 +33,15 @@ public class JaggedArrayTest : TestBase
         for (int i = 0; i < jaggedArray.Length; i++)
         {
             if (jaggedArray[i] == null)
-            {
-                return false;
-            }
+                throw new Exception($"jaggedArray[{i}] is null after GC");
 
             if (jaggedArray[i].Length != i + 1)
-            {
-                return false;
-            }
+                throw new Exception($"jaggedArray[{i}].Length = {jaggedArray[i].Length}, expected {i + 1}");
 
             for (int j = 0; j < jaggedArray[i].Length; j++)
             {
                 if (jaggedArray[i][j] != i * 100 + j)
-                {
-                    return false;
-                }
+                    throw new Exception($"jaggedArray[{i}][{j}] = {jaggedArray[i][j]}, expected {i * 100 + j}");
             }
         }
 
@@ -72,12 +66,8 @@ public class JaggedArrayTest : TestBase
             for (int j = 0; j < objectJagged[i].Length; j++)
             {
                 if (objectJagged[i][j] == null)
-                {
-                    return false;
-                }
+                    throw new Exception($"objectJagged[{i}][{j}] is null after GC");
             }
         }
-
-        return true;
     }
 }

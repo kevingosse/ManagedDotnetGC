@@ -5,16 +5,16 @@ using TestApp.TestFramework;
 namespace TestApp.Tests;
 
 /// <summary>
-/// Tests GCHandle.Alloc with pinned objects
+/// Tests GCHandle.Alloc with pinned objects - verifies that pinned objects don't move
 /// </summary>
 public class PinnedObjectTest : TestBase
 {
     public PinnedObjectTest()
-        : base("Pinned Objects", "Verifies that pinned objects remain accessible and don't move")
+        : base("Pinned Objects")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         var array = new byte[1024];
         for (int i = 0; i < array.Length; i++)
@@ -31,9 +31,7 @@ public class PinnedObjectTest : TestBase
             IntPtr address = handle.AddrOfPinnedObject();
 
             if (address == IntPtr.Zero)
-            {
-                return false;
-            }
+                throw new Exception("AddrOfPinnedObject returned zero");
 
             // Force a GC
             GC.Collect();
@@ -42,9 +40,7 @@ public class PinnedObjectTest : TestBase
             IntPtr addressAfterGC = handle.AddrOfPinnedObject();
 
             if (addressAfterGC != address)
-            {
-                return false; // Object moved even though it was pinned!
-            }
+                throw new Exception($"Pinned object moved during GC: 0x{address:X} -> 0x{addressAfterGC:X}");
 
             // Verify the data is still intact
             unsafe
@@ -53,9 +49,7 @@ public class PinnedObjectTest : TestBase
                 for (int i = 0; i < array.Length; i++)
                 {
                     if (ptr[i] != (byte)i)
-                    {
-                        return false;
-                    }
+                        throw new Exception($"Pinned data corrupted at ptr[{i}]: got {ptr[i]}, expected {(byte)i}");
                 }
             }
 
@@ -63,12 +57,8 @@ public class PinnedObjectTest : TestBase
             for (int i = 0; i < array.Length; i++)
             {
                 if (array[i] != (byte)i)
-                {
-                    return false;
-                }
+                    throw new Exception($"Managed array corrupted at [{i}]: got {array[i]}, expected {(byte)i}");
             }
-
-            return true;
         }
         finally
         {

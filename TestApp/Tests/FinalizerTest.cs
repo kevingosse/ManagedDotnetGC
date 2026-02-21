@@ -6,12 +6,16 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that finalizers are called correctly for collected objects
 /// </summary>
-public class FinalizerTest()
-    : TestBase("Finalizers", "Verifies that finalizers are invoked for collected objects")
+public class FinalizerTest : TestBase
 {
     private static int _finalizerCallCount;
     private static int _suppressedFinalizerCallCount;
     private static int _reregisteredFinalizerCallCount;
+
+    public FinalizerTest()
+        : base("Finalizers")
+    {
+    }
 
     public override void Setup()
     {
@@ -20,45 +24,30 @@ public class FinalizerTest()
         _reregisteredFinalizerCallCount = 0;
     }
 
-    public override bool Run()
+    public override void Run()
     {
-        if (!TestFinalizerRuns())
-        {
-            return false;
-        }
-
-        if (!TestMultipleFinalizersRun())
-        {
-            return false;
-        }
-
-        if (!TestSuppressFinalize())
-        {
-            return false;
-        }
-
-        if (!TestReRegisterForFinalize())
-        {
-            return false;
-        }
-
-        return true;
+        TestFinalizerRuns();
+        TestMultipleFinalizersRun();
+        TestSuppressFinalize();
+        TestReRegisterForFinalize();
     }
 
     // A single finalizable object goes out of scope; its finalizer must run.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestFinalizerRuns()
+    private static void TestFinalizerRuns()
     {
         _finalizerCallCount = 0;
         AllocateFinalizableObject();
         GC.Collect();
         GC.WaitForPendingFinalizers();
-        return Volatile.Read(ref _finalizerCallCount) == 1;
+        var count = Volatile.Read(ref _finalizerCallCount);
+        if (count != 1)
+            throw new Exception($"TestFinalizerRuns: finalizer ran {count} time(s), expected 1");
     }
 
     // Multiple finalizable objects go out of scope; every finalizer must run.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestMultipleFinalizersRun()
+    private static void TestMultipleFinalizersRun()
     {
         _finalizerCallCount = 0;
 
@@ -66,16 +55,18 @@ public class FinalizerTest()
         {
             AllocateFinalizableObject();
         }
-        
+
         GC.Collect();
         GC.WaitForPendingFinalizers();
 
-        return Volatile.Read(ref _finalizerCallCount) == 5;
+        var count = Volatile.Read(ref _finalizerCallCount);
+        if (count != 5)
+            throw new Exception($"TestMultipleFinalizersRun: {count} finalizer(s) ran, expected 5");
     }
 
     // GC.SuppressFinalize must prevent the finalizer from running.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestSuppressFinalize()
+    private static void TestSuppressFinalize()
     {
         _suppressedFinalizerCallCount = 0;
 
@@ -83,12 +74,14 @@ public class FinalizerTest()
         GC.Collect();
         GC.WaitForPendingFinalizers();
 
-        return Volatile.Read(ref _suppressedFinalizerCallCount) == 0;
+        var count = Volatile.Read(ref _suppressedFinalizerCallCount);
+        if (count != 0)
+            throw new Exception($"TestSuppressFinalize: finalizer ran {count} time(s) despite GC.SuppressFinalize, expected 0");
     }
 
     // GC.ReRegisterForFinalize after GC.SuppressFinalize must restore finalization.
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestReRegisterForFinalize()
+    private static void TestReRegisterForFinalize()
     {
         _reregisteredFinalizerCallCount = 0;
 
@@ -96,7 +89,9 @@ public class FinalizerTest()
         GC.Collect();
         GC.WaitForPendingFinalizers();
 
-        return Volatile.Read(ref _reregisteredFinalizerCallCount) == 1;
+        var count = Volatile.Read(ref _reregisteredFinalizerCallCount);
+        if (count != 1)
+            throw new Exception($"TestReRegisterForFinalize: finalizer ran {count} time(s) after GC.ReRegisterForFinalize, expected 1");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

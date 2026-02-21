@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class StructWithReferencesTest : TestBase
 {
     public StructWithReferencesTest()
-        : base("Structs with References", "Verifies that GC correctly traces references within value types")
+        : base("Structs with References")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Create an array of structs containing references
         var structArray = new StructWithRef[100];
@@ -34,22 +34,14 @@ public class StructWithReferencesTest : TestBase
         for (int i = 0; i < structArray.Length; i++)
         {
             if (structArray[i].RefField == null)
-            {
-                return false;
-            }
+                throw new Exception($"structArray[{i}].RefField is null after GC");
 
             if (structArray[i].Name != $"Item_{i}")
-            {
-                return false;
-            }
+                throw new Exception($"structArray[{i}].Name = \"{structArray[i].Name}\" after GC, expected \"Item_{i}\"");
 
             if (structArray[i].Value != i)
-            {
-                return false;
-            }
+                throw new Exception($"structArray[{i}].Value = {structArray[i].Value} after GC, expected {i}");
         }
-
-        return true;
     }
 
     private struct StructWithRef

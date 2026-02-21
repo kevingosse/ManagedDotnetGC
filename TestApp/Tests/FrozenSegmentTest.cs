@@ -11,11 +11,11 @@ namespace TestApp.Tests;
 public class FrozenSegmentTest : TestBase
 {
     public FrozenSegmentTest()
-        : base("Frozen Segments", "Verifies that objects allocated in frozen segments survive GC with intact method tables")
+        : base("Frozen Segments")
     {
     }
 
-    public override unsafe bool Run()
+    public override unsafe void Run()
     {
         var bufferSize = 1024 * 1024; // 1 MB
         var address = (byte*)NativeMemory.AlignedAlloc((nuint)bufferSize, (nuint)IntPtr.Size);
@@ -46,37 +46,23 @@ public class FrozenSegmentTest : TestBase
 
                 // Verify that the objects are intact
                 if (str != "Hello")
-                {
-                    return false;
-                }
+                    throw new Exception($"str = \"{str}\" after GC, expected \"Hello\"");
 
                 if (array is not [10, 20, 30])
-                {
-                    return false;
-                }
+                    throw new Exception($"array = [{string.Join(", ", array)}] after GC, expected [10, 20, 30]");
 
                 if (str2 != "World")
-                {
-                    return false;
-                }
+                    throw new Exception($"str2 = \"{str2}\" after GC, expected \"World\"");
 
                 // Verify that the method table pointers are unchanged after GC
                 if (GetMethodTablePointer(str) != typeof(string).TypeHandle.Value)
-                {
-                    return false;
-                }
+                    throw new Exception("Method table pointer of str changed after GC");
 
                 if (GetMethodTablePointer(array) != typeof(int[]).TypeHandle.Value)
-                {
-                    return false;
-                }
+                    throw new Exception("Method table pointer of array changed after GC");
 
                 if (GetMethodTablePointer(str2) != typeof(string).TypeHandle.Value)
-                {
-                    return false;
-                }
-
-                return true;
+                    throw new Exception("Method table pointer of str2 changed after GC");
             }
             finally
             {

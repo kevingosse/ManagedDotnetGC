@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class NullReferenceTest : TestBase
 {
     public NullReferenceTest()
-        : base("Null Reference Handling", "Verifies GC correctly handles null references in objects and arrays")
+        : base("Null Reference Handling")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Array with null references
         var objectArray = new object?[100];
@@ -29,18 +29,14 @@ public class NullReferenceTest : TestBase
         for (int i = 0; i < 50; i++)
         {
             if (objectArray[i] == null)
-            {
-                return false;
-            }
+                throw new Exception($"objectArray[{i}] is null after GC, expected non-null");
         }
 
         // Verify nulls are still null
         for (int i = 50; i < 100; i++)
         {
             if (objectArray[i] != null)
-            {
-                return false;
-            }
+                throw new Exception($"objectArray[{i}] is non-null after GC, expected null");
         }
 
         // Object with null fields
@@ -53,11 +49,7 @@ public class NullReferenceTest : TestBase
         GC.Collect();
 
         if (node.Value != 42 || node.Child != null)
-        {
-            return false;
-        }
-
-        return true;
+            throw new Exception($"Node fields corrupted after GC: Value={node.Value}, Child={node.Child}");
     }
 
     private class Node

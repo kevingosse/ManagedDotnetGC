@@ -12,7 +12,7 @@ public class TestRunner
     private int _failed = 0;
     private readonly List<(string testName, string error)> _failures = new();
 
-    private sealed record TestResult(string Name, string Description, bool Passed, string? Error);
+    private sealed record TestResult(string Name, bool Passed, string? Error);
 
     public void RegisterTest(TestBase test)
     {
@@ -92,26 +92,19 @@ public class TestRunner
         {
             test.Setup();
 
-            var result = test.Run();
+            test.Run();
 
             test.Cleanup();
 
-            if (result)
-            {
-                _passed++;
-                return new TestResult(test.Name, test.Description, true, null);
-            }
-
-            _failed++;
-            _failures.Add((test.Name, "Test returned false"));
-            return new TestResult(test.Name, test.Description, false, "Test returned false");
+            _passed++;
+            return new TestResult(test.Name, true, null);
         }
         catch (Exception ex)
         {
             _failed++;
-            _failures.Add((test.Name, ex.ToString()));
+            _failures.Add((test.Name, ex.Message));
             test.Cleanup();
-            return new TestResult(test.Name, test.Description, false, ex.Message);
+            return new TestResult(test.Name, false, ex.Message);
         }
     }
 
@@ -128,9 +121,7 @@ public class TestRunner
         foreach (var result in results)
         {
             var status = result.Passed ? "[green]Passed[/]" : "[red]Failed[/]";
-            var details = result.Passed
-                ? Markup.Escape(result.Description)
-                : $"[red]{Markup.Escape(result.Error ?? "Failed")}[/]";
+            var details = result.Passed ? string.Empty : $"[red]{Markup.Escape(result.Error ?? "Failed")}[/]";
             table.AddRow(Markup.Escape(result.Name), status, details);
         }
 
@@ -162,11 +153,8 @@ public class TestRunner
             AnsiConsole.MarkupLine("[bold red]Failed Tests:[/]");
             foreach (var (testName, error) in _failures)
             {
-                AnsiConsole.MarkupLine($"[red]  • {testName}[/]");
-                if (error != "Test returned false")
-                {
-                    AnsiConsole.MarkupLine($"[dim]    {error.Split('\n')[0]}[/]");
-                }
+                AnsiConsole.MarkupLine($"[red]  • {Markup.Escape(testName)}[/]");
+                AnsiConsole.MarkupLine($"[dim]    {Markup.Escape(error.Split('\n')[0])}[/]");
             }
         }
 

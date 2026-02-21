@@ -5,40 +5,24 @@ using TestApp.TestFramework;
 namespace TestApp.Tests;
 
 /// <summary>
-/// Tests different GCHandle types
+/// Tests different GCHandle types - verifies Strong, Weak, and Normal GCHandle behavior
 /// </summary>
 public class GCHandleTest : TestBase
 {
     public GCHandleTest()
-        : base("GCHandle Types", "Verifies Strong, Weak, and Normal GCHandle behavior")
+        : base("GCHandle Types")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
-        // Test Strong handle - should keep object alive
-        if (!TestStrongHandle())
-        {
-            return false;
-        }
-
-        // Test Weak handle - should not keep object alive
-        if (!TestWeakHandle())
-        {
-            return false;
-        }
-
-        // Test Normal handle (should be strong)
-        if (!TestNormalHandle())
-        {
-            return false;
-        }
-
-        return true;
+        TestStrongHandle();
+        TestWeakHandle();
+        TestNormalHandle();
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestStrongHandle()
+    private static void TestStrongHandle()
     {
         var weakRef = AllocateWithStrongHandle(out var handle);
 
@@ -48,18 +32,12 @@ public class GCHandleTest : TestBase
             GC.Collect();
 
             if (!weakRef.IsAlive)
-            {
-                return false; // Strong handle should keep it alive
-            }
+                throw new Exception("Strong GCHandle: object was collected despite active handle");
 
             // Verify we can still access it
             var target = handle.Target;
             if (target == null)
-            {
-                return false;
-            }
-
-            return true;
+                throw new Exception("Strong GCHandle: handle.Target returned null after GC");
         }
         finally
         {
@@ -76,7 +54,7 @@ public class GCHandleTest : TestBase
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestWeakHandle()
+    private static void TestWeakHandle()
     {
         var weakRef = AllocateWithWeakHandle(out var handle);
 
@@ -86,18 +64,12 @@ public class GCHandleTest : TestBase
             GC.Collect();
 
             if (weakRef.IsAlive)
-            {
-                return false; // Should have been collected
-            }
+                throw new Exception("Weak GCHandle: object was not collected after GC");
 
             // Handle target should be null
             var target = handle.Target;
             if (target != null)
-            {
-                return false;
-            }
-
-            return true;
+                throw new Exception("Weak GCHandle: handle.Target is non-null after object was collected");
         }
         finally
         {
@@ -114,7 +86,7 @@ public class GCHandleTest : TestBase
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static bool TestNormalHandle()
+    private static void TestNormalHandle()
     {
         var weakRef = AllocateWithNormalHandle(out var handle);
 
@@ -123,11 +95,7 @@ public class GCHandleTest : TestBase
             GC.Collect();
 
             if (!weakRef.IsAlive)
-            {
-                return false; // Normal handle should keep it alive
-            }
-
-            return true;
+                throw new Exception("Normal GCHandle: object was collected despite active handle");
         }
         finally
         {

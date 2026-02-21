@@ -8,11 +8,11 @@ namespace TestApp.Tests;
 public class ArrayOfStructsTest : TestBase
 {
     public ArrayOfStructsTest()
-        : base("Arrays of Structs", "Verifies arrays containing value types work correctly")
+        : base("Arrays of Structs")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         // Array of value types
         var structArray = new MyStruct[100];
@@ -35,9 +35,7 @@ public class ArrayOfStructsTest : TestBase
             if (structArray[i].X != i ||
                 structArray[i].Y != i * 2 ||
                 structArray[i].Z != i * 3)
-            {
-                return false;
-            }
+                throw new Exception($"structArray[{i}]: X={structArray[i].X}, Y={structArray[i].Y}, Z={structArray[i].Z}; expected X={i}, Y={i * 2}, Z={i * 3}");
         }
 
         // Array of structs with references
@@ -58,18 +56,12 @@ public class ArrayOfStructsTest : TestBase
         for (int i = 0; i < complexStructArray.Length; i++)
         {
             if (complexStructArray[i].Value != i)
-            {
-                return false;
-            }
+                throw new Exception($"complexStructArray[{i}].Value = {complexStructArray[i].Value}, expected {i}");
 
             if (complexStructArray[i].Data == null ||
                 complexStructArray[i].Data.Length != 100)
-            {
-                return false;
-            }
+                throw new Exception($"complexStructArray[{i}].Data is null or wrong length after GC");
         }
-
-        return true;
     }
 
     private struct MyStruct

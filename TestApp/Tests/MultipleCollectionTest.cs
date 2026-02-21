@@ -9,11 +9,11 @@ namespace TestApp.Tests;
 public class MultipleCollectionTest : TestBase
 {
     public MultipleCollectionTest()
-        : base("Multiple Collections", "Verifies that multiple GC.Collect() calls work correctly")
+        : base("Multiple Collections")
     {
     }
 
-    public override bool Run()
+    public override void Run()
     {
         var weakRefs = new List<WeakReference>();
 
@@ -26,12 +26,10 @@ public class MultipleCollectionTest : TestBase
         // All should be dead after allocation function returns
         GC.Collect();
 
-        foreach (var weakRef in weakRefs)
+        for (int i = 0; i < weakRefs.Count; i++)
         {
-            if (weakRef.IsAlive)
-            {
-                return false;
-            }
+            if (weakRefs[i].IsAlive)
+                throw new Exception($"weakRefs[{i}] is still alive after GC with no roots");
         }
 
         // Multiple collections should not cause issues
@@ -48,15 +46,11 @@ public class MultipleCollectionTest : TestBase
 
         GC.Collect();
 
-        foreach (var weakRef in newWeakRefs)
+        for (int i = 0; i < newWeakRefs.Count; i++)
         {
-            if (weakRef.IsAlive)
-            {
-                return false;
-            }
+            if (newWeakRefs[i].IsAlive)
+                throw new Exception($"newWeakRefs[{i}] is still alive after second GC with no roots");
         }
-
-        return true;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
