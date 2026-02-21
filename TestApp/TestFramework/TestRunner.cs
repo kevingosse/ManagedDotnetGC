@@ -8,11 +8,11 @@ namespace TestApp.TestFramework;
 public class TestRunner
 {
     private readonly List<TestBase> _tests = new();
-    private int _passed = 0;
-    private int _failed = 0;
+    private int _passed;
+    private int _failed;
     private readonly List<(string testName, string error)> _failures = new();
 
-    private sealed record TestResult(string Name, bool Passed, string? Error);
+    private sealed record TestResult(string Name, bool Passed, Exception? Error);
 
     public void RegisterTest(TestBase test)
     {
@@ -91,10 +91,7 @@ public class TestRunner
         try
         {
             test.Setup();
-
             test.Run();
-
-            test.Cleanup();
 
             _passed++;
             return new TestResult(test.Name, true, null);
@@ -102,9 +99,12 @@ public class TestRunner
         catch (Exception ex)
         {
             _failed++;
-            _failures.Add((test.Name, ex.Message));
+            _failures.Add((test.Name, ex.ToString()));
+            return new TestResult(test.Name, false, ex);
+        }
+        finally
+        {
             test.Cleanup();
-            return new TestResult(test.Name, false, ex.Message);
         }
     }
 
@@ -121,7 +121,7 @@ public class TestRunner
         foreach (var result in results)
         {
             var status = result.Passed ? "[green]Passed[/]" : "[red]Failed[/]";
-            var details = result.Passed ? string.Empty : $"[red]{Markup.Escape(result.Error ?? "Failed")}[/]";
+            var details = result.Passed ? string.Empty : $"[red]{Markup.Escape(result.Error?.Message ?? "Failed")}[/]";
             table.AddRow(Markup.Escape(result.Name), status, details);
         }
 
@@ -154,7 +154,7 @@ public class TestRunner
             foreach (var (testName, error) in _failures)
             {
                 AnsiConsole.MarkupLine($"[red]  • {Markup.Escape(testName)}[/]");
-                AnsiConsole.MarkupLine($"[dim]    {Markup.Escape(error.Split('\n')[0])}[/]");
+                AnsiConsole.MarkupLine($"[dim]    {Markup.Escape(error)}[/]");
             }
         }
 
