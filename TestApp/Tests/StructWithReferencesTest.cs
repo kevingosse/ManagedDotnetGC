@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests structs that contain reference type fields
 /// </summary>
-public class StructWithReferencesTest : TestBase
+public class StructWithReferencesTest() : TestBase("Structs with References")
 {
-    public StructWithReferencesTest()
-        : base("Structs with References")
-    {
-    }
-
     public override void Run()
     {
         // Create an array of structs containing references

@@ -6,13 +6,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that circular references are collected when no external root exists
 /// </summary>
-public class CircularReferenceTest : TestBase
+public class CircularReferenceTest() : TestBase("Circular References")
 {
-    public CircularReferenceTest()
-        : base("Circular References")
-    {
-    }
-
     public override void Run()
     {
         // Create a simple circular reference: A -> B -> A

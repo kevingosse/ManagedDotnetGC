@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests large object allocation (LOH)
 /// </summary>
-public class LargeObjectTest : TestBase
+public class LargeObjectTest() : TestBase("Large Object Allocation")
 {
-    public LargeObjectTest()
-        : base("Large Object Allocation")
-    {
-    }
-
     public override void Run()
     {
         // Allocate a 100KB object

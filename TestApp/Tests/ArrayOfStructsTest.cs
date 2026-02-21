@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests arrays of value types vs reference types
 /// </summary>
-public class ArrayOfStructsTest : TestBase
+public class ArrayOfStructsTest() : TestBase("Arrays of Structs")
 {
-    public ArrayOfStructsTest()
-        : base("Arrays of Structs")
-    {
-    }
-
     public override void Run()
     {
         // Array of value types

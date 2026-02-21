@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests allocation of zero-length arrays
 /// </summary>
-public class ZeroLengthArrayTest : TestBase
+public class ZeroLengthArrayTest() : TestBase("Zero-Length Arrays")
 {
-    public ZeroLengthArrayTest()
-        : base("Zero-Length Arrays")
-    {
-    }
-
     public override void Run()
     {
         // Test various zero-length array types

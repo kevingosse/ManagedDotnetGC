@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests jagged arrays (arrays of arrays)
 /// </summary>
-public class JaggedArrayTest : TestBase
+public class JaggedArrayTest() : TestBase("Jagged Arrays")
 {
-    public JaggedArrayTest()
-        : base("Jagged Arrays")
-    {
-    }
-
     public override void Run()
     {
         // Create jagged array

@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests allocation from multiple threads (if threading is supported)
 /// </summary>
-public class ConcurrentAllocationTest : TestBase
+public class ConcurrentAllocationTest() : TestBase("Concurrent Allocation")
 {
-    public ConcurrentAllocationTest()
-        : base("Concurrent Allocation")
-    {
-    }
-
     public override void Run()
     {
         const int threadCount = 4;

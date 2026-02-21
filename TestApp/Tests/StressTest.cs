@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Stress test with many allocations
 /// </summary>
-public class StressTest : TestBase
+public class StressTest() : TestBase("Stress Test")
 {
-    public StressTest()
-        : base("Stress Test")
-    {
-    }
-
     public override void Run()
     {
         // Allocate many small objects

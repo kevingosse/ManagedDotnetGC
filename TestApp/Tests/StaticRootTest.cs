@@ -6,14 +6,9 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that static roots keep objects alive
 /// </summary>
-public class StaticRootTest : TestBase
+public class StaticRootTest() : TestBase("Static Roots")
 {
     private static object? _staticRoot;
-
-    public StaticRootTest()
-        : base("Static Roots")
-    {
-    }
 
     public override void Run()
     {

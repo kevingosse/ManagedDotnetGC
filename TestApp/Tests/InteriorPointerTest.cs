@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests interior pointer handling during GC
 /// </summary>
-public class InteriorPointerTest : TestBase
+public class InteriorPointerTest() : TestBase("Interior Pointers")
 {
-    public InteriorPointerTest()
-        : base("Interior Pointers")
-    {
-    }
-
     public override void Run()
     {
         ref var interiorPointerSmall = ref GetInteriorPointer(10, out var weakRefSmall);

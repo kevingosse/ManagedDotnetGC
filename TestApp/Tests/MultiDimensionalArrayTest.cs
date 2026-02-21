@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests multi-dimensional array allocation
 /// </summary>
-public class MultiDimensionalArrayTest : TestBase
+public class MultiDimensionalArrayTest() : TestBase("Multi-Dimensional Arrays")
 {
-    public MultiDimensionalArrayTest()
-        : base("Multi-Dimensional Arrays")
-    {
-    }
-
     public override void Run()
     {
         // 2D array

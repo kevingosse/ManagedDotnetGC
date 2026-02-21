@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests various array types and sizes
 /// </summary>
-public class ArrayVariantTest : TestBase
+public class ArrayVariantTest() : TestBase("Array Variants")
 {
-    public ArrayVariantTest()
-        : base("Array Variants")
-    {
-    }
-
     public override void Run()
     {
         // Test byte array

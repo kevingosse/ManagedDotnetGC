@@ -6,13 +6,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests boxing and unboxing of value types
 /// </summary>
-public class BoxingTest : TestBase
+public class BoxingTest() : TestBase("Boxing/Unboxing")
 {
-    public BoxingTest()
-        : base("Boxing/Unboxing")
-    {
-    }
-
     public override void Run()
     {
         // Box primitive types

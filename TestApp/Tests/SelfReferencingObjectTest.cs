@@ -6,13 +6,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests objects that reference themselves
 /// </summary>
-public class SelfReferencingObjectTest : TestBase
+public class SelfReferencingObjectTest() : TestBase("Self-Referencing Objects")
 {
-    public SelfReferencingObjectTest()
-        : base("Self-Referencing Objects")
-    {
-    }
-
     public override void Run()
     {
         // Create object that references itself

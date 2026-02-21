@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests allocation of objects with no fields
 /// </summary>
-public class EmptyObjectTest : TestBase
+public class EmptyObjectTest() : TestBase("Empty Objects")
 {
-    public EmptyObjectTest()
-        : base("Empty Objects")
-    {
-    }
-
     public override void Run()
     {
         // Allocate many empty objects

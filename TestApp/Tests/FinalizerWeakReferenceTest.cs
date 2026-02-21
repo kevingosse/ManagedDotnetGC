@@ -17,15 +17,10 @@ namespace TestApp.Tests;
 ///   A finalizer can store a new strong reference to 'this', preventing collection.
 ///   A long weak reference created before resurrection remains valid after the finalizer runs.
 /// </summary>
-public class FinalizerWeakReferenceTest : TestBase
+public class FinalizerWeakReferenceTest() : TestBase("Finalizer Weak References")
 {
     private static int _finalizerCallCount;
     private static ResurrectableObject? _resurrectedInstance;
-
-    public FinalizerWeakReferenceTest()
-        : base("Finalizer Weak References")
-    {
-    }
 
     public override void Setup()
     {

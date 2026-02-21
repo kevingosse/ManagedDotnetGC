@@ -6,13 +6,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests weak reference behavior
 /// </summary>
-public class WeakReferenceTest : TestBase
+public class WeakReferenceTest() : TestBase("Weak References")
 {
-    public WeakReferenceTest()
-        : base("Weak References")
-    {
-    }
-
     public override void Run()
     {
         // Test WeakReference

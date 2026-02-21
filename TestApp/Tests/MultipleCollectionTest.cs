@@ -6,13 +6,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests multiple GC collections in succession
 /// </summary>
-public class MultipleCollectionTest : TestBase
+public class MultipleCollectionTest() : TestBase("Multiple Collections")
 {
-    public MultipleCollectionTest()
-        : base("Multiple Collections")
-    {
-    }
-
     public override void Run()
     {
         var weakRefs = new List<WeakReference>();

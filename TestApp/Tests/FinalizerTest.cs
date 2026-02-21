@@ -6,16 +6,11 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that finalizers are called correctly for collected objects
 /// </summary>
-public class FinalizerTest : TestBase
+public class FinalizerTest() : TestBase("Finalizers")
 {
     private static int _finalizerCallCount;
     private static int _suppressedFinalizerCallCount;
     private static int _reregisteredFinalizerCallCount;
-
-    public FinalizerTest()
-        : base("Finalizers")
-    {
-    }
 
     public override void Setup()
     {

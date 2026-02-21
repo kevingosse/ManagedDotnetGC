@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests interleaved allocation of small, medium, and large objects
 /// </summary>
-public class MixedAllocationPatternTest : TestBase
+public class MixedAllocationPatternTest() : TestBase("Mixed Allocation Patterns")
 {
-    public MixedAllocationPatternTest()
-        : base("Mixed Allocation Patterns")
-    {
-    }
-
     public override void Run()
     {
         var objects = new object[300];

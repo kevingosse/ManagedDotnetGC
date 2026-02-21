@@ -6,13 +6,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that the GC correctly traces reference graphs
 /// </summary>
-public class ReferenceGraphTest : TestBase
+public class ReferenceGraphTest() : TestBase("Reference Graph")
 {
-    public ReferenceGraphTest()
-        : base("Reference Graph")
-    {
-    }
-
     public override void Run()
     {
         // Create a reference chain: root -> child1 -> child2

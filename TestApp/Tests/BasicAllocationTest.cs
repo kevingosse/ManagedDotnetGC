@@ -6,13 +6,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests basic object allocation and memory initialization
 /// </summary>
-public class BasicAllocationTest : TestBase
+public class BasicAllocationTest() : TestBase("Basic Allocation")
 {
-    public BasicAllocationTest()
-        : base("Basic Allocation")
-    {
-    }
-
     public override void Run()
     {
         var obj1 = new object();

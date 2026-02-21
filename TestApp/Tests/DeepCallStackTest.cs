@@ -6,13 +6,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that GC correctly scans deep call stacks
 /// </summary>
-public class DeepCallStackTest : TestBase
+public class DeepCallStackTest() : TestBase("Deep Call Stack")
 {
-    public DeepCallStackTest()
-        : base("Deep Call Stack")
-    {
-    }
-
     public override void Run()
     {
         var weakRef = RecursiveAllocate(50);

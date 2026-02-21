@@ -8,13 +8,8 @@ namespace TestApp.Tests;
 /// Tests DependentHandle behavior - the dependent object is kept alive
 /// only as long as the target object is alive.
 /// </summary>
-public class DependentHandleTest : TestBase
+public class DependentHandleTest() : TestBase("DependentHandle")
 {
-    public DependentHandleTest()
-        : base("DependentHandle")
-    {
-    }
-
     public override void Run()
     {
         TestDependentKeptAliveByTarget();

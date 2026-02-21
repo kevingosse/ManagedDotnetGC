@@ -5,13 +5,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that null references are handled correctly
 /// </summary>
-public class NullReferenceTest : TestBase
+public class NullReferenceTest() : TestBase("Null Reference Handling")
 {
-    public NullReferenceTest()
-        : base("Null Reference Handling")
-    {
-    }
-
     public override void Run()
     {
         // Array with null references

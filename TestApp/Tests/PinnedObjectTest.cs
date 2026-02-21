@@ -7,13 +7,8 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests GCHandle.Alloc with pinned objects - verifies that pinned objects don't move
 /// </summary>
-public class PinnedObjectTest : TestBase
+public class PinnedObjectTest() : TestBase("Pinned Objects")
 {
-    public PinnedObjectTest()
-        : base("Pinned Objects")
-    {
-    }
-
     public override void Run()
     {
         var array = new byte[1024];
