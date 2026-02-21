@@ -116,11 +116,7 @@ unsafe partial class GCHeap
         throw new NotImplementedException();
     }
 
-    public uint GetCondemnedGeneration()
-    {
-        Write("GetCondemnedGeneration");
-        throw new NotImplementedException();
-    }
+    public uint GetCondemnedGeneration() => 2;
 
     public bool IsEphemeral(GCObject* obj)
     {

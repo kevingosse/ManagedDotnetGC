@@ -3,5 +3,5 @@
 [NativeObject]
 public interface IGc
 {
-    void Test();
+    uint GetSyncBlockCacheCount();
 }

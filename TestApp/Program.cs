@@ -1,17 +1,7 @@
-using Spectre.Console;
 using TestApp.TestFramework;
 using TestApp.Tests;
 
 var runner = new TestRunner();
-
-var managedGc = ManagedDotnetGC.Api.GcApi.TryCreate();
-
-if (managedGc == null)
-{
-    AnsiConsole.MarkupLine("[red]Failed to initialize GC API.[/]");
-}
-
-managedGc?.Test();
 
 runner.RegisterTest(new BasicAllocationTest());
 runner.RegisterTest(new LargeObjectTest());
@@ -43,21 +33,9 @@ runner.RegisterTest(new MixedAllocationPatternTest());
 runner.RegisterTest(new FragmentationTest());
 runner.RegisterTest(new ConcurrentAllocationTest());
 runner.RegisterTest(new FrozenSegmentTest());
-
-// Stress Tests
+runner.RegisterTest(new SyncBlockCacheTest());
 runner.RegisterTest(new StressTest());
 
-// Check if a specific test was requested via command-line argument
-bool success;
-if (args.Length > 0)
-{
-    success = runner.RunSingle(args[0]);
-}
-else
-{
-    // Run all tests
-    success = runner.RunAll();
-}
+var success = args.Length > 0 ? runner.RunSingle(args[0]) : runner.RunAll();
 
-// Return appropriate exit code
 return success ? 0 : 1;
