@@ -131,65 +131,77 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
     {
-        var result = acontext.alloc_ptr;
-        var advance = Align(result + size);
+        var obj = DoAlloc(ref acontext);
 
-        // TODO: Add object to finalization queue if needed
-        // TODO: How to recognize critical finalizers?
-
-        if (advance <= acontext.alloc_limit)
+        if (flags.HasFlag(GC_ALLOC_FLAGS.GC_ALLOC_FINALIZE))
         {
-            // There is enough room left in the allocation context
-            acontext.alloc_ptr = advance;
-            return (GCObject*)result;
+            RegisterForFinalization(0, obj);
         }
 
-        // We need to allocate a new allocation context
-        FixAllocContext(ref acontext);
+        return obj;
 
-        var minimumSize = size + SizeOfObject;
-
-        if (minimumSize > SegmentSize)
+        GCObject* DoAlloc(ref gc_alloc_context acontext)
         {
-            // We need a dedicated segment for this allocation
-            Segment segment;
+            var result = acontext.alloc_ptr;
+            var advance = Align(result + size);
+
+            // TODO: Add object to finalization queue if needed
+            // TODO: How to recognize critical finalizers?
+
+            if (advance <= acontext.alloc_limit)
+            {
+                // There is enough room left in the allocation context
+                acontext.alloc_ptr = advance;
+                return (GCObject*)result;
+            }
+
+            // We need to allocate a new allocation context
+            FixAllocContext(ref acontext);
+
+            var minimumSize = size + SizeOfObject;
+
+            if (minimumSize > SegmentSize)
+            {
+                // We need a dedicated segment for this allocation
+                Segment segment;
+
+                lock (_allocationLock)
+                {
+                    segment = _segmentManager.AllocateSegment(size);
+                }
+
+                segment.Current = segment.End;
+
+                acontext.alloc_ptr = 0;
+                acontext.alloc_limit = 0;
+
+                result = Align(segment.ObjectStart + IntPtr.Size);
+
+                segment.MarkObject(result);
+
+                return (GCObject*)result;
+            }
 
             lock (_allocationLock)
             {
-                segment = _segmentManager.AllocateSegment(size);
+                if (_activeSegment.Current + minimumSize >= _activeSegment.End)
+                {
+                    // The active segment is full, allocate a new one
+                    _activeSegment = _segmentManager.AllocateSegment(SegmentSize);
+                }
+
+                var desiredSize = Math.Min(Math.Max(minimumSize, AllocationContextSize), _activeSegment.End - _activeSegment.Current);
+
+                result = _activeSegment.Current + IntPtr.Size;
+                _activeSegment.Current += desiredSize;
+
+                acontext.alloc_ptr = Align(result + size);
+                acontext.alloc_limit = _activeSegment.Current - IntPtr.Size * 2;
+
+                _activeSegment.MarkObject(result);
+
+                return (GCObject*)result;
             }
-
-            segment.Current = segment.End;
-
-            acontext.alloc_ptr = 0;
-            acontext.alloc_limit = 0;
-
-            result = Align(segment.ObjectStart + IntPtr.Size);
-
-            segment.MarkObject(result);
-
-            return (GCObject*)result;
-        }
-
-        lock (_allocationLock)
-        {
-            if (_activeSegment.Current + minimumSize >= _activeSegment.End)
-            {
-                // The active segment is full, allocate a new one
-                _activeSegment = _segmentManager.AllocateSegment(SegmentSize);
-            }
-
-            var desiredSize = Math.Min(Math.Max(minimumSize, AllocationContextSize), _activeSegment.End - _activeSegment.Current);
-
-            result = _activeSegment.Current + IntPtr.Size;
-            _activeSegment.Current += desiredSize;
-
-            acontext.alloc_ptr = Align(result + size);
-            acontext.alloc_limit = _activeSegment.Current - IntPtr.Size * 2;
-
-            _activeSegment.MarkObject(result);
-
-            return (GCObject*)result;
         }
     }
 

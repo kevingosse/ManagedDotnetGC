@@ -4,10 +4,46 @@ using System.Runtime.InteropServices;
 namespace ManagedDotnetGC;
 
 [StructLayout(LayoutKind.Sequential)]
+public struct ObjectHeader
+{
+    private const uint BIT_SBLK_GC_RESERVE = 0x20000000;
+    private const uint BIT_SBLK_FINALIZER_RUN = 0x40000000;
+
+    private uint _value;
+
+    public bool HasFinalizerRun
+    {
+        get => (_value & BIT_SBLK_FINALIZER_RUN) != 0;
+        set
+        {
+            if (value)
+            {
+                _value |= BIT_SBLK_FINALIZER_RUN;
+            }
+            else
+            {
+                _value &= ~BIT_SBLK_FINALIZER_RUN;
+            }
+        }
+    }
+}
+
+[StructLayout(LayoutKind.Sequential)]
 public unsafe struct GCObject
 {
     public MethodTable* RawMethodTable;
     public uint Length;
+
+    public ObjectHeader* Header
+    {
+        get
+        {
+            ref var @this = ref this;
+            var ptr = (int*)Unsafe.AsPointer(ref @this);
+
+            return (ObjectHeader*)(ptr - 1);
+        }
+    } 
 
     public readonly MethodTable* MethodTable => (MethodTable*)((nint)RawMethodTable & ~1);
 

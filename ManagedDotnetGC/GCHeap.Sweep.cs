@@ -6,9 +6,7 @@ unsafe partial class GCHeap
 {
     private void SweepPhase()
     {
-        Write("Updating weak references");
-        ClearHandles();
-        Sweep();
+        Sweep();      
     }
 
     private void Sweep()
@@ -36,12 +34,9 @@ unsafe partial class GCHeap
         }
     }
 
-    private void ClearHandles()
+    private void ClearHandles(ReadOnlySpan<HandleType> handleTypes)
     {
-        // TODO: Handle long weak references
-
-        foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType(
-                     [HandleType.HNDTYPE_WEAK_SHORT, HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT]))
+        foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType(handleTypes))
         {
             var obj = handle->Object;
 

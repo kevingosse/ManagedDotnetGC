@@ -36,6 +36,8 @@ runner.RegisterTest(new GCHandleTest());
 runner.RegisterTest(new PinnedObjectTest());
 runner.RegisterTest(new DependentHandleTest());
 runner.RegisterTest(new FinalizerTest());
+runner.RegisterTest(new CriticalFinalizerTest());
+runner.RegisterTest(new FinalizerWeakReferenceTest());
 runner.RegisterTest(new DeepCallStackTest());
 runner.RegisterTest(new MixedAllocationPatternTest());
 runner.RegisterTest(new FragmentationTest());

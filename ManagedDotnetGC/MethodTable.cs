@@ -117,6 +117,7 @@ public unsafe struct MethodTable
 #if FEATURE_TYPEEQUIVALENCE
         private const uint enum_flag_HasTypeEquivalence = 0x02000000;
 #endif // FEATURE_TYPEEQUIVALENCE
+    private const uint enum_flag_HasCriticalFinalizer = 0x00000002;
     private const uint enum_flag_HasFinalizer = 0x00100000;
     private const uint enum_flag_Category_Mask = 0x000F0000;
     private const uint enum_flag_Category_ValueType = 0x00040000;
@@ -166,7 +167,7 @@ public unsafe struct MethodTable
     private const int InterfaceMapOffset = 0x24 + DebugClassNamePtr;
 #endif
 
-    public bool HasComponentSize => (Flags & enum_flag_HasComponentSize) != 0;
+    public bool HasComponentSize => (Flags & enum_flag_HasComponentSize) != 0;    
 
     public bool ContainsGCPointers => (Flags & enum_flag_ContainsGCPointers) != 0;
 
@@ -177,6 +178,8 @@ public unsafe struct MethodTable
 #endif // FEATURE_TYPEEQUIVALENCE
 
     public bool HasFinalizer => (Flags & enum_flag_HasFinalizer) != 0;
+
+    public bool HasCriticalFinalizer => !HasComponentSize && (Flags & enum_flag_HasCriticalFinalizer) != 0;
 
     internal static bool AreSameType(MethodTable* mt1, MethodTable* mt2) => mt1 == mt2;
 

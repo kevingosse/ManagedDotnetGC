@@ -16,19 +16,14 @@ unsafe partial class GCHeap
         var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
 
-        // TODO: handles are roots too
-        // TODO: Weak references (+ short/long weak refs)
-        // TODO: ScanForFinalization
         // TODO: SyncBlockCache
-
-        // Order in real GC:
-        // Dependent handles
-        // Short weak refs
-        // ScanForFinalization
-        // Long weak refs
 
         ScanHandles();
         ScanDependentHandles();
+        ClearHandles([HandleType.HNDTYPE_WEAK_SHORT]);
+        ScanForFinalization();
+        ScanDependentHandles();
+        ClearHandles([HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT]);
     }
 
     [UnmanagedCallersOnly]
@@ -37,6 +32,23 @@ unsafe partial class GCHeap
         var handle = GCHandle.FromIntPtr(context->_unused1);
         var gcHeap = (GCHeap)handle.Target!;
         gcHeap.ScanRoots(*obj, context, (GcCallFlags)flags);
+    }
+
+    private void ScanForFinalization()
+    {
+        PrepareForFinalization();
+
+        ScanContext scanContext = default;
+
+        foreach (GCObject* obj in _freachableQueue)
+        {
+            ScanRoots(obj, &scanContext, default);
+        }
+
+        foreach (GCObject* obj in _critialFreachableQueue)
+        {
+            ScanRoots(obj, &scanContext, default);
+        }
     }
 
     private void ScanHandles()

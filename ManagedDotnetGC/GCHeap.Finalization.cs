@@ -2,34 +2,100 @@
 
 namespace ManagedDotnetGC;
 
-partial class GCHeap
+unsafe partial class GCHeap
 {
-    public nint GetExtraWorkForFinalization()
+    private readonly Lock _finalizationLock = new();
+    private GCObject*[] _finalizationQueue = new GCObject*[16];
+    private int _finalizationQueueCount;
+
+    private readonly Queue<nint> _freachableQueue = new();
+    private readonly Queue<nint> _critialFreachableQueue = new();
+
+    public nint GetExtraWorkForFinalization() => 0;
+
+    public nint GetNumberOfFinalizable() => _freachableQueue.Count + _critialFreachableQueue.Count;
+
+    public GCObject* GetNextFinalizable()
     {
-        Write("GetExtraWorkForFinalization");
-        return 0;
+        GCObject* obj = null;
+
+        while (obj == null && (_critialFreachableQueue.Count > 0 || _freachableQueue.Count > 0))
+        {           
+            if (_freachableQueue.Count > 0)
+            {
+                obj = (GCObject*)_freachableQueue.Dequeue();
+            }
+            else if (_critialFreachableQueue.Count > 0)
+            {
+                obj = (GCObject*)_critialFreachableQueue.Dequeue();
+            }
+
+            if (obj != null && (obj->Header->HasFinalizerRun || obj->MethodTable == _freeObjectMethodTable))
+            {
+                obj = null;
+            }            
+        }
+
+        return obj;
     }
 
-    public nint GetNumberOfFinalizable()
+    public void SetFinalizationRun(GCObject* obj)
     {
-        Write("GetNumberOfFinalizable");
-        return 0;
+        Write($"Setting finalization run for object at {(nint)obj:X}");
+        obj->Header->HasFinalizerRun = true;
     }
 
-    public unsafe GCObject* GetNextFinalizable()
+    public bool RegisterForFinalization(int gen, GCObject* obj)
     {
-        Write("GetNextFinalizable");
-        return null;
+        Write($"Registering object at {(nint)obj:X} for finalization");
+        if (obj->Header->HasFinalizerRun)
+        {
+            obj->Header->HasFinalizerRun = false;
+            return true;
+        }
+
+        lock (_finalizationLock)
+        {
+            if (_finalizationQueueCount >= _finalizationQueue.Length)
+            {
+                var newQueue = new GCObject*[_finalizationQueue.Length * 2];
+                Array.Copy(_finalizationQueue, newQueue, _finalizationQueue.Length);
+                _finalizationQueue = newQueue;
+            }
+
+            _finalizationQueue[_finalizationQueueCount++] = obj;
+        }
+
+        return true;
     }
 
-    public unsafe void SetFinalizationRun(GCObject* obj)
+    private void PrepareForFinalization()
     {
-        Write($"SetFinalizationRun - {(nint)obj:x2}");
-    }
+        int i = 0;
 
-    public unsafe bool RegisterForFinalization(int gen, GCObject* obj)
-    {
-        Write("RegisterForFinalization");
-        return false;
+        while (i < _finalizationQueueCount)
+        {
+            var obj = _finalizationQueue[i];
+
+            if (!obj->IsMarked())
+            {
+                if (obj->MethodTable->HasCriticalFinalizer)
+                {
+                    _critialFreachableQueue.Enqueue((nint)obj);
+                }
+                else
+                {
+                    _freachableQueue.Enqueue((nint)obj);
+                }
+
+                _finalizationQueueCount--;
+                _finalizationQueue[i] = _finalizationQueue[_finalizationQueueCount];
+                _finalizationQueue[_finalizationQueueCount] = null;
+            }
+            else
+            {
+                i++;
+            }
+        }
     }
 }
