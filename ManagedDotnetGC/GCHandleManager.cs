@@ -41,13 +41,11 @@ internal unsafe class GCHandleManager : IGCHandleManager, IDisposable
 
     public IntPtr CreateHandleStore()
     {
-        Write("GCHandleManager CreateHandleStore");
         throw new NotImplementedException();
     }
 
     public void DestroyHandleStore(IntPtr store)
     {
-        Write("GCHandleManager DestroyHandleStore");
         throw new NotImplementedException();
     }
 
@@ -65,13 +63,11 @@ internal unsafe class GCHandleManager : IGCHandleManager, IDisposable
 
     public void DestroyHandleOfType(ObjectHandle* handle, HandleType type)
     {
-        Write("GCHandleManager DestroyHandleOfType");
         _gcHandleStore.DestroyHandle(handle);
     }
 
     public void DestroyHandleOfUnknownType(ObjectHandle* handle)
     {
-        Write("GCHandleManager DestroyHandleOfUnknownType");
         _gcHandleStore.DestroyHandle(handle);
     }
 

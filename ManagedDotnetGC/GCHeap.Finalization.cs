@@ -79,13 +79,16 @@ unsafe partial class GCHeap
 
             if (!obj->IsMarked())
             {
-                if (obj->MethodTable->HasCriticalFinalizer)
+                if (!_gcToClr.EagerFinalized(obj))
                 {
-                    _criticalFreachableQueue.Enqueue((nint)obj);
-                }
-                else
-                {
-                    _freachableQueue.Enqueue((nint)obj);
+                    if (obj->MethodTable->HasCriticalFinalizer)
+                    {
+                        _criticalFreachableQueue.Enqueue((nint)obj);
+                    }
+                    else
+                    {
+                        _freachableQueue.Enqueue((nint)obj);
+                    }
                 }
 
                 _finalizationQueueCount--;
