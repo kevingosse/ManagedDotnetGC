@@ -45,7 +45,7 @@ unsafe partial class GCHeap
             ScanRoots(obj, &scanContext, default);
         }
 
-        foreach (GCObject* obj in _critialFreachableQueue)
+        foreach (GCObject* obj in _criticalFreachableQueue)
         {
             ScanRoots(obj, &scanContext, default);
         }

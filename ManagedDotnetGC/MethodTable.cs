@@ -167,7 +167,7 @@ public unsafe struct MethodTable
     private const int InterfaceMapOffset = 0x24 + DebugClassNamePtr;
 #endif
 
-    public bool HasComponentSize => (Flags & enum_flag_HasComponentSize) != 0;    
+    public bool HasComponentSize => (Flags & enum_flag_HasComponentSize) != 0;
 
     public bool ContainsGCPointers => (Flags & enum_flag_ContainsGCPointers) != 0;
 

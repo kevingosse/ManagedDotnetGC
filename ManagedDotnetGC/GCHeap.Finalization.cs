@@ -9,25 +9,25 @@ unsafe partial class GCHeap
     private int _finalizationQueueCount;
 
     private readonly Queue<nint> _freachableQueue = new();
-    private readonly Queue<nint> _critialFreachableQueue = new();
+    private readonly Queue<nint> _criticalFreachableQueue = new();
 
     public nint GetExtraWorkForFinalization() => 0;
 
-    public nint GetNumberOfFinalizable() => _freachableQueue.Count + _critialFreachableQueue.Count;
+    public nint GetNumberOfFinalizable() => _freachableQueue.Count + _criticalFreachableQueue.Count;
 
     public GCObject* GetNextFinalizable()
     {
         GCObject* obj = null;
 
-        while (obj == null && (_critialFreachableQueue.Count > 0 || _freachableQueue.Count > 0))
+        while (obj == null && (_criticalFreachableQueue.Count > 0 || _freachableQueue.Count > 0))
         {           
             if (_freachableQueue.Count > 0)
             {
                 obj = (GCObject*)_freachableQueue.Dequeue();
             }
-            else if (_critialFreachableQueue.Count > 0)
+            else if (_criticalFreachableQueue.Count > 0)
             {
-                obj = (GCObject*)_critialFreachableQueue.Dequeue();
+                obj = (GCObject*)_criticalFreachableQueue.Dequeue();
             }
 
             if (obj != null && (obj->Header->HasFinalizerRun || obj->MethodTable == _freeObjectMethodTable))
@@ -81,7 +81,7 @@ unsafe partial class GCHeap
             {
                 if (obj->MethodTable->HasCriticalFinalizer)
                 {
-                    _critialFreachableQueue.Enqueue((nint)obj);
+                    _criticalFreachableQueue.Enqueue((nint)obj);
                 }
                 else
                 {
