@@ -25,6 +25,7 @@ public class FinalizerTest() : TestBase("Finalizers")
         TestMultipleFinalizersRun();
         TestSuppressFinalize();
         TestReRegisterForFinalize();
+        TestBackgroundFinalizationWithoutWait();
     }
 
     // A single finalizable object goes out of scope; its finalizer must run.
@@ -87,6 +88,50 @@ public class FinalizerTest() : TestBase("Finalizers")
         var count = Volatile.Read(ref _reregisteredFinalizerCallCount);
         if (count != 1)
             throw new Exception($"TestReRegisterForFinalize: finalizer ran {count} time(s) after GC.ReRegisterForFinalize, expected 1");
+    }
+
+    // Finalizers must run in the background after a GC even when the program never
+    // calls GC.WaitForPendingFinalizers. That relies on the GC waking the finalizer
+    // thread via IGCToCLR.EnableFinalization. The other tests above all mask this:
+    // GC.WaitForPendingFinalizers itself calls EnableFinalization on the runtime side,
+    // so it wakes the thread for us. This test deliberately never calls it.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void TestBackgroundFinalizationWithoutWait()
+    {
+        _finalizerCallCount = 0;
+
+        // Park the finalizer thread on its long wait first. Each finalizer-thread
+        // iteration starts with a ~2s timed wait before dropping into an infinite
+        // wait; if we collected while still inside that window the thread could pick
+        // up the object via the timeout rather than via EnableFinalization, hiding the
+        // bug. So drain any pending work, then sleep past the 2s window.
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        Thread.Sleep(3000);
+
+        AllocateFinalizableObject();
+        GC.Collect();
+        // Intentionally NOT calling GC.WaitForPendingFinalizers(): that path wakes the
+        // finalizer thread itself. Here only the GC's EnableFinalization call can do it.
+
+        // Poll for up to ~5s for the background finalizer to run.
+        int count = 0;
+        for (int i = 0; i < 100; i++)
+        {
+            count = Volatile.Read(ref _finalizerCallCount);
+            if (count >= 1)
+                break;
+            Thread.Sleep(50);
+        }
+
+        // Drain the queue so a delayed finalizer (in the failing case) can't bleed into
+        // later tests that share _finalizerCallCount.
+        GC.WaitForPendingFinalizers();
+
+        if (count != 1)
+            throw new Exception(
+                $"TestBackgroundFinalizationWithoutWait: finalizer ran {count} time(s) within the timeout, expected 1. " +
+                "The GC is likely not calling EnableFinalization to wake the finalizer thread.");
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

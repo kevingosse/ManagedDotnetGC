@@ -94,10 +94,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         // DumpHeap();
 
-        // TODO: when to call?
-        // _gcToClr.EnableFinalization(true);
-
         _gcToClr.RestartEE(finishedGC: true);
+        _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
 
         return HResult.S_OK;
     }
