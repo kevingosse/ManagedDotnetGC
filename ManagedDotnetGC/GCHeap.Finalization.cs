@@ -30,7 +30,7 @@ unsafe partial class GCHeap
                 obj = (GCObject*)_criticalFreachableQueue.Dequeue();
             }
 
-            if (obj != null && (obj->Header->HasFinalizerRun || obj->MethodTable == _freeObjectMethodTable))
+            if (obj != null && obj->Header->HasFinalizerRun)
             {
                 obj = null;
             }            

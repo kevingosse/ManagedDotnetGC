@@ -11,12 +11,14 @@ public class FinalizerTest() : TestBase("Finalizers")
     private static int _finalizerCallCount;
     private static int _suppressedFinalizerCallCount;
     private static int _reregisteredFinalizerCallCount;
+    private static int _reregisterFromFinalizerCallCount;
 
     public override void Setup()
     {
         _finalizerCallCount = 0;
         _suppressedFinalizerCallCount = 0;
         _reregisteredFinalizerCallCount = 0;
+        _reregisterFromFinalizerCallCount = 0;
     }
 
     public override void Run()
@@ -25,6 +27,7 @@ public class FinalizerTest() : TestBase("Finalizers")
         TestMultipleFinalizersRun();
         TestSuppressFinalize();
         TestReRegisterForFinalize();
+        TestReRegisterFromFinalizer();
         TestBackgroundFinalizationWithoutWait();
     }
 
@@ -88,6 +91,39 @@ public class FinalizerTest() : TestBase("Finalizers")
         var count = Volatile.Read(ref _reregisteredFinalizerCallCount);
         if (count != 1)
             throw new Exception($"TestReRegisterForFinalize: finalizer ran {count} time(s) after GC.ReRegisterForFinalize, expected 1");
+    }
+
+    // A finalizer that calls SuppressFinalize followed by *two* ReRegisterForFinalize
+    // must re-arm finalization. Net effect on the "finalizer run" bit / queue:
+    //   SuppressFinalize      -> sets the bit (logical "don't finalize")
+    //   ReRegisterForFinalize -> bit was set, so clear it WITHOUT re-queueing
+    //   ReRegisterForFinalize -> bit now clear, so re-queue the object
+    // i.e. one net extra registration, so the object is finalized a second time.
+    // We re-arm only on the first finalization so the count is deterministic; doing
+    // it unconditionally (as in the obvious version of this finalizer) would re-arm
+    // every time and finalize the object once per GC forever. Behavior verified
+    // against the real .NET runtime: the finalizer runs exactly twice here.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void TestReRegisterFromFinalizer()
+    {
+        _reregisterFromFinalizerCallCount = 0;
+
+        AllocateReRegisterFromFinalizerObject();
+
+        // The first finalization re-arms the object; it then needs another GC to be
+        // moved back to the f-reachable queue before the second finalization runs.
+        // Collect several times so both finalizations have a chance to happen.
+        for (int i = 0; i < 5; i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+
+        var count = Volatile.Read(ref _reregisterFromFinalizerCallCount);
+        if (count != 2)
+            throw new Exception(
+                $"TestReRegisterFromFinalizer: finalizer ran {count} time(s), expected 2 " +
+                "(SuppressFinalize + ReRegisterForFinalize + ReRegisterForFinalize inside the finalizer must re-arm it exactly once)");
     }
 
     // Finalizers must run in the background after a GC even when the program never
@@ -155,6 +191,12 @@ public class FinalizerTest() : TestBase("Finalizers")
         GC.ReRegisterForFinalize(obj);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void AllocateReRegisterFromFinalizerObject()
+    {
+        _ = new ReRegisterFromFinalizerObject();
+    }
+
     private class TrackingFinalizableObject
     {
         ~TrackingFinalizableObject()
@@ -176,6 +218,20 @@ public class FinalizerTest() : TestBase("Finalizers")
         ~ReregisteredFinalizableObject()
         {
             Interlocked.Increment(ref _reregisteredFinalizerCallCount);
+        }
+    }
+
+    private class ReRegisterFromFinalizerObject
+    {
+        ~ReRegisterFromFinalizerObject()
+        {
+            // Re-arm only on the first finalization to keep the count deterministic.
+            if (Interlocked.Increment(ref _reregisterFromFinalizerCallCount) == 1)
+            {
+                GC.SuppressFinalize(this);
+                GC.ReRegisterForFinalize(this);
+                GC.ReRegisterForFinalize(this);
+            }
         }
     }
 }
