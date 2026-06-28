@@ -29,7 +29,7 @@ public struct ObjectHeader
 }
 
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct GCObject
+public unsafe ref struct GCObject
 {
     public MethodTable* RawMethodTable;
     public uint Length;
@@ -38,9 +38,7 @@ public unsafe struct GCObject
     {
         get
         {
-            ref var @this = ref this;
-            var ptr = (int*)Unsafe.AsPointer(ref @this);
-
+            var ptr = (int*)Unsafe.AsPointer(ref this);
             return (ObjectHeader*)(ptr - 1);
         }
     } 
