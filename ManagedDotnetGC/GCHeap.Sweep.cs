@@ -1,6 +1,4 @@
-﻿using static ManagedDotnetGC.Log;
-
-namespace ManagedDotnetGC;
+﻿namespace ManagedDotnetGC;
 
 unsafe partial class GCHeap
 {
@@ -39,8 +37,7 @@ unsafe partial class GCHeap
         foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType(handleTypes))
         {
             var obj = handle->Object;
-
-            if (obj != null && !obj->IsMarked())
+            if (obj != null && _nativeAllocator.IsInRange((nint)obj) && !obj->IsMarked())
             {
                 handle->Clear();
             }

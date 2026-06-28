@@ -16,8 +16,6 @@ unsafe partial class GCHeap
         var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
 
-        // TODO: SyncBlockCache
-
         ScanHandles();
         ScanDependentHandles();
         ClearHandles([HandleType.HNDTYPE_WEAK_SHORT]);
@@ -26,13 +24,22 @@ unsafe partial class GCHeap
         ClearHandles([HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT]);
 
         var weakPtrScanCallback = (delegate* unmanaged<GCObject**, nint, nint, nint, void>)&WeakPtrScanCallback;
-        _gcToClr.SyncBlockCacheWeakPtrScan(weakPtrScanCallback, 0, 0);
+        _gcToClr.SyncBlockCacheWeakPtrScan(weakPtrScanCallback, GCHandle.ToIntPtr(_handle), 0);
     }
 
     [UnmanagedCallersOnly]
     private static void WeakPtrScanCallback(GCObject** obj, nint extraInfo, nint lp1, nint lp2)
     {
-        if (!(*obj)->IsMarked())
+        var gcHeap = (GCHeap)GCHandle.FromIntPtr(lp1).Target!;
+
+        var o = *obj;
+
+        if (!gcHeap._nativeAllocator.IsInRange((nint)o)) // Ignore objects in frozen segments as they don't get marked
+        {
+            return;
+        }
+
+        if (!o->IsMarked())
         {
             *obj = null;
         }

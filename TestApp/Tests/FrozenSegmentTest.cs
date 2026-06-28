@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using TestApp.TestFramework;
 
@@ -11,6 +12,14 @@ namespace TestApp.Tests;
 public class FrozenSegmentTest() : TestBase("Frozen Segments")
 {
     public override unsafe void Run()
+    {
+        TestObjectsRemainIntact();
+        TestWeakReferenceToFrozenObjectSurvivesCollection();
+    }
+
+    // Objects allocated in a frozen segment, and their method tables, must remain
+    // intact across collections.
+    private static unsafe void TestObjectsRemainIntact()
     {
         var bufferSize = 1024 * 1024; // 1 MB
         var address = (byte*)NativeMemory.AlignedAlloc((nuint)bufferSize, (nuint)IntPtr.Size);
@@ -68,6 +77,57 @@ public class FrozenSegmentTest() : TestBase("Frozen Segments")
         {
             NativeMemory.AlignedFree(address);
         }
+    }
+
+    // A weak reference whose target lives in a frozen segment must survive GC.
+    // Frozen objects are outside the GC heap and are always considered reachable,
+    // so the weak handle must never be cleared. This mirrors the runtime treating
+    // out-of-heap objects as always promoted (GCHeap::IsPromoted).
+    private static unsafe void TestWeakReferenceToFrozenObjectSurvivesCollection()
+    {
+        var bufferSize = 64 * 1024; // 64 KB
+        var address = (byte*)NativeMemory.AlignedAlloc((nuint)bufferSize, (nuint)IntPtr.Size);
+        NativeMemory.Clear(address, (nuint)bufferSize);
+
+        try
+        {
+            var cursor = address;
+            var strAddr = WriteString(ref cursor, ['F', 'r', 'o', 'z', 'e', 'n']);
+
+            var segment = RegisterFrozenSegment((IntPtr)address, (nint)(cursor - address));
+
+            try
+            {
+                // Create the weak reference without leaving any strong managed
+                // reference to the frozen object on the stack: its only liveness
+                // must come from being in the frozen segment.
+                var weakRef = CreateWeakReference(strAddr);
+
+                GC.Collect();
+                GC.Collect();
+
+                if (!weakRef.IsAlive)
+                    throw new Exception("WeakReference to a frozen object was cleared after GC, expected it to stay alive");
+
+                if (weakRef.Target is not "Frozen")
+                    throw new Exception($"WeakReference target = \"{weakRef.Target}\" after GC, expected \"Frozen\"");
+            }
+            finally
+            {
+                UnregisterFrozenSegment(segment);
+            }
+        }
+        finally
+        {
+            NativeMemory.AlignedFree(address);
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static unsafe WeakReference CreateWeakReference(nint objStart)
+    {
+        var target = *(string*)&objStart;
+        return new WeakReference(target);
     }
 
     private static unsafe nint GetMethodTablePointer(object obj)
