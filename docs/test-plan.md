@@ -6,9 +6,12 @@ practical. Constraints:
 
 - Every test must run (and pass) on the stock GC — that's what validates the test itself. The only
   exception category is tests that *require* the custom GC API (like the existing sync-block tests).
-- New tests are **feature-gated**: on the custom GC they are skipped unless their feature is opted in,
-  so the suite stays green while features land one by one. On the stock GC the gate is ignored and
-  everything runs.
+- New tests are **feature-gated**: tests of a pending feature are skipped unless opted in with
+  `--feature X` / `--all-features`, so the suite stays green while features land one by one. The gate
+  applies identically on both GCs — a no-arg run means the same thing everywhere, and no GC detection
+  is involved (pending-feature tests are exactly the ones that may fail-fast the custom GC, so a
+  detection misfire would crash the suite instead of skipping). The stock-GC validation run passes
+  `--all-features` explicitly.
 - Scope: .NET 10, win-x64 only. Everything tied to 32-bit (`ALIGN8`), Android (`CROSSREFERENCE` bridge),
   older EEs (async-pinned / sized-ref / weak-native-COM), conservative/interpreter mode is **out of scope**.
 
@@ -56,11 +59,14 @@ class: deadlocked `WaitForPendingFinalizers`, runaway managed loops.
 
 ### 1.3 Subprocess helper
 
-A small helper that re-launches `TestApp.exe --child <TestName>` with extra environment variables and
-asserts on the exit code. Needed for the hard-limit OOM test (env vars must be set before runtime
-startup) and useful later to isolate any test that fail-fasts the process. The child runs the given
-test through the normal runner (`RunSingle` already exists) but with a distinctive exit code protocol
-(e.g. 42 = child scenario succeeded) so a crash is distinguishable from a clean failure.
+`ChildProcess.Run(arguments, extraEnvironment, timeout)` relaunches the current executable with the
+given arguments and environment overrides, inheriting the rest (including `DOTNET_GCName`, so the
+child runs on the same GC), and hands back the exit code and output. There is no generic `--child`
+mode: each subprocess test defines its own marker argument, dispatched at the very top of
+`Program.cs` before any other work so the child scenario fully controls its allocations (it may run
+under a tiny heap hard limit). Currently the only one is `--oom-child`
+(`HeapHardLimitOomTest.ChildArgument`). A distinctive exit-code protocol (42 = child scenario
+succeeded) distinguishes a crash from a clean failure.
 
 ---
 
@@ -272,7 +278,7 @@ feature it belongs to — as the permanent regression guard.
 ## 4. Category C — subprocess tests
 
 ### `HeapHardLimitOOMTest` — feature `HardLimitOom` (doc 1.3)
-Parent spawns `TestApp.exe --child HeapHardLimitOOM` with `DOTNET_GCHeapHardLimit=0x4000000` (64 MB,
+Parent spawns `TestApp.exe --oom-child` with `DOTNET_GCHeapHardLimit=0x8000000` (128 MB,
 env var must precede runtime start — hence subprocess). Child: allocate 1 MB arrays into a list until
 `OutOfMemoryException` is **caught**; verify the heap still works afterwards (drop list, collect,
 allocate); exit 42. Parent asserts exit code 42. Green on stock. For your GC this implies two small
