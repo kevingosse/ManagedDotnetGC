@@ -10,6 +10,11 @@ if (args.Length > 0 && args[0] == HeapHardLimitOomTest.ChildArgument)
     return HeapHardLimitOomTest.RunChild();
 }
 
+if (args.Length > 0 && args[0] == TestApp.SoakRunner.Argument)
+{
+    return TestApp.SoakRunner.Run(args.Length > 1 && int.TryParse(args[1], out var soakSeconds) ? soakSeconds : 120);
+}
+
 // Features not implemented yet in ManagedDotnetGC. Tests gated on them are skipped unless
 // explicitly requested with --feature <name> or --all-features. To start working on a feature,
 // remove it from this list and watch its tests fail.
