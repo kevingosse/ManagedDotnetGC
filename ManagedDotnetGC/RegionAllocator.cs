@@ -35,6 +35,11 @@ internal unsafe class RegionAllocator : IDisposable
     // DOTNET_GCHeapHardLimit: cap on committed region bytes, 0 = none
     private long _hardLimit;
 
+    // Card table storage (unbiased base), committed alongside the region frontier so the
+    // EE's bulk-copy card writes always land on writable pages (missing-features 7.1)
+    private nint _cardTableStorage;
+    private nint _cardTableCommittedEnd;
+
     // Committed bytes currently sitting in the free pool (drives the retention trim)
     private long _pooledCommittedBytes;
 
@@ -65,6 +70,12 @@ internal unsafe class RegionAllocator : IDisposable
     }
 
     public void SetFreeObjectMethodTable(MethodTable* methodTable) => _freeObjectMethodTable = methodTable;
+
+    public void SetCardTable(nint storage)
+    {
+        _cardTableStorage = storage;
+        _cardTableCommittedEnd = storage;
+    }
 
     public void SetHardLimit(long limit) => _hardLimit = limit;
 
@@ -724,6 +735,11 @@ internal unsafe class RegionAllocator : IDisposable
 
     private bool EnsureTableCommitted(int requiredEntries)
     {
+        if (!EnsureCardTableCommitted(requiredEntries))
+        {
+            return false;
+        }
+
         var requiredEnd = (nint)(_table + requiredEntries);
 
         if (requiredEnd <= _tableCommittedEnd)
@@ -740,6 +756,37 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         _tableCommittedEnd = alignedEnd;
+        return true;
+    }
+
+    /// <summary>
+    /// Commits the card bytes covering every region below the new frontier: one card byte
+    /// per 2 KB of heap, so one region needs 1 KB of cards. Pooled regions recommitted later
+    /// are always below the frontier and therefore already covered.
+    /// </summary>
+    private bool EnsureCardTableCommitted(int requiredEntries)
+    {
+        if (_cardTableStorage == 0)
+        {
+            return true; // tests drive the allocator without a card table
+        }
+
+        var requiredEnd = _cardTableStorage + ((nint)requiredEntries << (Region.Shift - 11));
+
+        if (requiredEnd <= _cardTableCommittedEnd)
+        {
+            return true;
+        }
+
+        var pageSize = (nint)Environment.SystemPageSize;
+        var alignedEnd = (requiredEnd + pageSize - 1) & ~(pageSize - 1);
+
+        if (!NativeAllocator.OsCommit(_cardTableCommittedEnd, alignedEnd - _cardTableCommittedEnd))
+        {
+            return false;
+        }
+
+        _cardTableCommittedEnd = alignedEnd;
         return true;
     }
 

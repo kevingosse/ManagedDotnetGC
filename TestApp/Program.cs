@@ -20,10 +20,7 @@ if (args.Length > 0 && args[0] == TestApp.SoakRunner.Argument)
 // remove it from this list and watch its tests fail.
 var pendingFeatures = new HashSet<GcFeature>
 {
-    GcFeature.CollectibleAssemblies,
-    GcFeature.RefCountedHandles,
     GcFeature.GcEvents,
-    GcFeature.GcInternals,
 };
 
 string? singleTest = null;

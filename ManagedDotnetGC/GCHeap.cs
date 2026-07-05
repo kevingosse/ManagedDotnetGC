@@ -76,10 +76,36 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
+        // The Initialize contract wants real heap bounds and a non-null card table — debug
+        // runtimes assert on them (missing-features 7.1). ephemeral_low = -1 makes the JIT
+        // write barriers exit before their card write, but the EE's bulk-copy helper
+        // (InlinedSetCardsAfterBulkCopyHelper, gchelpers.inl) checks only the heap bounds and
+        // then dirties BOTH tables unconditionally — so both must be writable for committed
+        // heap ranges. Cards (1 byte / 2 KB → 1 GB worst case) are reserved in full and
+        // committed lazily alongside the region frontier; card bundles (1 byte / 2 MB → 1 MB
+        // total) are committed eagerly. The biased pointers make table[addr >> shift] land
+        // inside the storage for in-heap addresses.
+        var heapLow = _nativeAllocator.LowestAddress;
+        var heapHigh = _nativeAllocator.HighestAddress;
+        var cardTableStorage = NativeAllocator.OsReserve((heapHigh - heapLow) >> 11);
+        _regionAllocator.SetCardTable(cardTableStorage);
+
+        var bundleTableStorage = NativeAllocator.OsReserve((heapHigh - heapLow) >> 21);
+
+        if (cardTableStorage == 0 || bundleTableStorage == 0
+            || !NativeAllocator.OsCommit(bundleTableStorage, (heapHigh - heapLow) >> 21))
+        {
+            return HResult.E_OUTOFMEMORY;
+        }
+
         var parameters = new WriteBarrierParameters
         {
             operation = WriteBarrierOp.Initialize,
             is_runtime_suspended = true,
+            card_table = (uint*)(cardTableStorage - (heapLow >> 11)),
+            card_bundle_table = (uint*)(bundleTableStorage - (heapLow >> 21)),
+            lowest_address = heapLow,
+            highest_address = heapHigh,
             ephemeral_low = -1
         };
 
@@ -120,6 +146,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         {
             _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
 
+            // EE bracket notifications (missing-features 2.1): condemned = 2 so the full-GC
+            // paths engage (JIT code-heap cleanup, ComWrappers reference tracking)
+            NotifyGcStartWork(2, 2);
+
             AdvanceEpoch();
 
             FixAllocContexts();
@@ -137,6 +167,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             _budget = Region.ComputeBudget(_lastLiveBytes);
 
             Interlocked.Increment(ref _gcCount);
+
+            NotifyGcDone(2);
 
             _gcToClr.RestartEE(finishedGC: true);
             _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);

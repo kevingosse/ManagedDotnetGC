@@ -40,7 +40,20 @@ unsafe partial class GCHeap : IGc
     {
         try
         {
-            return (nint)GetContainingObject(address, fCollectedGenOnly: false);
+            // The bump-region walk is only safe on a walkable heap: outside a collection,
+            // live alloc-context remainders are unplugged zeroes. Suspend and plug them
+            // first, exactly like a real collection does.
+            _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC_PREP);
+
+            try
+            {
+                FixAllocContexts();
+                return (nint)GetContainingObject(address, fCollectedGenOnly: false);
+            }
+            finally
+            {
+                _gcToClr.RestartEE(finishedGC: false);
+            }
         }
         catch (NotImplementedException)
         {

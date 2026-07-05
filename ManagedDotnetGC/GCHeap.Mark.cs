@@ -12,6 +12,8 @@ unsafe partial class GCHeap
         scanContext.promotion = true;
         scanContext._unused1 = GCHandle.ToIntPtr(_handle);
 
+        NotifyBeforeGcScanRoots(2, isBgc: false, isConcurrent: false);
+
         Write("Scan roots");
         var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
@@ -22,11 +24,17 @@ unsafe partial class GCHeap
         MarkFReachableQueues();
 
         ScanHandles();
+        ScanRefCountedHandles();
         ScanDependentHandles();
+
+        // After all strong marking, before weak clearing (stock mark_phase.cpp:3385): the EE
+        // detaches unmarked RCWs / ComWrappers here, consulting our IsPromoted (2.1)
+        NotifyAfterGcScanRoots(2, 2, &scanContext);
+
         ClearHandles([HandleType.HNDTYPE_WEAK_SHORT]);
         ScanForFinalization();
         ScanDependentHandles();
-        ClearHandles([HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT, HandleType.HNDTYPE_WEAK_INTERIOR_POINTER]);
+        ClearHandles([HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT, HandleType.HNDTYPE_WEAK_INTERIOR_POINTER, HandleType.HNDTYPE_REFCOUNTED]);
 
         var weakPtrScanCallback = (delegate* unmanaged<GCObject**, nint, nint, nint, void>)&WeakPtrScanCallback;
         _gcToClr.SyncBlockCacheWeakPtrScan(weakPtrScanCallback, GCHandle.ToIntPtr(_handle), 0);
@@ -91,6 +99,28 @@ unsafe partial class GCHeap
         {
             var obj = handle->Object;
             if (obj != null)
+            {
+                ScanRoots(obj, &scanContext, default);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Ref-counted handles (one per CCW / ComWrappers wrapper): the EE decides liveness —
+    /// promote iff the wrapper is still referenced from native code (missing-features 3.2).
+    /// Like stock PromoteRefCounted, the callback runs for every handle, marked target or
+    /// not, so EE-side bookkeeping always happens. Dead ones are nulled with the long-weak
+    /// group after the finalization scan.
+    /// </summary>
+    private void ScanRefCountedHandles()
+    {
+        ScanContext scanContext = default;
+
+        foreach (var handle in _gcHandleManager.Store.EnumerateHandlesOfType([HandleType.HNDTYPE_REFCOUNTED]))
+        {
+            var obj = handle->Object;
+
+            if (obj != null && _gcToClr.RefCountedHandleCallbacks(obj))
             {
                 ScanRoots(obj, &scanContext, default);
             }
@@ -188,6 +218,20 @@ unsafe partial class GCHeap
             }
 
             o->EnumerateObjectReferences(_markStack);
+
+            if (o->MethodTable->Collectible)
+            {
+                // The type's managed LoaderAllocator must live as long as any instance —
+                // this edge is all that keeps a collectible assembly's MethodTables and JIT
+                // code alive while instances exist (missing-features 3.1)
+                var loaderAllocator = (GCObject*)_gcToClr.GetLoaderAllocatorObjectForGC(o);
+
+                if (loaderAllocator != null)
+                {
+                    _markStack.Push((nint)loaderAllocator);
+                }
+            }
+
             o->Mark();
 
             entry->LiveBytes = (int)Math.Min(int.MaxValue, entry->LiveBytes + (long)Align((nint)o->ComputeSize()));

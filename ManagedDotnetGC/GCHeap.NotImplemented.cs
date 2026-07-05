@@ -151,7 +151,17 @@ unsafe partial class GCHeap
     {
         // Same machinery as interior-pointer marking; null for non-heap addresses and
         // pointers into dead space (missing-features 6.3)
-        return _nativeAllocator.IsInRange(pInteriorPtr) ? ResolveInteriorPointer(pInteriorPtr) : null;
+        var obj = _nativeAllocator.IsInRange(pInteriorPtr) ? ResolveInteriorPointer(pInteriorPtr) : null;
+
+        // The resolver's bound includes the trailing pre-header slot that ComputeSize counts
+        // for the *next* object (fine for marking, matching stock find_object); the API answer
+        // is strict: one past the object's own bytes is not inside it
+        if (obj != null && pInteriorPtr >= (nint)obj + (nint)obj->ComputeSize() - IntPtr.Size)
+        {
+            return null;
+        }
+
+        return obj;
     }
 
     // Diag walks: a profiler attach, dotnet-gcdump or an EventPipe heap session reaches

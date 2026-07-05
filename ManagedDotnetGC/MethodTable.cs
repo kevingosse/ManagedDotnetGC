@@ -111,6 +111,7 @@ public unsafe struct MethodTable
     private const uint enum_flag_IsByRefLike = 0x00001000;
 
     // WFLAGS_HIGH_ENUM
+    private const uint enum_flag_Collectible = 0x00200000;
     private const uint enum_flag_ContainsGCPointers = 0x01000000;
     private const uint enum_flag_ContainsGenericVariables = 0x20000000;
     private const uint enum_flag_HasComponentSize = 0x80000000;
@@ -170,6 +171,10 @@ public unsafe struct MethodTable
     public bool HasComponentSize => (Flags & enum_flag_HasComponentSize) != 0;
 
     public bool ContainsGCPointers => (Flags & enum_flag_ContainsGCPointers) != 0;
+
+    /// <summary>The type lives in a collectible LoaderAllocator (RunAndCollect assembly);
+    /// .NET 9+ flag value (the .NET 8 compat value 0x10000000 is deliberately not handled).</summary>
+    public bool Collectible => (Flags & enum_flag_Collectible) != 0;
 
     public bool NonTrivialInterfaceCast => (Flags & enum_flag_NonTrivialInterfaceCast) != 0;
 
