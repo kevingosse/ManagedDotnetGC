@@ -24,10 +24,11 @@ public enum GcFeature
     GenerationApis,          // 6.2: GC.GetGeneration / GC.MaxGeneration (WhichGeneration, GetMaxGeneration)
 
     // ── Pending (see docs/missing-features.md for the corresponding items) ──────────
-    CollectibleAssemblies,   // 3.1 + 4.1/4.2: LoaderAllocator edge, weak interior pointer handles
+    CollectibleAssemblies,   // 3.1: LoaderAllocator edge (statics/unload scenarios also exercise 4.2 clearing)
     RefCountedHandles,       // 3.2: HNDTYPE_REFCOUNTED scanning/clearing + RefCountedHandleCallbacks
     FinalizationQueueRoots,  // 3.3: f-reachable queue promoted early in the mark phase
     FrozenDependentHandles,  // 3.4: frozen-segment objects as dependent-handle primary/secondary
+    NewHandleTypes,          // 4.1: handle-table slots for types 10/11 (weak interior pointer + cross-reference)
     SuppressFinalizeDrop,    // 5.1: suppressed dead objects dropped at scan, not resurrected
     ApiSurface,              // 6.1: misc GC APIs (RefreshMemoryLimit, ...)
     LatencyMode,             // 6.1: GCSettings.LatencyMode get/set

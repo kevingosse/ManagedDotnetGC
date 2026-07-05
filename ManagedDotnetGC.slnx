@@ -9,6 +9,9 @@
     <File Path="publish.cmd" />
     <File Path="run-tests.cmd" />
   </Folder>
+  <Folder Name="/Solution Items/docs/">
+    <File Path="docs/missing-features.md" />
+  </Folder>
   <Project Path="ManagedDotnetGC.Api/ManagedDotnetGC.Api.csproj" Id="e17d303a-15a8-41ef-a818-5007bb249178">
     <Build Solution="Debug|*" Project="false" />
   </Project>
