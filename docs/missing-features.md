@@ -21,9 +21,9 @@ References are `runtime-file:line` for `E:\git\runtime\src\coreclr\...` and `gc-
 | 1.1 | No GC trigger policy — collections happen only on explicit `GC.Collect()` | ✅ done (M2 region heap) | `GcTriggering` |
 | 1.2 | Memory is never reused (known) — plus the correctness work reuse drags in (zeroing, brick-table reset, decommit) | ✅ done (M2 region heap) | `MemoryReuse` |
 | 1.3 | OOM handling: `Alloc` must return `null`, never throw; today OOM = fail-fast | ✅ done (M2 region heap) | `HardLimitOom` |
-| 2.1 | `GcStartWork` / `BeforeGcScanRoots` / `AfterGcScanRoots` / `GcDone` never called | 🟥 | `GcInternals` |
-| 3.1 | Collectible types: LoaderAllocator objects are not kept alive during marking | 🟥 | `CollectibleAssemblies` |
-| 3.2 | Ref-counted handles (COM / ComWrappers) never scanned, never cleared | 🟥 | `RefCountedHandles` |
+| 2.1 | `GcStartWork` / `BeforeGcScanRoots` / `AfterGcScanRoots` / `GcDone` never called | ✅ done | `GcInternals` |
+| 3.1 | Collectible types: LoaderAllocator objects are not kept alive during marking | ✅ done | `CollectibleAssemblies` |
+| 3.2 | Ref-counted handles (COM / ComWrappers) never scanned, never cleared | ✅ done | `RefCountedHandles` |
 | 3.3 | Objects awaiting finalization are marked too late in the cycle | ✅ done | `FinalizationQueueRoots` |
 | 3.4 | Dependent handles: frozen-segment primaries break the fixpoint (hang + dropped values) | ✅ done | `FrozenDependentHandles` |
 | 4.1 | Handle table can't store handle types 10/11 (`WEAK_INTERIOR_POINTER`, `CROSSREFERENCE`) → index-out-of-range | ✅ done | `NewHandleTypes` |
@@ -34,7 +34,7 @@ References are `runtime-file:line` for `E:\git\runtime\src\coreclr\...` and `gc-
 | 6.1 | `NotImplementedException` stubs reachable from public APIs (≈15 methods, each = fail-fast) | ✅ done | `ApiSurface`, `LatencyMode`, `NoGCRegion`, `EventCounters` |
 | 6.2 | Generation numbering consistency (`MaxGeneration`, `WhichGeneration`, frozen = `INT32_MAX`) | ✅ done | `GenerationApis` (implemented) |
 | 6.3 | `IsPromoted` / `GetContainingObject` / `IsHeapPointer` needed by the EE outside your own scan | ✅ done (with 6.1) | `GcInternals` |
-| 7.1 | Write-barrier initialization passes null card table and zero heap bounds | 🟨 | `GcInternals` |
+| 7.1 | Write-barrier initialization passes null card table and zero heap bounds | ✅ done (lazy cards + eager bundles) | `GcInternals` |
 | 8.1 | `alloc_bytes` accounting missing → negative `GC.GetAllocatedBytesForCurrentThread()` | ✅ done (M2 + totals) | `AllocationAccounting` |
 | 8.2 | `GC_ALLOC_ALIGN8` / `ALIGN8_BIAS` (32-bit only) | 🟨 | — (out of scope: 32-bit) |
 | 8.3 | GC-from-allocation must toggle preemptive mode before `SuspendEE` | ✅ done (M2 region heap) | `GcTriggering` |

@@ -66,8 +66,8 @@ Region-based, size-class segregated, **non-moving**, sticky-generation mark & sw
 | # | Deliverable | Exit criterion |
 |---|---|---|
 | M0 ✅ | Baseline | Test suite: 36/56 pass, 20 feature-gated, 0 fail (2026-07-05) |
-| M1 | Correctness backlog, allocator-independent part | EE brackets (2.1), collectible types (3.1), ref-counted handles (3.2), finalization-queue roots (3.3), frozen dependent handles (3.4), handle types 10/11 (4.x), SuppressFinalize (5.1), API stubs (6.x), write-barrier init (7), alloc accounting (8.1) — gates flip on, suite green |
-| M2 | **Region heap core** (replaces SegmentManager) | Allocation triggering (1.1), memory reuse (1.2), OOM-as-null (1.3), preemptive-mode dance (8.3) implemented *on the new allocator*; suite fully green; runs real apps indefinitely |
+| M1 ✅ | Correctness backlog, allocator-independent part | EE brackets (2.1), collectible types (3.1), ref-counted handles (3.2), finalization-queue roots (3.3), frozen dependent handles (3.4), handle types 10/11 (4.x), SuppressFinalize (5.1), API stubs (6.x), write-barrier init (7), alloc accounting (8.1) — **suite 56/56 green (2026-07-05)** |
+| M2 ✅ | **Region heap core** (replaces SegmentManager) | Allocation triggering (1.1), memory reuse (1.2), OOM-as-null (1.3), preemptive-mode dance (8.3) implemented *on the new allocator*; suite fully green; ASP.NET sample under 20k req/s load: 0 errors, flat footprint (soak-aspnet.cmd) |
 | M3 | Benchmark harness + first honest comparison | GCPerfSim + custom scenarios (pinning server, LOH churn, cache churn, burst allocation) vs stock WKS/SVR/BGC; throughput, pause histogram, peak RSS, CPU. Published in experiments/results/ |
 | M4 | Sticky generations via card table | Young collections; win or tie GCPerfSim steady-state |
 | M5 | Parallel mark & sweep | Pause ∝ 1/cores |
