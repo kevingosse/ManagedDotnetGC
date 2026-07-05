@@ -1,0 +1,95 @@
+# Canonical GCPerfSim protocol for the per-step performance archive.
+#
+# Runs the fixed scenario set N times against the stock GC or a given ManagedDotnetGC.dll
+# and appends raw rows to experiments/results/perf-history.csv — one archive, one row per
+# iteration, so every milestone lands in the same file with the same protocol.
+#
+#   .\bench-gcperfsim.ps1 -Label stock
+#   .\bench-gcperfsim.ps1 -Label m1-complete -Sha 3c25f87 -GcDll <path>\ManagedDotnetGC.dll
+#
+# Rules: Release NativeAOT GC builds only (Debug costs ~2.5x); note the machine state in
+# perf-history.md if anything heavy ran concurrently.
+param(
+    [string]$GcDll = "",          # full path to a Release ManagedDotnetGC.dll; "" = stock GC
+    [Parameter(Mandatory = $true)][string]$Label,
+    [string]$Sha = "",
+    [int]$Iterations = 3
+)
+
+$ErrorActionPreference = 'Stop'
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$simDir = "$PSScriptRoot\GCPerfSim\bin\Release\net10.0\win-x64"
+$exe = "$simDir\GCPerfSim.exe"
+$csv = "$PSScriptRoot\results\perf-history.csv"
+
+if (-not (Test-Path $exe)) {
+    dotnet build $PSScriptRoot\GCPerfSim -c Release | Out-Null
+}
+
+if (-not $Sha) { $Sha = (git -C $repoRoot rev-parse --short HEAD).Trim() }
+
+# The canonical scenarios. Do not edit lightly: changing them invalidates cross-step
+# comparability of the whole archive. Add new scenarios instead.
+$scenarios = [ordered]@{
+    'soh'    = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -tk time'
+    'lohmix' = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -lohar 50 -lohsr 100000-2000000 -lohsi 50 -tk time'
+    'pin'    = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -sohpi 100 -tk time'
+}
+
+if ($GcDll) {
+    # The previous run's dll can stay locked for a moment after process exit (AV scan)
+    foreach ($attempt in 1..20) {
+        try { Copy-Item $GcDll $simDir -Force -ErrorAction Stop; break }
+        catch { if ($attempt -eq 20) { throw }; Start-Sleep -Milliseconds 500 }
+    }
+
+    $env:DOTNET_GCName = 'ManagedDotnetGC.dll'
+    $gcName = 'custom'
+}
+else {
+    Remove-Item Env:DOTNET_GCName -ErrorAction SilentlyContinue
+    $gcName = 'stock-wks'
+}
+
+$env:DOTNET_gcServer = '0'
+$env:DOTNET_gcConcurrent = '0'
+$env:DOTNET_gcConservative = '0'
+
+if (-not (Test-Path $csv)) {
+    'utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb' | Set-Content $csv
+}
+
+foreach ($name in $scenarios.Keys) {
+    $walls = @()
+
+    for ($i = 1; $i -le $Iterations; $i++) {
+        $out = Join-Path $env:TEMP "gcperfsim-$name-$i.txt"
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $p = Start-Process -FilePath $exe -ArgumentList $scenarios[$name] -NoNewWindow -PassThru -RedirectStandardOutput $out
+
+        $peak = 0
+        while (-not $p.HasExited) {
+            try { $p.Refresh(); if ($p.PeakWorkingSet64 -gt $peak) { $peak = $p.PeakWorkingSet64 } } catch {}
+            Start-Sleep -Milliseconds 50
+        }
+
+        $sw.Stop()
+
+        if ($p.ExitCode -ne 0) { throw "GCPerfSim failed ($Label/$name iter $i): exit $($p.ExitCode)" }
+
+        $text = Get-Content $out -Raw
+        $simS = if ($text -match 'seconds_taken: ([\d.]+)') { [double]$Matches[1] } else { -1 }
+        $counts = if ($text -match 'collection_counts: \[([\d, ]+)\]') { ($Matches[1] -replace '[ ,]+', '/') } else { '' }
+        $heapMb = if ($text -match 'final_heap_size_bytes: (\d+)') { [long]$Matches[1] / 1MB } else { -1 }
+
+        $wall = [math]::Round($sw.Elapsed.TotalSeconds, 3)
+        $walls += $wall
+
+        "{0},{1},{2},{3},{4},{5},{6},{7},{8:F1},{9},{10:F1}" -f `
+            (Get-Date -AsUTC -Format s), $Sha, $Label, $name, $gcName, $i, $wall, $simS, ($peak / 1MB), $counts, $heapMb |
+            Add-Content $csv
+    }
+
+    $median = ($walls | Sort-Object)[[int](($walls.Count - 1) / 2)]
+    "{0,-14} {1,-7} median_wall_s={2,-8} iters=({3})" -f $Label, $name, $median, ($walls -join ' ')
+}
