@@ -27,7 +27,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private long _allocatedSinceGC;
 
     private GCHandle _handle;
-    private Stack<IntPtr> _markStack = new();
+    private readonly MarkStack _markStack = new();
+    private uint _currentEpoch = 1;
 
     private readonly NativeAllocator _nativeAllocator;
 
@@ -103,6 +104,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         if (force || Volatile.Read(ref _gcCount) == gcCountSnapshot)
         {
             _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
+
+            AdvanceEpoch();
 
             FixAllocContexts();
 
@@ -227,6 +230,27 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         {
             _allocLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Starts a new mark epoch (SPEC-M2 §5). Runs under STW. On uint wrap, stale stamps
+    /// from 2³² collections ago could alias the new epoch, so all stamps are cleared first.
+    /// </summary>
+    private void AdvanceEpoch()
+    {
+        _currentEpoch++;
+
+        if (_currentEpoch == 0)
+        {
+            foreach (var ptr in WalkHeapObjects())
+            {
+                ((GCObject*)ptr)->Epoch = 0;
+            }
+
+            _currentEpoch = 1;
+        }
+
+        GCObject.CurrentEpoch = _currentEpoch;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

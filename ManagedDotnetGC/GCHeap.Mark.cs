@@ -137,9 +137,9 @@ unsafe partial class GCHeap
             }
         }
 
-        _markStack.Push((IntPtr)root);
+        _markStack.Push((nint)root);
 
-        while (_markStack.Count > 0)
+        while (!_markStack.IsEmpty)
         {
             var ptr = _markStack.Pop();
             var o = (GCObject*)ptr;
@@ -168,7 +168,7 @@ unsafe partial class GCHeap
                 entry = _regionAllocator.GetEntry(entry->SpanStartIndex);
             }
 
-            o->EnumerateObjectReferences(_markStack.Push);
+            o->EnumerateObjectReferences(_markStack);
             o->Mark();
 
             entry->LiveBytes = (int)Math.Min(int.MaxValue, entry->LiveBytes + (long)Align((nint)o->ComputeSize()));

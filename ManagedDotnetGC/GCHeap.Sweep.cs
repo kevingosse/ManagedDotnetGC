@@ -14,7 +14,6 @@ unsafe partial class GCHeap
             var obj = (GCObject*)ptr;
 
             bool marked = obj->IsMarked();
-            obj->Unmark();
 
             bool isFreeObject = obj->MethodTable == _freeObjectMethodTable;
 

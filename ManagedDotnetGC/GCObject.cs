@@ -31,6 +31,12 @@ public struct ObjectHeader
 [StructLayout(LayoutKind.Sequential)]
 public unsafe ref struct GCObject
 {
+    /// <summary>
+    /// The epoch of the collection currently in progress. Only meaningful (and only read)
+    /// while the world is stopped; never 0, so freshly-zeroed objects are never "marked".
+    /// </summary>
+    internal static uint CurrentEpoch = 1;
+
     public MethodTable* RawMethodTable;
     public uint Length;
 
@@ -41,15 +47,24 @@ public unsafe ref struct GCObject
             var ptr = (int*)Unsafe.AsPointer(ref this);
             return (ObjectHeader*)(ptr - 1);
         }
-    } 
+    }
 
-    public readonly MethodTable* MethodTable => (MethodTable*)((nint)RawMethodTable & ~1);
+    /// <summary>
+    /// The GC word (SPEC-M2 §5): the 4 free bytes at ref-8, the x64 padding half of the
+    /// pre-header word (the sync block index lives in the upper half, at ref-4).
+    /// Holds the epoch stamp of the last collection that proved this object live.
+    /// </summary>
+    public uint Epoch
+    {
+        get => *((uint*)Unsafe.AsPointer(ref this) - 2);
+        set => *((uint*)Unsafe.AsPointer(ref this) - 2) = value;
+    }
 
-    public bool IsMarked() => ((nint)RawMethodTable & 1) != 0;
+    public readonly MethodTable* MethodTable => RawMethodTable;
 
-    public void Mark() => RawMethodTable = (MethodTable*)((nint)MethodTable | 1);
+    public bool IsMarked() => Epoch == CurrentEpoch;
 
-    public void Unmark() => RawMethodTable = (MethodTable*)((nint)MethodTable & ~1);
+    public void Mark() => Epoch = CurrentEpoch;
 
     public readonly uint ComputeSize()
     {
@@ -65,7 +80,7 @@ public unsafe ref struct GCObject
         return methodTable->BaseSize + Length * methodTable->ComponentSize;
     }
 
-    public static void EnumerateObjectReferences(GCObject* obj, Action<IntPtr> callback)
+    internal static void EnumerateObjectReferences(GCObject* obj, MarkStack callback)
     {
         if (!obj->MethodTable->ContainsGCPointers)
         {
@@ -94,7 +109,7 @@ public unsafe ref struct GCObject
 
                     if (target != 0)
                     {
-                        callback(target);
+                        callback.Push(target);
                     }
                 }
             }
@@ -119,7 +134,7 @@ public unsafe ref struct GCObject
 
                         if (target != 0)
                         {
-                            callback(target);
+                            callback.Push(target);
                         }
 
                         ptr++;
@@ -135,7 +150,7 @@ public unsafe ref struct GCObject
 
 public static class GCObjectExtensions
 {
-    public static unsafe void EnumerateObjectReferences(ref this GCObject obj, Action<IntPtr> callback)
+    internal static unsafe void EnumerateObjectReferences(ref this GCObject obj, MarkStack callback)
     {
         GCObject.EnumerateObjectReferences((GCObject*)Unsafe.AsPointer(ref obj), callback);
     }
