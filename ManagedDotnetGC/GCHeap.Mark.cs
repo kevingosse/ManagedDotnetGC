@@ -210,6 +210,27 @@ unsafe partial class GCHeap
                 break;
             }
 
+            case RegionKind.SizeClass:
+            {
+                // O(1): block index arithmetic + allocated-bit check (SPEC-M2 §6)
+                var classSize = Region.ClassSizes[entry->SizeClass];
+                var offset = addr - _regionAllocator.RegionBase(index);
+                var block = (int)(offset / classSize);
+
+                if (block < RegionAllocator.BlockCount(entry->SizeClass)
+                    && (entry->AllocatedBlocks & (1ul << block)) != 0)
+                {
+                    var obj = (GCObject*)(_regionAllocator.RegionBase(index) + (nint)block * classSize + IntPtr.Size);
+
+                    if (addr >= (nint)obj && addr < (nint)obj + (nint)obj->ComputeSize())
+                    {
+                        result = obj;
+                    }
+                }
+
+                break;
+            }
+
             case RegionKind.Bump:
             {
                 // Linear walk from the region base; bounded by the 2 MB region size.

@@ -160,11 +160,13 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
     {
         // The EE only calls this when [alloc_ptr, alloc_limit) can't fit the request.
-        // Dispatch per SPEC-M2 §4; note the size-class tier arrives with M2 step S4 —
-        // until then, 32 KB < size ≤ 1 MB is served by oversized bump windows.
-        var obj = size + IntPtr.Size <= Region.SizeClassMaxSize
+        // Three tiers per SPEC-M2 §4; the direct tiers leave the caller's context alone
+        // (it may still serve small allocations from its remaining window).
+        var obj = size <= Region.BumpMaxSize
             ? AllocFromWindow(ref acontext, size)
-            : AllocSpan(ref acontext, size);
+            : size + IntPtr.Size <= Region.SizeClassMaxSize
+                ? AllocBlock(ref acontext, size)
+                : AllocSpan(ref acontext, size);
 
         if (obj != null && flags.HasFlag(GC_ALLOC_FLAGS.GC_ALLOC_FINALIZE))
         {
@@ -199,6 +201,31 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             _allocatedSinceGC += length;
 
             return (GCObject*)result;
+        }
+        finally
+        {
+            _allocLock.Release();
+        }
+    }
+
+    private GCObject* AllocBlock(ref gc_alloc_context acontext, nint size)
+    {
+        var sizeClass = Region.SelectClass(size);
+
+        _allocLock.Acquire();
+
+        try
+        {
+            if (!_regionAllocator.TryAllocBlock(sizeClass, out var block))
+            {
+                return null;
+            }
+
+            var classSize = Region.ClassSizes[sizeClass];
+            acontext.alloc_bytes_uoh += classSize;
+            _allocatedSinceGC += classSize;
+
+            return (GCObject*)(block + IntPtr.Size);
         }
         finally
         {
@@ -314,6 +341,21 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 case RegionKind.SpanStart:
                     yield return start;
                     break;
+
+                case RegionKind.SizeClass:
+                {
+                    var (bitmap, classSize) = _regionAllocator.GetSizeClassInfo(i);
+                    var regionBase = _regionAllocator.RegionBase(i);
+
+                    while (bitmap != 0)
+                    {
+                        var bit = System.Numerics.BitOperations.TrailingZeroCount(bitmap);
+                        bitmap &= bitmap - 1;
+                        yield return regionBase + (nint)bit * classSize + IntPtr.Size;
+                    }
+
+                    break;
+                }
             }
         }
     }
@@ -326,7 +368,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         {
             // Objects live in [base + 8, Cursor); the tail past Cursor is virgin zero
             RegionKind.Bump => (RegionKind.Bump, _regionAllocator.RegionBase(index) + IntPtr.Size, entry->Cursor),
-            // A span holds exactly one object
+            // A span holds exactly one object; size-class regions are walked via their bitmap
             RegionKind.SpanStart => (RegionKind.SpanStart, _regionAllocator.RegionBase(index) + IntPtr.Size, 0),
             _ => (entry->Kind, 0, 0),
         };

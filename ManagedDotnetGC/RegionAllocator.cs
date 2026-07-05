@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace ManagedDotnetGC;
 
 /// <summary>
@@ -21,6 +23,9 @@ internal unsafe class RegionAllocator
     // Active fresh bump region being carved into windows, -1 if none
     private int _activeBump = -1;
 
+    // Head of the intrusive list of regions with free blocks, per size class
+    private readonly int[] _classHeads = new int[Region.ClassCount];
+
     public RegionAllocator(NativeAllocator memory)
     {
         _memory = memory;
@@ -35,6 +40,16 @@ internal unsafe class RegionAllocator
             // Initialization-time failure: the process cannot run without these
             throw new OutOfMemoryException("Failed to reserve GC region metadata");
         }
+
+        _classHeads.AsSpan().Fill(-1);
+    }
+
+    public static int BlockCount(int sizeClass) => (int)(Region.Size / Region.ClassSizes[sizeClass]);
+
+    public static ulong FullMask(int sizeClass)
+    {
+        var count = BlockCount(sizeClass);
+        return count == 64 ? ulong.MaxValue : (1ul << count) - 1;
     }
 
     public nint HeapBase => _memory.LowestAddress;
@@ -102,6 +117,57 @@ internal unsafe class RegionAllocator
 
             _activeBump = index;
         }
+    }
+
+    /// <summary>
+    /// Allocates one block from a size-class region (SPEC-M2 §4.2). Block memory is fully
+    /// zero while free (Invariant P), so this writes nothing but the region-table bit.
+    /// </summary>
+    public bool TryAllocBlock(int sizeClass, out nint block)
+    {
+        var head = _classHeads[sizeClass];
+
+        if (head < 0)
+        {
+            if (!TryCarveRegion(out var index))
+            {
+                block = 0;
+                return false;
+            }
+
+            var fresh = GetEntry(index);
+            fresh->Kind = RegionKind.SizeClass;
+            fresh->SizeClass = (byte)sizeClass;
+            fresh->LiveBytes = 0;
+            fresh->AllocatedBlocks = 0;
+            fresh->NextInClassList = -1;
+
+            _classHeads[sizeClass] = index;
+            head = index;
+        }
+
+        var entry = GetEntry(head);
+        var fullMask = FullMask(sizeClass);
+
+        // The head of a class list always has a free block: full regions are unlinked
+        var i = BitOperations.TrailingZeroCount(~entry->AllocatedBlocks & fullMask);
+        entry->AllocatedBlocks |= 1ul << i;
+
+        if ((entry->AllocatedBlocks & fullMask) == fullMask)
+        {
+            _classHeads[sizeClass] = entry->NextInClassList;
+            entry->NextInClassList = -1;
+        }
+
+        block = RegionBase(head) + (nint)i * Region.ClassSizes[sizeClass];
+        return true;
+    }
+
+    /// <summary>Safe accessor for iterating a size-class region's allocated blocks.</summary>
+    public (ulong bitmap, int classSize) GetSizeClassInfo(int index)
+    {
+        var entry = GetEntry(index);
+        return (entry->AllocatedBlocks, Region.ClassSizes[entry->SizeClass]);
     }
 
     /// <summary>
