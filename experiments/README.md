@@ -19,7 +19,8 @@ narrative.
 
 ## Background
 
-The driving question (from the 2026-07-05 design discussion): can a non-moving,
-non-compacting mark & sweep GC for .NET — constrained to the stock runtime write
-barrier or none at all — collect concurrently with at most one short, heap-size-independent
-pause per cycle? See [DESIGN.md](DESIGN.md) for the full design notes.
+The branch mission (expanded 2026-07-05): build a fully featured .NET GC that outperforms
+the stock GC — see [../ROADMAP.md](../ROADMAP.md) for the plan. The original driving
+question (can a non-moving mark & sweep collect with at most one short, heap-size-independent
+pause per cycle?) lives in [DESIGN.md](DESIGN.md); its COW-snapshot answer is stashed as
+the roadmap's concurrency endgame (M6).
