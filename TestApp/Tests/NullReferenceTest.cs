@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that null references are handled correctly
 /// </summary>
-public class NullReferenceTest() : TestBase("Null Reference Handling")
+public class NullReferenceTest() : TestBase("Null Reference Handling", GcFeature.Marking)
 {
     public override void Run()
     {

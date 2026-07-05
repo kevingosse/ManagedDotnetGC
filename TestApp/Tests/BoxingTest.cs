@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests boxing and unboxing of value types
 /// </summary>
-public class BoxingTest() : TestBase("Boxing/Unboxing")
+public class BoxingTest() : TestBase("Boxing/Unboxing", GcFeature.Allocation)
 {
     public override void Run()
     {

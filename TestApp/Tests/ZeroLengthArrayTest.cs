@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests allocation of zero-length arrays
 /// </summary>
-public class ZeroLengthArrayTest() : TestBase("Zero-Length Arrays")
+public class ZeroLengthArrayTest() : TestBase("Zero-Length Arrays", GcFeature.Allocation)
 {
     public override void Run()
     {

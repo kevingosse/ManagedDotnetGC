@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests GC behavior under fragmentation scenarios
 /// </summary>
-public class FragmentationTest() : TestBase("Fragmentation Handling")
+public class FragmentationTest() : TestBase("Fragmentation Handling", GcFeature.Allocation)
 {
     public override void Run()
     {

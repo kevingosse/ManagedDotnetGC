@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests string allocation and GC behavior
 /// </summary>
-public class StringTest() : TestBase("String Handling")
+public class StringTest() : TestBase("String Handling", GcFeature.Allocation)
 {
     public override void Run()
     {

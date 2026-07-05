@@ -9,7 +9,7 @@ namespace TestApp.Tests;
 /// The CLR guarantees that critical finalizers run after all regular finalizers
 /// for the same GC cycle.
 /// </summary>
-public class CriticalFinalizerTest() : TestBase("Critical Finalizers")
+public class CriticalFinalizerTest() : TestBase("Critical Finalizers", GcFeature.Finalization)
 {
     private static int _criticalFinalizerCount;
     private static int _regularFinalizerCount;

@@ -7,7 +7,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests different GCHandle types - verifies Strong, Weak, and Normal GCHandle behavior
 /// </summary>
-public class GCHandleTest() : TestBase("GCHandle Types")
+public class GCHandleTest() : TestBase("GCHandle Types", GcFeature.Handles)
 {
     public override void Run()
     {

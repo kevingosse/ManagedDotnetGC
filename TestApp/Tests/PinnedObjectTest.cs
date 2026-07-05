@@ -7,7 +7,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests GCHandle.Alloc with pinned objects - verifies that pinned objects don't move
 /// </summary>
-public class PinnedObjectTest() : TestBase("Pinned Objects")
+public class PinnedObjectTest() : TestBase("Pinned Objects", GcFeature.Handles)
 {
     public override void Run()
     {

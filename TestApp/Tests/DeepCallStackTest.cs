@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that GC correctly scans deep call stacks
 /// </summary>
-public class DeepCallStackTest() : TestBase("Deep Call Stack")
+public class DeepCallStackTest() : TestBase("Deep Call Stack", GcFeature.Marking)
 {
     public override void Run()
     {

@@ -4,6 +4,7 @@ setlocal enabledelayedexpansion
 REM Default values
 set CONFIG=Release
 set TEST_NAME=
+set EXTRA_ARGS=
 
 REM Parse command-line arguments
 :parse_args
@@ -19,11 +20,24 @@ if /i "%~1"=="--test" (
     shift
     goto parse_args
 )
+if /i "%~1"=="--feature" (
+    set EXTRA_ARGS=!EXTRA_ARGS! --feature %~2
+    shift
+    shift
+    goto parse_args
+)
+if /i "%~1"=="--all-features" (
+    set EXTRA_ARGS=!EXTRA_ARGS! --all-features
+    shift
+    goto parse_args
+)
 echo Unknown argument: %~1
 echo.
-echo Usage: run-tests.cmd [--debug] [--test TEST_NAME]
-echo   --debug      Build TestApp in Debug configuration (default: Release)
-echo   --test NAME  Run only the specified test (case-insensitive)
+echo Usage: run-tests.cmd [--debug] [--test TEST_NAME] [--feature NAME] [--all-features]
+echo   --debug          Build TestApp in Debug configuration (default: Release)
+echo   --test NAME      Run only the specified test (case-insensitive)
+echo   --feature NAME   Run only the tests of that feature, even if pending
+echo   --all-features   Run every test, including pending features
 exit /b 1
 
 :end_parse_args
@@ -71,11 +85,11 @@ echo.
 if not "%TEST_NAME%"=="" (
     echo Running single test: %TEST_NAME%
     echo.
-    .\TestApp\bin\%CONFIG%\net10.0\win-x64\TestApp.exe "%TEST_NAME%"
+    .\TestApp\bin\%CONFIG%\net10.0\win-x64\TestApp.exe "%TEST_NAME%" !EXTRA_ARGS!
 ) else (
     echo Running all tests
     echo.
-    .\TestApp\bin\%CONFIG%\net10.0\win-x64\TestApp.exe
+    .\TestApp\bin\%CONFIG%\net10.0\win-x64\TestApp.exe !EXTRA_ARGS!
 )
 
 set TEST_EXIT_CODE=%ERRORLEVEL%

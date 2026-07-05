@@ -88,8 +88,11 @@ unsafe partial class GCHeap
 
     public uint WhichGeneration(GCObject* obj)
     {
-        Write("WhichGeneration");
-        throw new NotImplementedException();
+        // Non-generational: there is a single generation, 0. Objects outside the GC heap (frozen
+        // segments) report int.MaxValue, matching the stock GC. The answer for heap objects must
+        // never exceed GetMaxGeneration: the EE indexes arrays sized GetMaxGeneration + 1 with it
+        // (e.g. the dead-thread GC trigger heuristic in threads.cpp).
+        return _nativeAllocator.IsInRange((nint)obj) ? 0 : (uint)int.MaxValue;
     }
 
     public int StartNoGCRegion(ulong totalSize, bool lohSizeKnown, ulong lohSize, bool disallowFullBlockingGC)

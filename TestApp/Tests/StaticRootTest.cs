@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that static roots keep objects alive
 /// </summary>
-public class StaticRootTest() : TestBase("Static Roots")
+public class StaticRootTest() : TestBase("Static Roots", GcFeature.Marking)
 {
     private static object? _staticRoot;
 

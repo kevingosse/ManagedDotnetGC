@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests basic object allocation and memory initialization
 /// </summary>
-public class BasicAllocationTest() : TestBase("Basic Allocation")
+public class BasicAllocationTest() : TestBase("Basic Allocation", GcFeature.Allocation)
 {
     public override void Run()
     {

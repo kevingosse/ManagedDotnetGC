@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that finalizers are called correctly for collected objects
 /// </summary>
-public class FinalizerTest() : TestBase("Finalizers")
+public class FinalizerTest() : TestBase("Finalizers", GcFeature.Finalization)
 {
     private static int _finalizerCallCount;
     private static int _suppressedFinalizerCallCount;

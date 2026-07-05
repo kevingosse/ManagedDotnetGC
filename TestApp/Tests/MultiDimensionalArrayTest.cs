@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests multi-dimensional array allocation
 /// </summary>
-public class MultiDimensionalArrayTest() : TestBase("Multi-Dimensional Arrays")
+public class MultiDimensionalArrayTest() : TestBase("Multi-Dimensional Arrays", GcFeature.Allocation)
 {
     public override void Run()
     {

@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests various array types and sizes
 /// </summary>
-public class ArrayVariantTest() : TestBase("Array Variants")
+public class ArrayVariantTest() : TestBase("Array Variants", GcFeature.Allocation)
 {
     public override void Run()
     {
