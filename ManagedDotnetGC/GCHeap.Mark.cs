@@ -142,7 +142,9 @@ unsafe partial class GCHeap
 
             bool found = false;
 
-            foreach (var ptr in WalkHeapObjects(objectStartPtr, (IntPtr)root))
+            // The walk must include an object starting exactly at the interior pointer (the
+            // contract is obj <= ptr < obj + size) and WalkHeapObjects' end bound is exclusive
+            foreach (var ptr in WalkHeapObjects(objectStartPtr, (IntPtr)root + 1))
             {
                 var o = (GCObject*)ptr;
                 var size = o->ComputeSize();

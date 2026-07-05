@@ -253,21 +253,21 @@ vtable is positional, so the Api and GC projects must ship from the same build):
 - `GetWriteBarrierParameter(WriteBarrierParameterKind)` — reads the parameters captured by the
   `StompWriteBarrier` wrapper (all write-barrier updates must go through it).
 
-One probe encodes an edge the current machinery gets wrong: `GetContainingObject(first byte of the
-object)` must resolve to that object (stock `find_object`: `obj <= ptr < obj + size`), but the
-interior path in `ScanRoots` walks `WalkHeapObjects(closestBelow, root)` with an *exclusive* upper
-bound, so a pointer exactly at an object start resolves to nothing — implementing 6.3 by factoring
-out that path will trip this probe until the bound is fixed (and the same off-by-one means a
-`GC_CALL_INTERIOR` root pointing at an object's first byte doesn't mark it today).
+One probe encodes an edge the machinery originally got wrong: `GetContainingObject(first byte of
+the object)` must resolve to that object (stock `find_object`: `obj <= ptr < obj + size`). The
+interior path in `ScanRoots` used to walk `WalkHeapObjects(closestBelow, root)` with an *exclusive*
+upper bound, so a pointer exactly at an object start resolved to nothing and a `GC_CALL_INTERIOR`
+root at an object's first byte didn't mark it. The bound is fixed (`root + 1`); implementing 6.3 by
+factoring out that path keeps the probe green.
 
 That marking bug also has a direct end-to-end test, `InteriorPointerObjectStartTest` (no custom API
 needed): a byref synthesized at the very first byte of a `byte[]` (via `Unsafe.SubtractByteOffset`
 from the array data reference) is the object's only root across a `GC.Collect()`, observed through a
 `WeakReference`; a control scenario does the same with a byref to the first data byte. Validated
-green on stock (the byref at the method-table word does keep the object alive there) and red on the
-custom GC (control passes, object-start scenario fails). It sits under `GcFeature.InteriorPointers`
-— the *implemented* feature it belongs to — so it fails in the default run by design: it is a
-confirmed bug in existing functionality, not a missing feature.
+green on stock (the byref at the method-table word does keep the object alive there); it initially
+failed on the custom GC exactly as predicted (control passes, object-start scenario fails) and went
+green with the `ScanRoots` bound fix. It sits under `GcFeature.InteriorPointers` — the implemented
+feature it belongs to — as the permanent regression guard.
 
 ## 4. Category C — subprocess tests
 
@@ -339,8 +339,8 @@ unaffected, but assertions about objects promoted during the resurrection wave m
    no fail-fast), which is the designed red state until items 6.3 / 2.1 / 7.1 land.
 
 7. ✅ **`InteriorPointerObjectStartTest`** — end-to-end test for the object-start interior-pointer
-   marking bug (see Category B section above). Gated under the *implemented* `InteriorPointers`
-   feature: it fails in the default run by design until the walk bound is fixed.
+   marking bug (see Category B section above). Confirmed the bug red-first, then went green with
+   the `ScanRoots` walk-bound fix; stays under the implemented `InteriorPointers` feature.
 8. ✅ **First implemented item**: `WhichGeneration` — the single-generation story: heap object → 0
    (= `GetMaxGeneration`), non-heap (frozen) → `int.MaxValue` for stock API parity. The only hard
    EE constraint is consistency of the pair: the EE indexes `GetMaxGeneration + 1`-sized arrays
@@ -352,9 +352,8 @@ unaffected, but assertions about objects promoted during the resurrection wave m
    (`RefreshMemoryLimit`, …).
 
 Validation state: stock GC `--all-features` = 50 passed / 4 skipped (sync-block + the 3 Category B
-tests, which need the custom GC API) / 0 failed; custom GC default = 35 passed / 18 skipped (pending
-features) / **1 failed, exit 1** — `InteriorPointerObjectStartTest`, the confirmed object-start
-marking bug (control scenario passes).
+tests, which need the custom GC API) / 0 failed; custom GC default = 36 passed / 18 skipped (pending
+features) / 0 failed, exit 0.
 
 Every test landed green-on-stock; each feature flag flips from "skipped" to "running" on the custom
 GC as the corresponding item in `missing-features.md` is implemented.
