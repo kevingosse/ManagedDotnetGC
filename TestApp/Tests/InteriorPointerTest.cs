@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests interior pointer handling during GC
 /// </summary>
-public class InteriorPointerTest() : TestBase("Interior Pointers")
+public class InteriorPointerTest() : TestBase("Interior Pointers", GcFeature.InteriorPointers)
 {
     public override void Run()
     {

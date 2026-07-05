@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests arrays of value types vs reference types
 /// </summary>
-public class ArrayOfStructsTest() : TestBase("Arrays of Structs")
+public class ArrayOfStructsTest() : TestBase("Arrays of Structs", GcFeature.Allocation)
 {
     public override void Run()
     {

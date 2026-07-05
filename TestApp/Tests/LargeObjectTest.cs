@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests large object allocation (LOH)
 /// </summary>
-public class LargeObjectTest() : TestBase("Large Object Allocation")
+public class LargeObjectTest() : TestBase("Large Object Allocation", GcFeature.Allocation)
 {
     public override void Run()
     {

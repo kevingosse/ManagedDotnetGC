@@ -8,8 +8,10 @@ namespace TestApp.Tests;
 /// Tests SyncBlock cache behavior - verifies syncblocks are created when needed
 /// and cleaned up when the owning objects are collected.
 /// </summary>
-public class SyncBlockCacheTest() : TestBase("SyncBlock Cache")
+public class SyncBlockCacheTest() : TestBase("SyncBlock Cache", GcFeature.SyncBlocks)
 {
+    public override bool RequiresCustomGcApi => true;
+
     public override void Run()
     {
         var gc = GcApi.TryCreate() ?? throw new Exception("Failed to initialize GC API");

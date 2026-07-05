@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that the GC correctly traces reference graphs
 /// </summary>
-public class ReferenceGraphTest() : TestBase("Reference Graph")
+public class ReferenceGraphTest() : TestBase("Reference Graph", GcFeature.Marking)
 {
     public override void Run()
     {

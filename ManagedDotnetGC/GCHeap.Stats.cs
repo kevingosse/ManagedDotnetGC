@@ -28,6 +28,9 @@ unsafe partial class GCHeap
         _gcInProgress = inProgress;
     }
 
+    // A single generation: WhichGeneration reports 0 for every heap object, and the pair must
+    // stay consistent (the EE indexes arrays sized GetMaxGeneration + 1 with WhichGeneration
+    // results, e.g. the dead-thread GC trigger heuristic in threads.cpp)
     public uint GetMaxGeneration() => 0;
 
     public int CollectionCount(int generation, int get_bgc_fgc_coutn) => (int)_gcCount;

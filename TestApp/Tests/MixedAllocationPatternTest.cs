@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests interleaved allocation of small, medium, and large objects
 /// </summary>
-public class MixedAllocationPatternTest() : TestBase("Mixed Allocation Patterns")
+public class MixedAllocationPatternTest() : TestBase("Mixed Allocation Patterns", GcFeature.Allocation)
 {
     public override void Run()
     {

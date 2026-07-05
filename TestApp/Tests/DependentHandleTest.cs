@@ -8,7 +8,7 @@ namespace TestApp.Tests;
 /// Tests DependentHandle behavior - the dependent object is kept alive
 /// only as long as the target object is alive.
 /// </summary>
-public class DependentHandleTest() : TestBase("DependentHandle")
+public class DependentHandleTest() : TestBase("DependentHandle", GcFeature.DependentHandles)
 {
     public override void Run()
     {

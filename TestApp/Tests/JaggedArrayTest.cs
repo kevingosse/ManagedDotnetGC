@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests jagged arrays (arrays of arrays)
 /// </summary>
-public class JaggedArrayTest() : TestBase("Jagged Arrays")
+public class JaggedArrayTest() : TestBase("Jagged Arrays", GcFeature.Allocation)
 {
     public override void Run()
     {

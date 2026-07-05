@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests that circular references are collected when no external root exists
 /// </summary>
-public class CircularReferenceTest() : TestBase("Circular References")
+public class CircularReferenceTest() : TestBase("Circular References", GcFeature.Marking)
 {
     public override void Run()
     {

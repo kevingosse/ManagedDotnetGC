@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests objects that reference themselves
 /// </summary>
-public class SelfReferencingObjectTest() : TestBase("Self-Referencing Objects")
+public class SelfReferencingObjectTest() : TestBase("Self-Referencing Objects", GcFeature.Marking)
 {
     public override void Run()
     {

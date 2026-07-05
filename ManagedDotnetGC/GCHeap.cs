@@ -69,7 +69,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             ephemeral_low = -1
         };
 
-        _gcToClr.StompWriteBarrier(&parameters);
+        StompWriteBarrier(parameters);
 
         return HResult.S_OK;
     }

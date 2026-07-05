@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Stress test with many allocations
 /// </summary>
-public class StressTest() : TestBase("Stress Test")
+public class StressTest() : TestBase("Stress Test", GcFeature.Stress)
 {
     public override void Run()
     {

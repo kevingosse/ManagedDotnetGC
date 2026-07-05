@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests weak reference behavior
 /// </summary>
-public class WeakReferenceTest() : TestBase("Weak References")
+public class WeakReferenceTest() : TestBase("Weak References", GcFeature.WeakReferences)
 {
     public override void Run()
     {

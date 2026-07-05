@@ -9,7 +9,7 @@ namespace TestApp.Tests;
 /// Tests frozen segments by registering a frozen segment via GC._RegisterFrozenSegment,
 /// allocating objects in it, running a GC, and verifying the objects and their method tables remain intact.
 /// </summary>
-public class FrozenSegmentTest() : TestBase("Frozen Segments")
+public class FrozenSegmentTest() : TestBase("Frozen Segments", GcFeature.FrozenSegments)
 {
     public override unsafe void Run()
     {

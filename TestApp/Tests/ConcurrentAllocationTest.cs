@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests allocation from multiple threads (if threading is supported)
 /// </summary>
-public class ConcurrentAllocationTest() : TestBase("Concurrent Allocation")
+public class ConcurrentAllocationTest() : TestBase("Concurrent Allocation", GcFeature.Allocation)
 {
     public override void Run()
     {

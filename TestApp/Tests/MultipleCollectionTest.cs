@@ -6,7 +6,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests multiple GC collections in succession
 /// </summary>
-public class MultipleCollectionTest() : TestBase("Multiple Collections")
+public class MultipleCollectionTest() : TestBase("Multiple Collections", GcFeature.Marking)
 {
     public override void Run()
     {

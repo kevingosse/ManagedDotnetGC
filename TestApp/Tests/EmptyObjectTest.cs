@@ -5,7 +5,7 @@ namespace TestApp.Tests;
 /// <summary>
 /// Tests allocation of objects with no fields
 /// </summary>
-public class EmptyObjectTest() : TestBase("Empty Objects")
+public class EmptyObjectTest() : TestBase("Empty Objects", GcFeature.Allocation)
 {
     public override void Run()
     {

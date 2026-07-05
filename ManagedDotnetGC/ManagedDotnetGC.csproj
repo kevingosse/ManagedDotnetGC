@@ -34,7 +34,9 @@
         var lines = File.ReadAllLines(FilePath);
         for (int i = 0; i < lines.Length; i++)
         {
-            lines[i] = Regex.Replace(lines[i], @"_GC_(\w+)", "GC_$1=_GC_$1");
+            // Anchored so re-running on an already-transformed file is a no-op
+            // (a failed link would otherwise leave a def file that gets mangled on retry)
+            lines[i] = Regex.Replace(lines[i], @"^(\s*)_GC_(\w+)\s*$", "$1GC_$2=_GC_$2");
         }
         File.WriteAllLines(FilePath, lines);
         ]]>
