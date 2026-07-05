@@ -69,7 +69,8 @@ they are reported as skipped when running on the stock GC.
 
 Every test declares a `GcFeature`. Features listed in `PendingFeatures` (top of `Program.cs`) are
 not implemented in ManagedDotnetGC yet: their tests are skipped by default so the suite stays green
-while features are developed. See `docs/test-plan.md` for the full workflow.
+while features are developed. The mapping between features and `docs/missing-features.md` items is
+in that document's TL;DR table (*Test gate* column).
 
 - `TestApp.exe` — run everything except pending features (what CI does)
 - `TestApp.exe --feature CollectibleAssemblies` — run only that feature's tests, even if pending

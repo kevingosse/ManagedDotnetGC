@@ -19,6 +19,7 @@ var pendingFeatures = new HashSet<GcFeature>
     GcFeature.RefCountedHandles,
     GcFeature.FinalizationQueueRoots,
     GcFeature.FrozenDependentHandles,
+    GcFeature.NewHandleTypes,
     GcFeature.SuppressFinalizeDrop,
     GcFeature.ApiSurface,
     GcFeature.LatencyMode,
@@ -120,6 +121,8 @@ runner.RegisterTest(new LatencyModeTest());
 runner.RegisterTest(new NoGCRegionTest());
 runner.RegisterTest(new MiscGcApiTest());
 runner.RegisterTest(new EventCountersTest());
+runner.RegisterTest(new WeakInteriorHandleTest());
+runner.RegisterTest(new CrossReferenceHandleTest());
 runner.RegisterTest(new CollectibleAssemblyTest());
 runner.RegisterTest(new DynamicMethodTest());
 runner.RegisterTest(new ComWrappersTest());

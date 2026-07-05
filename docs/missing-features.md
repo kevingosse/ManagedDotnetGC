@@ -16,31 +16,36 @@ References are `runtime-file:line` for `E:\git\runtime\src\coreclr\...` and `gc-
 
 ## 0. TL;DR — the list
 
-| # | Item | Severity |
-|---|------|----------|
-| 1.1 | No GC trigger policy — collections happen only on explicit `GC.Collect()` | 🟥 |
-| 1.2 | Memory is never reused (known) — plus the correctness work reuse drags in (zeroing, brick-table reset, decommit) | 🟥 |
-| 1.3 | OOM handling: `Alloc` must return `null`, never throw; today OOM = fail-fast | 🟥 |
-| 2.1 | `GcStartWork` / `BeforeGcScanRoots` / `AfterGcScanRoots` / `GcDone` never called | 🟥 |
-| 3.1 | Collectible types: LoaderAllocator objects are not kept alive during marking | 🟥 |
-| 3.2 | Ref-counted handles (COM / ComWrappers) never scanned, never cleared | 🟥 |
-| 3.3 | Objects awaiting finalization are marked too late in the cycle | 🟧 |
-| 3.4 | Dependent handles: frozen-segment primaries break the fixpoint (hang + dropped values) | 🟥 |
-| 4.1 | Handle table can't store handle types 10/11 (`WEAK_INTERIOR_POINTER`, `CROSSREFERENCE`) → index-out-of-range | 🟥 |
-| 4.2 | `HNDTYPE_WEAK_INTERIOR_POINTER` semantics (collectible statics) | 🟥 |
-| 4.3 | Legacy handle types for older EEs (async-pinned, sized-ref, weak-native-COM) | 🟨 |
-| 4.4 | `TraceRefCountedHandles` stub | 🟨 |
-| 5.1 | SuppressFinalize: suppressed objects are resurrected instead of dropped; skip path doesn't clear the bit | 🟧 |
-| 6.1 | `NotImplementedException` stubs reachable from public APIs (≈15 methods, each = fail-fast) | 🟥 |
-| 6.2 | Generation numbering consistency (`MaxGeneration`, `WhichGeneration`, frozen = `INT32_MAX`) | 🟧 |
-| 6.3 | `IsPromoted` / `GetContainingObject` / `IsHeapPointer` needed by the EE outside your own scan | 🟧 |
-| 7.1 | Write-barrier initialization passes null card table and zero heap bounds | 🟨 |
-| 8.1 | `alloc_bytes` accounting missing → negative `GC.GetAllocatedBytesForCurrentThread()` | ⬜ |
-| 8.2 | `GC_ALLOC_ALIGN8` / `ALIGN8_BIAS` (32-bit only) | 🟨 |
-| 8.3 | GC-from-allocation must toggle preemptive mode before `SuspendEE` | 🟥 (with 1.1) |
-| 9.1 | Conservative-GC / interpreter mode robustness | 🟨 |
-| 9.2 | Android / `FEATURE_JAVAMARSHAL` GC bridge | 🟨 |
-| 10.x | Diagnostics: `Diag*` throwing stubs, DAC vars, event sink, memory-info numbers | ⬜/🟥 under tooling |
+| # | Item | Severity | Test gate (`GcFeature`) |
+|---|------|----------|-------------------------|
+| 1.1 | No GC trigger policy — collections happen only on explicit `GC.Collect()` | 🟥 | `GcTriggering` |
+| 1.2 | Memory is never reused (known) — plus the correctness work reuse drags in (zeroing, brick-table reset, decommit) | 🟥 | `MemoryReuse` |
+| 1.3 | OOM handling: `Alloc` must return `null`, never throw; today OOM = fail-fast | 🟥 | `HardLimitOom` |
+| 2.1 | `GcStartWork` / `BeforeGcScanRoots` / `AfterGcScanRoots` / `GcDone` never called | 🟥 | `GcInternals` |
+| 3.1 | Collectible types: LoaderAllocator objects are not kept alive during marking | 🟥 | `CollectibleAssemblies` |
+| 3.2 | Ref-counted handles (COM / ComWrappers) never scanned, never cleared | 🟥 | `RefCountedHandles` |
+| 3.3 | Objects awaiting finalization are marked too late in the cycle | 🟧 | `FinalizationQueueRoots` |
+| 3.4 | Dependent handles: frozen-segment primaries break the fixpoint (hang + dropped values) | 🟥 | `FrozenDependentHandles` |
+| 4.1 | Handle table can't store handle types 10/11 (`WEAK_INTERIOR_POINTER`, `CROSSREFERENCE`) → index-out-of-range | 🟥 | `NewHandleTypes` |
+| 4.2 | `HNDTYPE_WEAK_INTERIOR_POINTER` semantics (collectible statics) | 🟥 | `NewHandleTypes` + `CollectibleAssemblies` |
+| 4.3 | Legacy handle types for older EEs (async-pinned, sized-ref, weak-native-COM) | 🟨 | — (out of scope: .NET 10 only) |
+| 4.4 | `TraceRefCountedHandles` stub | 🟨 | — (out of scope: macOS) |
+| 5.1 | SuppressFinalize: suppressed objects are resurrected instead of dropped; skip path doesn't clear the bit | 🟧 | `SuppressFinalizeDrop` |
+| 6.1 | `NotImplementedException` stubs reachable from public APIs (≈15 methods, each = fail-fast) | 🟥 | `ApiSurface`, `LatencyMode`, `NoGCRegion`, `EventCounters` |
+| 6.2 | Generation numbering consistency (`MaxGeneration`, `WhichGeneration`, frozen = `INT32_MAX`) | ✅ done | `GenerationApis` (implemented) |
+| 6.3 | `IsPromoted` / `GetContainingObject` / `IsHeapPointer` needed by the EE outside your own scan | 🟧 | `GcInternals` |
+| 7.1 | Write-barrier initialization passes null card table and zero heap bounds | 🟨 | `GcInternals` |
+| 8.1 | `alloc_bytes` accounting missing → negative `GC.GetAllocatedBytesForCurrentThread()` | ⬜ | `AllocationAccounting` |
+| 8.2 | `GC_ALLOC_ALIGN8` / `ALIGN8_BIAS` (32-bit only) | 🟨 | — (out of scope: 32-bit) |
+| 8.3 | GC-from-allocation must toggle preemptive mode before `SuspendEE` | 🟥 (with 1.1) | `GcTriggering` |
+| 9.1 | Conservative-GC / interpreter mode robustness | 🟨 | — (no test yet) |
+| 9.2 | Android / `FEATURE_JAVAMARSHAL` GC bridge | 🟨 | — (out of scope: Android) |
+| 10.x | Diagnostics: `Diag*` throwing stubs, DAC vars, event sink, memory-info numbers | ⬜/🟥 under tooling | `GcEvents`, `MemoryInfo`, `EventCounters` |
+
+The *Test gate* column is the `GcFeature` value gating the item's tests. To start working on an
+item: remove that value from `pendingFeatures` in `TestApp/Program.cs` and run the suite — its
+tests flip from skipped to failing. `—` means no coverage (out of scope on win-x64 / .NET 10, or
+not testable from managed code).
 
 The stock GC's own ordering, used as the reference throughout: `runtime-gc/mark_phase.cpp:3033-3498`
 (the mark-phase driver) and `runtime-gc/interface.cpp:1827` (`GarbageCollectGeneration`).
@@ -253,6 +258,12 @@ First collectible assembly → `CreateHandleWithExtraInfo` indexes `_lists[10]` 
 → fail-fast. Extend the enum and the per-type lists (stock reserves 13 slots,
 `runtime-gc/handletableconstants.h:17`).
 
+Isolated tests (gate `NewHandleTypes`): `WeakInteriorHandleTest` — touching a collectible type's
+statics triggers type-10 creation without needing 3.1 or unload; `CrossReferenceHandleTest` —
+type 11 has no public API on win-x64, but `GCHandle.InternalAlloc` via reflection reaches
+`CreateHandleOfType` with an arbitrary type (the FCall's range check is a compiled-out assert on
+release runtimes, `runtime-vm/marshalnative.cpp:342`).
+
 ### 4.2 🟥 `HNDTYPE_WEAK_INTERIOR_POINTER` semantics
 
 Cheap for a non-moving GC. Contract (`runtime-gc/objecthandle.cpp:150-189, 1224, 1394-1426`):
@@ -321,7 +332,7 @@ Reachable ones, with the concrete trigger and the correct cheap implementation:
 
 | Method (gc-GCHeap.NotImplemented.cs) | Reached from | Correct stub for this GC |
 |---|---|---|
-| `WhichGeneration` (:89) | `GC.GetGeneration(obj)` (`runtime-vm/comutilnative.cpp:630`), sync-block bookkeeping (`runtime-vm/syncblk.cpp:1156`) | `2` for heap objects; **`INT32_MAX` for frozen-segment / non-heap** (`runtime-gc/gcinterface.h:804`) |
+| `WhichGeneration` (:89) | `GC.GetGeneration(obj)` (`runtime-vm/comutilnative.cpp:630`), sync-block bookkeeping (`runtime-vm/syncblk.cpp:1156`) | ✅ implemented: `0` for heap objects, **`INT32_MAX` for frozen-segment / non-heap** (`runtime-gc/gcinterface.h:804`) — see 6.2 |
 | `GetGenerationBudget` (:270) | **`RuntimeEventSource` EventCounter `gen-0-gc-budget`** — polled the moment `dotnet-counters`/any EventListener attaches (`runtime-libs/RuntimeEventSource.cs:85` → QCall `runtime-vm/comutilnative.cpp:1174-1197`) | any constant (stock semantics: gen budget in bytes) |
 | `GetGcLatencyMode` / `SetGcLatencyMode` (:61/:67) | `GCSettings.LatencyMode` get/set — used by real libraries (SustainedLowLatency toggles) | store + return the value; return success (0) from the setter |
 | `StartNoGCRegion` / `EndNoGCRegion` (:95/:101) | `GC.TryStartNoGCRegion` / `EndNoGCRegion` | **declining is legal**: return `start_no_gc_no_memory` → managed `false`; `end_no_gc_not_in_progress` (`runtime-gc/gcinterface.h:351-386`, mapping `GC.CoreCLR.cs:507-578`). Or implement for real: "success" promises **no GC until End** (budget pre-commit) |
@@ -343,16 +354,19 @@ Also in this category though not throwing: `WaitForFullGCApproach/Complete` corr
 `wait_full_gc_na = 4`, and `RegisterForFullGCNotification` returning `false` maps to a documented
 managed `InvalidOperationException` — both fine.
 
-### 6.2 🟧 Generation-numbering consistency
+### 6.2 ✅ Generation-numbering consistency — implemented (the single-generation story)
 
-Pick one story and apply it everywhere. Recommended: pretend to be a stock GC that only ever does full
-collections — `GetMaxGeneration() = 2` (stock, and BCL code loops `0..MaxGeneration`), `WhichGeneration =
-2` (SOH; 3/4 for LOH/POH if you ever tag them; `INT32_MAX` frozen), `GetCondemnedGeneration() = 2` (already),
-`CollectionCount(g) = _gcCount` for all g (already). Today `GetMaxGeneration() = 0`
-(gc-GCHeap.Stats.cs:31) happens to work — e.g. the sync-block scan's ephemeral branch is skipped only
-because `2 < 0` is false (`runtime-vm/syncblk.cpp:885`) — but it's accidental, and
-`FinalizerThreadWait` keys off `CollectionCount(GetMaxGeneration())` (`runtime-vm/finalizerthread.cpp:740-778`),
-so keep whatever you choose monotonic and coherent.
+The chosen story: a single generation, 0, everywhere. `GetMaxGeneration() = 0` (gc-GCHeap.Stats.cs:34),
+`WhichGeneration = 0` for heap objects / `INT32_MAX` for frozen and other non-heap objects
+(gc-GCHeap.NotImplemented.cs:89, matching stock's out-of-range answer, `runtime-gc/interface.cpp:848-854`),
+`CollectionCount(g) = _gcCount` for all g. The hard constraint that made the *pair* matter:
+`WhichGeneration(obj) <= GetMaxGeneration()` — the EE indexes arrays sized `GetMaxGeneration() + 1`
+with per-object generations (dead-thread GC trigger heuristic, `runtime-vm/threads.cpp:4154/4178`).
+No VM consumer requires `MaxGeneration = 2`; the sync-block ephemeral branch stays off
+(`0 < 0` is false, `runtime-vm/syncblk.cpp:885`) and `FinalizerThreadWait`'s
+`CollectionCount(GetMaxGeneration())` (`runtime-vm/finalizerthread.cpp:740-778`) stays monotonic.
+Loose end (cosmetic): `GetCondemnedGeneration()` still returns 2 (gc-GCHeap.NotImplemented.cs:122);
+0 would be more coherent, both behave correctly at the existing gates. Covered by `GenerationApiTest`.
 
 ### 6.3 (folded into the table above — `IsPromoted`, `GetContainingObject`, `IsHeapPointer` are prerequisites for 2.1/3.2.)
 
