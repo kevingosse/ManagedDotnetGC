@@ -18,29 +18,29 @@ References are `runtime-file:line` for `E:\git\runtime\src\coreclr\...` and `gc-
 
 | # | Item | Severity | Test gate (`GcFeature`) |
 |---|------|----------|-------------------------|
-| 1.1 | No GC trigger policy — collections happen only on explicit `GC.Collect()` | 🟥 | `GcTriggering` |
-| 1.2 | Memory is never reused (known) — plus the correctness work reuse drags in (zeroing, brick-table reset, decommit) | 🟥 | `MemoryReuse` |
-| 1.3 | OOM handling: `Alloc` must return `null`, never throw; today OOM = fail-fast | 🟥 | `HardLimitOom` |
+| 1.1 | No GC trigger policy — collections happen only on explicit `GC.Collect()` | ✅ done (M2 region heap) | `GcTriggering` |
+| 1.2 | Memory is never reused (known) — plus the correctness work reuse drags in (zeroing, brick-table reset, decommit) | ✅ done (M2 region heap) | `MemoryReuse` |
+| 1.3 | OOM handling: `Alloc` must return `null`, never throw; today OOM = fail-fast | ✅ done (M2 region heap) | `HardLimitOom` |
 | 2.1 | `GcStartWork` / `BeforeGcScanRoots` / `AfterGcScanRoots` / `GcDone` never called | 🟥 | `GcInternals` |
 | 3.1 | Collectible types: LoaderAllocator objects are not kept alive during marking | 🟥 | `CollectibleAssemblies` |
 | 3.2 | Ref-counted handles (COM / ComWrappers) never scanned, never cleared | 🟥 | `RefCountedHandles` |
-| 3.3 | Objects awaiting finalization are marked too late in the cycle | 🟧 | `FinalizationQueueRoots` |
-| 3.4 | Dependent handles: frozen-segment primaries break the fixpoint (hang + dropped values) | 🟥 | `FrozenDependentHandles` |
-| 4.1 | Handle table can't store handle types 10/11 (`WEAK_INTERIOR_POINTER`, `CROSSREFERENCE`) → index-out-of-range | 🟥 | `NewHandleTypes` |
-| 4.2 | `HNDTYPE_WEAK_INTERIOR_POINTER` semantics (collectible statics) | 🟥 | `NewHandleTypes` + `CollectibleAssemblies` |
+| 3.3 | Objects awaiting finalization are marked too late in the cycle | ✅ done | `FinalizationQueueRoots` |
+| 3.4 | Dependent handles: frozen-segment primaries break the fixpoint (hang + dropped values) | ✅ done | `FrozenDependentHandles` |
+| 4.1 | Handle table can't store handle types 10/11 (`WEAK_INTERIOR_POINTER`, `CROSSREFERENCE`) → index-out-of-range | ✅ done | `NewHandleTypes` |
+| 4.2 | `HNDTYPE_WEAK_INTERIOR_POINTER` semantics (collectible statics) | ✅ done (cleared with long-weak) | `NewHandleTypes` + `CollectibleAssemblies` |
 | 4.3 | Legacy handle types for older EEs (async-pinned, sized-ref, weak-native-COM) | 🟨 | — (out of scope: .NET 10 only) |
 | 4.4 | `TraceRefCountedHandles` stub | 🟨 | — (out of scope: macOS) |
-| 5.1 | SuppressFinalize: suppressed objects are resurrected instead of dropped; skip path doesn't clear the bit | 🟧 | `SuppressFinalizeDrop` |
-| 6.1 | `NotImplementedException` stubs reachable from public APIs (≈15 methods, each = fail-fast) | 🟥 | `ApiSurface`, `LatencyMode`, `NoGCRegion`, `EventCounters` |
+| 5.1 | SuppressFinalize: suppressed objects are resurrected instead of dropped; skip path doesn't clear the bit | ✅ done | `SuppressFinalizeDrop` |
+| 6.1 | `NotImplementedException` stubs reachable from public APIs (≈15 methods, each = fail-fast) | ✅ done | `ApiSurface`, `LatencyMode`, `NoGCRegion`, `EventCounters` |
 | 6.2 | Generation numbering consistency (`MaxGeneration`, `WhichGeneration`, frozen = `INT32_MAX`) | ✅ done | `GenerationApis` (implemented) |
-| 6.3 | `IsPromoted` / `GetContainingObject` / `IsHeapPointer` needed by the EE outside your own scan | 🟧 | `GcInternals` |
+| 6.3 | `IsPromoted` / `GetContainingObject` / `IsHeapPointer` needed by the EE outside your own scan | ✅ done (with 6.1) | `GcInternals` |
 | 7.1 | Write-barrier initialization passes null card table and zero heap bounds | 🟨 | `GcInternals` |
-| 8.1 | `alloc_bytes` accounting missing → negative `GC.GetAllocatedBytesForCurrentThread()` | ⬜ | `AllocationAccounting` |
+| 8.1 | `alloc_bytes` accounting missing → negative `GC.GetAllocatedBytesForCurrentThread()` | ✅ done (M2 + totals) | `AllocationAccounting` |
 | 8.2 | `GC_ALLOC_ALIGN8` / `ALIGN8_BIAS` (32-bit only) | 🟨 | — (out of scope: 32-bit) |
-| 8.3 | GC-from-allocation must toggle preemptive mode before `SuspendEE` | 🟥 (with 1.1) | `GcTriggering` |
+| 8.3 | GC-from-allocation must toggle preemptive mode before `SuspendEE` | ✅ done (M2 region heap) | `GcTriggering` |
 | 9.1 | Conservative-GC / interpreter mode robustness | 🟨 | — (no test yet) |
 | 9.2 | Android / `FEATURE_JAVAMARSHAL` GC bridge | 🟨 | — (out of scope: Android) |
-| 10.x | Diagnostics: `Diag*` throwing stubs, DAC vars, event sink, memory-info numbers | ⬜/🟥 under tooling | `GcEvents`, `MemoryInfo`, `EventCounters` |
+| 10.x | Diagnostics: `Diag*` throwing stubs, DAC vars, event sink, memory-info numbers | ⬜ Diag no-ops + memory-info numbers done; event sink and DAC vars remain | `GcEvents`, `MemoryInfo`, `EventCounters` |
 
 The *Test gate* column is the `GcFeature` value gating the item's tests. To start working on an
 item: remove that value from `pendingFeatures` in `TestApp/Program.cs` and run the suite — its

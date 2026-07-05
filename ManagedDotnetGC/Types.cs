@@ -38,7 +38,9 @@ public unsafe ref struct ObjectHandle
         HandleType.HNDTYPE_DEPENDENT,
         HandleType.HNDTYPE_ASYNCPINNED,
         HandleType.HNDTYPE_SIZEDREF,
-        HandleType.HNDTYPE_WEAK_NATIVE_COM
+        HandleType.HNDTYPE_WEAK_NATIVE_COM,
+        HandleType.HNDTYPE_WEAK_INTERIOR_POINTER,
+        HandleType.HNDTYPE_CROSSREFERENCE
     ];
 
     public void Clear()
@@ -190,7 +192,28 @@ public enum HandleType
      * references.
      */
     HNDTYPE_WEAK_NATIVE_COM = 9,
-    Max = HNDTYPE_WEAK_NATIVE_COM
+
+    /*
+     * WEAK INTERIOR POINTER HANDLES
+     *
+     * Weak interior pointer handles behave like weak short handles, except they
+     * also hold (in the extra info) the address of a location holding an interior
+     * pointer into the primary. Only compacting GCs must update that location; a
+     * non-moving GC just clears the handle when the primary dies. The EE creates
+     * one per statics kind for every collectible type (missing-features 4.1/4.2).
+     */
+    HNDTYPE_WEAK_INTERIOR_POINTER = 10,
+
+    /*
+     * CROSSREFERENCE HANDLES
+     *
+     * The FEATURE_JAVAMARSHAL Java-bridge handle (Android). Without the bridge it
+     * is excluded from every scan list: not a root, never cleared, never updated —
+     * the handle table only has to store it (missing-features 4.1).
+     */
+    HNDTYPE_CROSSREFERENCE = 11,
+
+    Max = HNDTYPE_CROSSREFERENCE
 }
 
 // Arguments to GCToEEInterface::StompWriteBarrier

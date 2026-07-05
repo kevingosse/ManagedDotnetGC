@@ -22,16 +22,6 @@ var pendingFeatures = new HashSet<GcFeature>
 {
     GcFeature.CollectibleAssemblies,
     GcFeature.RefCountedHandles,
-    GcFeature.FinalizationQueueRoots,
-    GcFeature.FrozenDependentHandles,
-    GcFeature.NewHandleTypes,
-    GcFeature.SuppressFinalizeDrop,
-    GcFeature.ApiSurface,
-    GcFeature.LatencyMode,
-    GcFeature.NoGCRegion,
-    GcFeature.EventCounters,
-    GcFeature.AllocationAccounting,
-    GcFeature.MemoryInfo,
     GcFeature.GcEvents,
     GcFeature.GcInternals,
 };

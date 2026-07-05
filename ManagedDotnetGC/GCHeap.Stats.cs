@@ -47,9 +47,14 @@ unsafe partial class GCHeap
 
     public long GetTotalPauseDuration() => _totalPauseDuration;
 
-    public nint GetTotalBytesInUse() => 0;
+    // GC.GetTotalMemory: bytes plausibly in use = survivors of the last collection plus
+    // everything handed out since. Over-counts dead-but-unswept data, like the stock
+    // approximation; a forced full collection converges it (missing-features 8.1)
+    public nint GetTotalBytesInUse() => (nint)(_lastLiveBytes + _allocatedSinceGC);
 
-    public ulong GetTotalAllocatedBytes() => 0;
+    // Monotonic lifetime total; window/block/span granular, so it slightly over-counts
+    // unconsumed context remainders — the EE subtracts those per-thread (8.1)
+    public ulong GetTotalAllocatedBytes() => (ulong)_totalAllocatedBytes;
 
     public int GetLastGCPercentTimeInGC() => 0;
 

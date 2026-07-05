@@ -62,8 +62,8 @@ public unsafe class GCHandleStore : IGCHandleStore, IDisposable
 
     public void Uproot()
     {
+        // Only meaningful for multi-store designs; there is a single global store
         Write("GCHandleStore Uproot");
-        throw new NotImplementedException();
     }
 
     public bool ContainsHandle(ObjectHandle* handle)
@@ -109,8 +109,8 @@ public unsafe class GCHandleStore : IGCHandleStore, IDisposable
 
     public void Destructor()
     {
+        // Process shutdown: the OS reclaims the segments
         Write("GCHandleStore Destructor");
-        throw new NotImplementedException();
     }
 
     public readonly ref struct HandlesEnumerable

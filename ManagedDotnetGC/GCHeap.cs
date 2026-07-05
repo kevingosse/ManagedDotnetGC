@@ -25,6 +25,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private readonly GcAwareLock _allocLock;
     private readonly GcAwareLock _gcLock;
     private long _allocatedSinceGC;
+    private long _totalAllocatedBytes;
     private long _lastLiveBytes;
     private long _budget = Region.MinGCBudget;
 
@@ -159,10 +160,12 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         return 0;
     }
 
-    public int GetLOHCompactionMode() => 0;
+    public int GetLOHCompactionMode() => _lohCompactionMode;
 
     public void SetLOHCompactionMode(int newLOHCompactionMode)
     {
+        // No LOH, so this is pure bookkeeping: the property must round-trip (6.1)
+        _lohCompactionMode = newLOHCompactionMode;
     }
 
     public void FixAllocContext(gc_alloc_context* acontext, void* arg, void* heap)
@@ -266,6 +269,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             acontext.alloc_bytes += length;
 
             _allocatedSinceGC += length;
+            _totalAllocatedBytes += length;
 
             return (GCObject*)result;
         }
@@ -291,6 +295,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var classSize = Region.ClassSizes[sizeClass];
             acontext.alloc_bytes_uoh += classSize;
             _allocatedSinceGC += classSize;
+            _totalAllocatedBytes += classSize;
 
             return (GCObject*)(block + IntPtr.Size);
         }
@@ -317,6 +322,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var allocated = (long)regionCount << Region.Shift;
             acontext.alloc_bytes_uoh += allocated;
             _allocatedSinceGC += allocated;
+            _totalAllocatedBytes += allocated;
 
             return (GCObject*)(spanBase + IntPtr.Size);
         }

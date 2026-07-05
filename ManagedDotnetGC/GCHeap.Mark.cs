@@ -16,12 +16,17 @@ unsafe partial class GCHeap
         var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
 
+        // Objects queued for the finalizer thread by earlier collections are strong roots
+        // from the start of the mark phase — before handle scanning and weak clearing, like
+        // the stock order (mark_phase.cpp:3176; missing-features 3.3)
+        MarkFReachableQueues();
+
         ScanHandles();
         ScanDependentHandles();
         ClearHandles([HandleType.HNDTYPE_WEAK_SHORT]);
         ScanForFinalization();
         ScanDependentHandles();
-        ClearHandles([HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT]);
+        ClearHandles([HandleType.HNDTYPE_WEAK_LONG, HandleType.HNDTYPE_DEPENDENT, HandleType.HNDTYPE_WEAK_INTERIOR_POINTER]);
 
         var weakPtrScanCallback = (delegate* unmanaged<GCObject**, nint, nint, nint, void>)&WeakPtrScanCallback;
         _gcToClr.SyncBlockCacheWeakPtrScan(weakPtrScanCallback, GCHandle.ToIntPtr(_handle), 0);
@@ -57,6 +62,14 @@ unsafe partial class GCHeap
     {
         PrepareForFinalization();
 
+        // Mark the newly dead objects just moved to the f-reachable queues (resurrection);
+        // the leftovers from previous collections were already marked at the top of the
+        // mark phase, so re-walking them here is a cheap no-op
+        MarkFReachableQueues();
+    }
+
+    private void MarkFReachableQueues()
+    {
         ScanContext scanContext = default;
 
         foreach (GCObject* obj in _freachableQueue)
@@ -105,7 +118,13 @@ unsafe partial class GCHeap
                     continue;
                 }
 
-                if (primary->IsMarked() && !secondary->IsMarked())
+                // Anything outside the GC heap (frozen segments) counts as always-alive, and
+                // an out-of-range secondary must never count as "needs promotion" or the
+                // fixpoint spins forever (missing-features 3.4; stock interface.cpp:783)
+                var primaryAlive = primary->IsMarked() || !_nativeAllocator.IsInRange((nint)primary);
+                var secondaryNeedsMark = _nativeAllocator.IsInRange((nint)secondary) && !secondary->IsMarked();
+
+                if (primaryAlive && secondaryNeedsMark)
                 {
                     ScanRoots(secondary, &scanContext, default);
                     markedObjects = true;

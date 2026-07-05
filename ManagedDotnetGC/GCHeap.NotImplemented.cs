@@ -1,77 +1,63 @@
-﻿using static ManagedDotnetGC.Log;
+using static ManagedDotnetGC.Log;
 
 namespace ManagedDotnetGC;
 
+// The long tail of the IGCHeap surface. Under NativeAOT a NotImplementedException escaping
+// an UnmanagedCallersOnly frame is a process fail-fast, so everything the EE or BCL can
+// reach must return a sane value instead of throwing (missing-features 6.1/10.x). The
+// remaining throwing members are the ones nothing can reach on a release win-x64 runtime.
 unsafe partial class GCHeap
 {
+    // GCSettings.LatencyMode: behaviorally ignored (every collection is blocking), but the
+    // property must round-trip. 1 = GCLatencyMode.Interactive, the workstation default.
+    private int _latencyMode = 1;
+
+    // GCSettings.LargeObjectHeapCompactionMode: 1 = Default. There is no LOH, so the value
+    // is bookkeeping only; stock resets CompactOnce to Default after the compacting GC.
+    private int _lohCompactionMode = 1;
+
     public void Destructor()
     {
+        // Process shutdown: nothing to tear down, the OS reclaims everything
         Write("IGCHeap Destructor");
-        throw new NotImplementedException();
     }
 
-    public bool IsValidSegmentSize(nint size)
-    {
-        Write("IsValidSegmentSize");
-        throw new NotImplementedException();
-    }
+    public bool IsValidSegmentSize(nint size) => true;
 
-    public bool IsValidGen0MaxSize(nint size)
-    {
-        Write("IsValidGen0MaxSize");
-        throw new NotImplementedException();
-    }
+    public bool IsValidGen0MaxSize(nint size) => true;
 
-    public nint GetValidSegmentSize(bool large_seg = false)
-    {
-        Write("GetValidSegmentSize");
-        throw new NotImplementedException();
-    }
+    public nint GetValidSegmentSize(bool large_seg = false) => Region.Size;
 
     public void SetReservedVMLimit(nint vmlimit)
     {
-        Write("SetReservedVMLimit");
-        throw new NotImplementedException();
     }
 
+    // There is no concurrent GC: "wait until complete" is always already true
     public void WaitUntilConcurrentGCComplete()
     {
-        Write("WaitUntilConcurrentGCComplete");
-        throw new NotImplementedException();
     }
 
     public void TemporaryEnableConcurrentGC()
     {
-        Write("TemporaryEnableConcurrentGC");
-        throw new NotImplementedException();
     }
 
     public void TemporaryDisableConcurrentGC()
     {
-        Write("TemporaryDisableConcurrentGC");
-        throw new NotImplementedException();
     }
 
-    public HResult WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout)
-    {
-        Write("WaitUntilConcurrentGCCompleteAsync");
-        throw new NotImplementedException();
-    }
+    public HResult WaitUntilConcurrentGCCompleteAsync(int millisecondsTimeout) => HResult.S_OK;
 
-    public int GetGcLatencyMode()
-    {
-        Write("GetGcLatencyMode");
-        throw new NotImplementedException();
-    }
+    public int GetGcLatencyMode() => _latencyMode;
 
     public int SetGcLatencyMode(int newLatencyMode)
     {
-        Write("SetGcLatencyMode");
-        throw new NotImplementedException();
+        _latencyMode = newLatencyMode;
+        return 0; // set_pause_mode_success
     }
 
     public bool RegisterForFullGCNotification(uint gen2Percentage, uint lohPercentage)
     {
+        // No notification support: the EE surfaces false as InvalidOperationException
         Write("RegisterForFullGCNotification");
         return false;
     }
@@ -97,41 +83,39 @@ unsafe partial class GCHeap
 
     public int StartNoGCRegion(ulong totalSize, bool lohSizeKnown, ulong lohSize, bool disallowFullBlockingGC)
     {
-        Write("StartNoGCRegion");
-        throw new NotImplementedException();
+        // Declining is a documented outcome: start_no_gc_no_memory -> managed false
+        // (missing-features 6.1). Implementing for real means promising no GC until End.
+        Write("StartNoGCRegion (declined)");
+        return 1; // start_no_gc_no_memory
     }
 
     public int EndNoGCRegion()
     {
-        Write("EndNoGCRegion");
-        throw new NotImplementedException();
+        // Never in a region, since StartNoGCRegion always declines
+        return 1; // end_no_gc_not_in_progress -> managed InvalidOperationException
     }
 
     public bool IsPromoted(GCObject* obj)
     {
-        Write("IsPromoted");
-        throw new NotImplementedException();
+        // During a GC: marked or outside the heap (frozen = immortal) means promoted.
+        // Outside a GC everything is promoted, matching stock (interface.cpp:783-790).
+        return obj == null
+            || !_gcInProgress
+            || !_nativeAllocator.IsInRange((nint)obj)
+            || obj->IsMarked();
     }
 
     public bool IsHeapPointer(IntPtr obj, bool small_heap_only)
     {
-        Write("IsHeapPointer");
-        throw new NotImplementedException();
+        // Frozen segments are deliberately excluded, like the stock answer
+        return _nativeAllocator.IsInRange(obj);
     }
 
     public uint GetCondemnedGeneration() => 2;
 
-    public bool IsEphemeral(GCObject* obj)
-    {
-        Write("IsEphemeral");
-        throw new NotImplementedException();
-    }
+    public bool IsEphemeral(GCObject* obj) => false;
 
-    public bool RuntimeStructuresValid()
-    {
-        Write("RuntimeStructuresValid");
-        throw new NotImplementedException();
-    }
+    public bool RuntimeStructuresValid() => true;
 
     public void SetSuspensionPending(bool fSuspensionPending)
     {
@@ -150,100 +134,76 @@ unsafe partial class GCHeap
     {
     }
 
-    public bool IsLargeObject(GCObject* pObj)
-    {
-        Write("IsLargeObject");
-        throw new NotImplementedException();
-    }
+    public bool IsLargeObject(GCObject* pObj) => false;
 
     public void ValidateObjectMember(GCObject* obj)
     {
-        Write("ValidateObjectMember");
-        throw new NotImplementedException();
     }
 
     public GCObject* NextObj(GCObject* obj)
     {
-        Write("NextObj");
-        throw new NotImplementedException();
+        // Only used by stock-internal walks that never reach a standalone GC; null is the
+        // documented "no next object" answer and can't fail-fast
+        return null;
     }
 
     public GCObject* GetContainingObject(IntPtr pInteriorPtr, bool fCollectedGenOnly)
     {
-        Write("GetContainingObject");
-        throw new NotImplementedException();
+        // Same machinery as interior-pointer marking; null for non-heap addresses and
+        // pointers into dead space (missing-features 6.3)
+        return _nativeAllocator.IsInRange(pInteriorPtr) ? ResolveInteriorPointer(pInteriorPtr) : null;
     }
 
+    // Diag walks: a profiler attach, dotnet-gcdump or an EventPipe heap session reaches
+    // these; silent no-ops mean "no data" instead of fail-fast (missing-features 10.x)
     public void DiagWalkObject(GCObject* obj, void* fn, void* context)
     {
-        Write("DiagWalkObject");
-        throw new NotImplementedException();
     }
 
     public void DiagWalkObject2(GCObject* obj, void* fn, void* context)
     {
-        Write("DiagWalkObject2");
-        throw new NotImplementedException();
     }
 
     public void DiagWalkHeap(void* fn, void* context, int gen_number, bool walk_large_object_heap_p)
     {
-        Write("DiagWalkHeap");
-        throw new NotImplementedException();
     }
 
     public void DiagWalkSurvivorsWithType(void* gc_context, void* fn, void* diag_context, walk_surv_type type, int gen_number = -1)
     {
-        Write("DiagWalkSurvivorsWithType");
-        throw new NotImplementedException();
     }
 
     public void DiagWalkFinalizeQueue(void* gc_context, void* fn)
     {
-        Write("DiagWalkFinalizeQueue");
-        throw new NotImplementedException();
     }
 
     public void DiagScanFinalizeQueue(void* fn, void* context)
     {
-        Write("DiagScanFinalizeQueue");
-        throw new NotImplementedException();
     }
 
     public void DiagScanHandles(void* fn, int gen_number, void* context)
     {
-        Write("DiagScanHandles");
-        throw new NotImplementedException();
     }
 
     public void DiagScanDependentHandles(void* fn, int gen_number, void* context)
     {
-        Write("DiagScanDependentHandles");
-        throw new NotImplementedException();
     }
 
     public void DiagDescrGenerations(void* fn, void* context)
     {
-        Write("DiagDescrGenerations");
-        throw new NotImplementedException();
     }
 
     public void DiagTraceGCSegments()
     {
-        Write("DiagTraceGCSegments");
-        throw new NotImplementedException();
     }
 
     public void DiagGetGCSettings(void* settings)
     {
-        Write("DiagGetGCSettings");
-        throw new NotImplementedException();
     }
 
     public bool StressHeap(gc_alloc_context* acontext)
     {
-        Write("StressHeap");
-        throw new NotImplementedException();
+        // GCStress is not supported; false = "no stress collection happened"
+        return false;
     }
 
     public void ControlEvents(GCEventKeyword keyword, GCEventLevel level)
@@ -256,47 +216,52 @@ unsafe partial class GCHeap
 
     public uint GetGenerationWithRange(GCObject* obj, byte** ppStart, byte** ppAllocated, byte** ppReserved)
     {
-        Write("GetGenerationWithRange");
-        throw new NotImplementedException();
+        // One pseudo-generation spanning the whole heap reservation
+        *ppStart = (byte*)_nativeAllocator.LowestAddress;
+        *ppAllocated = (byte*)_regionAllocator.RegionBase(_regionAllocator.CarvedCount);
+        *ppReserved = (byte*)_nativeAllocator.HighestAddress;
+        return 0;
     }
 
     public int RefreshMemoryLimit()
     {
-        Write("RefreshMemoryLimit");
-        throw new NotImplementedException();
+        // No cached limits to refresh; DOTNET_GCHeapHardLimit is read once at startup
+        return 0; // refresh_success
     }
 
     public enable_no_gc_region_callback_status EnableNoGCRegionCallback(nint callback, ulong callback_threshold)
     {
-        Write("EnableNoGCRegionCallback");
-        throw new NotImplementedException();
+        // Never inside a NoGC region (StartNoGCRegion declines), so registration cannot start
+        return enable_no_gc_region_callback_status.not_started;
     }
 
     public ulong GetGenerationBudget(int generation)
     {
-        Write("GetGenerationBudget");
-        throw new NotImplementedException();
+        // Polled by the gen-0-gc-budget EventCounter the moment dotnet-counters attaches
+        return (ulong)_budget;
     }
 
     public void DiagWalkHeapWithACHandling(nint fn, void* context, int gen_number, bool walk_large_object_heap_p)
     {
-        Write("DiagWalkHeapWithACHandling");
-        throw new NotImplementedException();
     }
 
     public void GetMemoryInfo(out ulong highMemLoadThresholdBytes, out ulong totalAvailableMemoryBytes, out ulong lastRecordedMemLoadBytes, out ulong lastRecordedHeapSizeBytes, out ulong lastRecordedFragmentationBytes, out ulong totalCommittedBytes, out ulong promotedBytes, out ulong pinnedObjectCount, out ulong finalizationPendingCount, out ulong index, out uint generation, out uint pauseTimePct, out bool isCompaction, out bool isConcurrent, out ulong genInfoRaw, out ulong pauseInfoRaw, int kind)
     {
-        Write("GetMemoryInfo");
+        // Real numbers where the region heap has them, zeros elsewhere (missing-features 10.x).
+        // All kinds report the last blocking collection — the only kind there is.
+        var committed = (ulong)_regionAllocator.CommittedRegionBytes;
+        var live = (ulong)_lastLiveBytes;
+
         highMemLoadThresholdBytes = 0;
         totalAvailableMemoryBytes = 0;
         lastRecordedMemLoadBytes = 0;
-        lastRecordedHeapSizeBytes = 0;
-        lastRecordedFragmentationBytes = 0;
-        totalCommittedBytes = 0;
-        promotedBytes = 0;
+        lastRecordedHeapSizeBytes = live;
+        lastRecordedFragmentationBytes = committed > live ? committed - live : 0;
+        totalCommittedBytes = committed;
+        promotedBytes = live;
         pinnedObjectCount = 0;
-        finalizationPendingCount = 0;
-        index = 0;
+        finalizationPendingCount = (ulong)GetNumberOfFinalizable();
+        index = _gcCount;
         generation = 0;
         pauseTimePct = 0;
         isCompaction = false;

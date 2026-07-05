@@ -32,8 +32,12 @@ unsafe partial class GCHeap
 
             if (obj != null && obj->Header->HasFinalizerRun)
             {
+                // Clear the bit while skipping (stock finalizerthread.cpp:253-259): the object
+                // is out of the queue now, so a later ReRegisterForFinalize must see a clear
+                // bit and enqueue for real instead of early-returning (missing-features 5.1)
+                obj->Header->HasFinalizerRun = false;
                 obj = null;
-            }            
+            }
         }
 
         return obj;
@@ -88,7 +92,13 @@ unsafe partial class GCHeap
 
             if (!obj->IsMarked())
             {
-                if (!_gcToClr.EagerFinalized(obj))
+                if (obj->Header->HasFinalizerRun)
+                {
+                    // Suppressed + dead: dropped outright with the bit cleared, never
+                    // resurrected (stock finalization.cpp:367-377; missing-features 5.1)
+                    obj->Header->HasFinalizerRun = false;
+                }
+                else if (!_gcToClr.EagerFinalized(obj))
                 {
                     if (obj->MethodTable->HasCriticalFinalizer)
                     {
