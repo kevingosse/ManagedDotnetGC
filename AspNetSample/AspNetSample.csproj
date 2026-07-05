@@ -12,4 +12,8 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\ManagedDotnetGC.Api\ManagedDotnetGC.Api.csproj" />
+  </ItemGroup>
+
 </Project>

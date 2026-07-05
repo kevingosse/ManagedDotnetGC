@@ -36,7 +36,8 @@ $server = Start-Process -FilePath "$outDir\AspNetSample.exe" -ArgumentList 'serv
 Remove-Item Env:DOTNET_GCName
 
 try {
-    # Verify the custom GC is loaded: its GetTotalBytesInUse stub reports 0, the stock GC never does
+    # Verify the custom GC is loaded via its managed API (published through a GC
+    # configuration value the stock GC doesn't have)
     $stats = $null
     foreach ($attempt in 1..30) {
         try { $stats = Invoke-RestMethod "http://127.0.0.1:$Port/stats"; break } catch { Start-Sleep 1 }
@@ -46,11 +47,11 @@ try {
         Write-Error "Server did not come up; see $serverLog / $serverErr"
     }
 
-    if ($stats.gcTotalMemory -ne 0) {
-        Write-Error "Server is running on the STOCK GC (GC.GetTotalMemory = $($stats.gcTotalMemory)) - aborting"
+    if (-not $stats.customGc) {
+        Write-Error "Server is running on the STOCK GC - aborting"
     }
 
-    Write-Host "# ManagedDotnetGC confirmed loaded (GC.GetTotalMemory reports 0)"
+    Write-Host "# ManagedDotnetGC confirmed loaded (GcApi available)"
 
     & "$outDir\AspNetSample.exe" load "http://127.0.0.1:$Port" $Seconds $Workers
     $clientExit = $LASTEXITCODE

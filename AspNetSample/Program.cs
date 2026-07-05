@@ -27,6 +27,10 @@ var app = builder.Build();
 var startTime = Stopwatch.StartNew();
 long totalRequests = 0;
 
+// Non-null only when ManagedDotnetGC is the loaded GC (the API rides on a custom
+// configuration value the stock GC doesn't publish) — the soak script checks this
+var isCustomGc = ManagedDotnetGC.Api.GcApi.TryCreate() != null;
+
 // Retained working set: ~3000 entries × ~36 KB average ≈ 100 MB, slowly replaced under load
 var cache = new ConcurrentDictionary<int, byte[]>();
 const int CacheKeys = 3000;
@@ -118,9 +122,8 @@ app.MapGet("/stats", () => Results.Ok(new
     totalRequests = Interlocked.Read(ref totalRequests),
     workingSetMB = Environment.WorkingSet / (1024.0 * 1024.0),
     gcCount = GC.CollectionCount(0),
-    // 0 under ManagedDotnetGC (GetTotalBytesInUse stub), > 0 under the stock GC:
-    // the soak script uses this to verify the custom GC is actually loaded
     gcTotalMemory = GC.GetTotalMemory(false),
+    customGc = isCustomGc,
     cacheEntries = cache.Count,
     threads = Process.GetCurrentProcess().Threads.Count,
 }));
