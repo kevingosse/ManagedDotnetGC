@@ -129,37 +129,10 @@ unsafe partial class GCHeap
         
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
-            // Find the segment containing the interior pointer
-            var segment = _segmentManager.FindSegmentContaining((nint)root);
+            root = ResolveInteriorPointer((nint)root);
 
-            if (segment.IsNull)
+            if (root == null)
             {
-                Write($"  No segment found for interior pointer {(IntPtr)root:x2}");
-                return;
-            }
-
-            var objectStartPtr = segment.FindClosestObjectBelow((IntPtr)root);
-
-            bool found = false;
-
-            // The walk must include an object starting exactly at the interior pointer (the
-            // contract is obj <= ptr < obj + size) and WalkHeapObjects' end bound is exclusive
-            foreach (var ptr in WalkHeapObjects(objectStartPtr, (IntPtr)root + 1))
-            {
-                var o = (GCObject*)ptr;
-                var size = o->ComputeSize();
-
-                if ((IntPtr)o <= (IntPtr)root && (IntPtr)root < (IntPtr)o + (nint)size)
-                {
-                    root = o;
-                    found = true;
-                    break;
-                }
-            }
-
-            if (!found)
-            {
-                Write($"  No object found for interior pointer {(IntPtr)root:x2}");
                 return;
             }
         }
@@ -176,16 +149,99 @@ unsafe partial class GCHeap
                 continue;
             }
 
-            var segment = _segmentManager.FindSegmentContaining((nint)o);
-
-            if (segment.IsNull)
+            // Reject anything that isn't inside a live region (frozen-segment references
+            // land here too: they are outside the reservation and are deliberately skipped)
+            if (!_regionAllocator.TryGetIndex(ptr, out var regionIndex))
             {
                 continue;
             }
 
+            var entry = _regionAllocator.GetEntry(regionIndex);
+
+            if (entry->Kind == RegionKind.Free)
+            {
+                continue;
+            }
+
+            if (entry->Kind == RegionKind.SpanExtension)
+            {
+                entry = _regionAllocator.GetEntry(entry->SpanStartIndex);
+            }
+
             o->EnumerateObjectReferences(_markStack.Push);
             o->Mark();
-            segment.MarkObject((IntPtr)o);
+
+            entry->LiveBytes = (int)Math.Min(int.MaxValue, entry->LiveBytes + (long)Align((nint)o->ComputeSize()));
         }
+    }
+
+    /// <summary>
+    /// Maps an interior pointer to its containing object (contract: obj ≤ ptr < obj + size),
+    /// or null when it doesn't point inside a live heap object (SPEC-M2 §6).
+    /// </summary>
+    private GCObject* ResolveInteriorPointer(nint addr)
+    {
+        if (!_regionAllocator.TryGetIndex(addr, out var index))
+        {
+            return null;
+        }
+
+        var entry = _regionAllocator.GetEntry(index);
+
+        if (entry->Kind == RegionKind.SpanExtension)
+        {
+            index = entry->SpanStartIndex;
+            entry = _regionAllocator.GetEntry(index);
+        }
+
+        GCObject* result = null;
+
+        switch (entry->Kind)
+        {
+            case RegionKind.SpanStart:
+            {
+                var obj = (GCObject*)(_regionAllocator.RegionBase(index) + IntPtr.Size);
+
+                if (addr >= (nint)obj && addr < (nint)obj + (nint)obj->ComputeSize())
+                {
+                    result = obj;
+                }
+
+                break;
+            }
+
+            case RegionKind.Bump:
+            {
+                // Linear walk from the region base; bounded by the 2 MB region size.
+                // No brick table by design — see SPEC-M2 §6 for why bricks go stale.
+                var ptr = _regionAllocator.RegionBase(index) + IntPtr.Size;
+                var end = entry->Cursor;
+
+                while (ptr < end && ptr <= addr)
+                {
+                    var obj = (GCObject*)ptr;
+                    var size = (nint)obj->ComputeSize();
+
+                    if (addr < ptr + size)
+                    {
+                        result = obj;
+                        break;
+                    }
+
+                    ptr = Align(ptr + size);
+                }
+
+                break;
+            }
+        }
+
+        // A pointer into dead space resolves to a free-object plug: not a live object
+        // (conservative-mode hardening, missing-features 9.1)
+        if (result != null && result->MethodTable == _freeObjectMethodTable)
+        {
+            return null;
+        }
+
+        return result;
     }
 }

@@ -1,7 +1,13 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 
 namespace ManagedDotnetGC;
 
+/// <summary>
+/// Owns the heap reservation and wraps the OS memory primitives. The reservation is
+/// over-sized by one region so the usable range can be aligned to region boundaries
+/// (VirtualAlloc only guarantees 64 KB alignment, region index math needs 2 MB).
+/// All post-initialization operations are non-throwing (SPEC-M2 §9).
+/// </summary>
 internal partial class NativeAllocator : IDisposable
 {
     private const uint MEM_COMMIT = 0x00001000;
@@ -11,11 +17,9 @@ internal partial class NativeAllocator : IDisposable
 
     private const uint PAGE_READWRITE = 0x04;
 
-    private static readonly int PageSize = Environment.SystemPageSize;
-
-    private nint _nextFreeAddress;
-    private nint _lowestAddress;
-    private nint _highestAddress;
+    private nint _reservation;
+    private readonly nint _lowestAddress;
+    private readonly nint _highestAddress;
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static partial IntPtr VirtualAlloc(IntPtr lpAddress, UIntPtr dwSize, uint flAllocationType, uint flProtect);
@@ -26,15 +30,16 @@ internal partial class NativeAllocator : IDisposable
 
     public NativeAllocator(long size)
     {
-        _lowestAddress = VirtualAlloc(IntPtr.Zero, (UIntPtr)size, MEM_RESERVE, PAGE_READWRITE);
+        _reservation = VirtualAlloc(IntPtr.Zero, (UIntPtr)(size + Region.Size), MEM_RESERVE, PAGE_READWRITE);
 
-        if (_lowestAddress == IntPtr.Zero)
+        if (_reservation == IntPtr.Zero)
         {
+            // Initialization-time failure: the process cannot run without the heap
             throw new OutOfMemoryException("Failed to reserve memory");
         }
 
+        _lowestAddress = (_reservation + Region.Size - 1) & ~(Region.Size - 1);
         _highestAddress = _lowestAddress + (nint)size;
-        _nextFreeAddress = _lowestAddress;
     }
 
     public nint LowestAddress => _lowestAddress;
@@ -43,115 +48,33 @@ internal partial class NativeAllocator : IDisposable
 
     public bool IsInRange(nint ptr) => ptr >= LowestAddress && ptr < HighestAddress;
 
-    public nint Allocate(nint size)
+    public bool TryCommit(nint address, nint size)
     {
-        if (size <= 0)
-        {
-            return IntPtr.Zero;
-        }
-
-        var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
-        nint address;
-
-        while (true)
-        {
-            address = Volatile.Read(ref _nextFreeAddress);
-            var end = address + alignedSize;
-
-            if (end > HighestAddress)
-            {
-                throw new OutOfMemoryException("Not enough memory to allocate");
-            }
-
-            if (Interlocked.CompareExchange(ref _nextFreeAddress, end, address) == address)
-            {
-                break;
-            }
-        }
-
-        var result = VirtualAlloc(address, (UIntPtr)alignedSize, MEM_COMMIT, PAGE_READWRITE);
-
-        if (result == IntPtr.Zero)
-        {
-            throw new OutOfMemoryException("VirtualAlloc failed to commit memory");
-        }
-
-        return address;
+        return VirtualAlloc(address, (UIntPtr)size, MEM_COMMIT, PAGE_READWRITE) != IntPtr.Zero;
     }
 
-    public nint Reserve(nint size)
+    public bool Decommit(nint address, nint size)
     {
-        if (size <= 0)
-        {
-            return IntPtr.Zero;
-        }
-
-        var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
-        nint address;
-
-        while (true)
-        {
-            address = Volatile.Read(ref _nextFreeAddress);
-            var end = address + alignedSize;
-
-            if (end > HighestAddress)
-            {
-                throw new OutOfMemoryException("Not enough memory to reserve");
-            }
-
-            if (Interlocked.CompareExchange(ref _nextFreeAddress, end, address) == address)
-            {
-                break;
-            }
-        }
-
-        return address;
+        return VirtualFree(address, (UIntPtr)size, MEM_DECOMMIT);
     }
 
-    public void Commit(nint address, nint size)
+    /// <summary>Reserves address space outside the heap range (metadata tables).</summary>
+    public static nint OsReserve(nint size)
     {
-        if (size <= 0)
-        {
-            return;
-        }
-
-        var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
-
-        var result = VirtualAlloc(address, (UIntPtr)alignedSize, MEM_COMMIT, PAGE_READWRITE);
-
-        if (result == IntPtr.Zero)
-        {
-            throw new OutOfMemoryException("VirtualAlloc failed to commit memory");
-        }
+        return VirtualAlloc(IntPtr.Zero, (UIntPtr)size, MEM_RESERVE, PAGE_READWRITE);
     }
 
-    public void Free(nint address, nint size)
+    public static bool OsCommit(nint address, nint size)
     {
-        if (address == IntPtr.Zero || _lowestAddress == IntPtr.Zero)
-        {
-            return;
-        }
-
-        if (address < _lowestAddress || address >= _highestAddress)
-        {
-            throw new InvalidOperationException($"Address {address:x2} is out of reserved range");
-        }
-
-        var alignedSize = (size + (PageSize - 1)) & ~(nint)(PageSize - 1);
-
-        if (!VirtualFree(address, (UIntPtr)alignedSize, MEM_DECOMMIT))
-        {
-            throw new InvalidOperationException("VirtualFree failed to decommit memory");
-        }
+        return VirtualAlloc(address, (UIntPtr)size, MEM_COMMIT, PAGE_READWRITE) != IntPtr.Zero;
     }
 
     public void Dispose()
     {
-        if (_lowestAddress != IntPtr.Zero)
+        if (_reservation != IntPtr.Zero)
         {
-            VirtualFree(_lowestAddress, UIntPtr.Zero, MEM_RELEASE);
-            _lowestAddress = IntPtr.Zero;
-            _highestAddress = IntPtr.Zero;
+            VirtualFree(_reservation, UIntPtr.Zero, MEM_RELEASE);
+            _reservation = IntPtr.Zero;
         }
     }
 }

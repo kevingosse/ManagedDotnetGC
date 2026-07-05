@@ -9,9 +9,6 @@ namespace ManagedDotnetGC;
 
 internal unsafe partial class GCHeap : Interfaces.IGCHeap
 {
-    internal const int AllocationContextSize = 32 * 1024;
-    internal const int SegmentSize = AllocationContextSize * 128;
-    internal const long HeapReserveSize = 2L * 1024 * 1024 * 1024 * 1024;
     internal static readonly int SizeOfObject = sizeof(nint) * 3;
 
     private readonly ManualResetEventSlim _gcEvent = new(false);
@@ -24,10 +21,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private MethodTable* _freeObjectMethodTable;
 
-    private readonly SegmentManager _segmentManager;
-    private readonly object _allocationLock = new();
+    private readonly RegionAllocator _regionAllocator;
+    private readonly GcAwareLock _allocLock;
     private readonly GcAwareLock _gcLock;
-    private Segment _activeSegment;
+    private long _allocatedSinceGC;
 
     private GCHandle _handle;
     private Stack<IntPtr> _markStack = new();
@@ -39,9 +36,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         _handle = GCHandle.Alloc(this);
         _gcToClr = gcToClr;
         _gcLock = new GcAwareLock(gcToClr);
+        _allocLock = new GcAwareLock(gcToClr);
         _gcHandleManager = new GCHandleManager();
-        _nativeAllocator = new(HeapReserveSize);
-        _segmentManager = new SegmentManager(_nativeAllocator);
+        _nativeAllocator = new(Region.HeapReserveSize);
+        _regionAllocator = new RegionAllocator(_nativeAllocator);
 
         _nativeObject = IGCHeap.Wrap(this);
         _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
@@ -61,8 +59,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         {
             _dacManager = dacManager;
         }
-
-        _activeSegment = _segmentManager.AllocateSegment(SegmentSize);
 
         var parameters = new WriteBarrierParameters
         {
@@ -160,77 +156,76 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
     {
-        var obj = DoAlloc(ref acontext);
+        // The EE only calls this when [alloc_ptr, alloc_limit) can't fit the request.
+        // Dispatch per SPEC-M2 §4; note the size-class tier arrives with M2 step S4 —
+        // until then, 32 KB < size ≤ 1 MB is served by oversized bump windows.
+        var obj = size + IntPtr.Size <= Region.SizeClassMaxSize
+            ? AllocFromWindow(ref acontext, size)
+            : AllocSpan(ref acontext, size);
 
-        if (flags.HasFlag(GC_ALLOC_FLAGS.GC_ALLOC_FINALIZE))
+        if (obj != null && flags.HasFlag(GC_ALLOC_FLAGS.GC_ALLOC_FINALIZE))
         {
             RegisterForFinalization(0, obj);
         }
 
         return obj;
+    }
 
-        GCObject* DoAlloc(ref gc_alloc_context acontext)
+    private GCObject* AllocFromWindow(ref gc_alloc_context acontext, nint size)
+    {
+        // Plug the context's remainder to keep the heap walkable before replacing it
+        FixAllocContext(ref acontext);
+
+        _allocLock.Acquire();
+
+        try
         {
-            var result = acontext.alloc_ptr;
-            var advance = Align(result + size);
-
-            // TODO: Add object to finalization queue if needed
-            // TODO: How to recognize critical finalizers?
-
-            if (advance <= acontext.alloc_limit)
+            if (!_regionAllocator.TryGetWindow(size, out var window, out var length))
             {
-                // There is enough room left in the allocation context
-                acontext.alloc_ptr = advance;
-                return (GCObject*)result;
+                return null;
             }
 
-            // We need to allocate a new allocation context
-            FixAllocContext(ref acontext);
+            // SPEC-M2 §3: first object ref at window + 8; the -16 pairs with the plug
+            // formula in FixAllocContext to keep the region walkable end-to-end
+            var result = window + IntPtr.Size;
 
-            var minimumSize = size + SizeOfObject;
+            acontext.alloc_ptr = Align(result + size);
+            acontext.alloc_limit = window + length - 2 * IntPtr.Size;
+            acontext.alloc_bytes += length;
 
-            if (minimumSize > SegmentSize)
+            _allocatedSinceGC += length;
+
+            return (GCObject*)result;
+        }
+        finally
+        {
+            _allocLock.Release();
+        }
+    }
+
+    private GCObject* AllocSpan(ref gc_alloc_context acontext, nint size)
+    {
+        // The caller's context is left untouched: it may still serve small allocations
+        var regionCount = (int)((size + IntPtr.Size + Region.Size - 1) >> Region.Shift);
+
+        _allocLock.Acquire();
+
+        try
+        {
+            if (!_regionAllocator.TryAllocSpan(regionCount, out var spanBase))
             {
-                // We need a dedicated segment for this allocation
-                Segment segment;
-
-                lock (_allocationLock)
-                {
-                    segment = _segmentManager.AllocateSegment(size);
-                }
-
-                segment.Current = segment.End;
-
-                acontext.alloc_ptr = 0;
-                acontext.alloc_limit = 0;
-
-                result = Align(segment.ObjectStart + IntPtr.Size);
-
-                segment.MarkObject(result);
-
-                return (GCObject*)result;
+                return null;
             }
 
-            lock (_allocationLock)
-            {
-                if (_activeSegment.Current + minimumSize >= _activeSegment.End)
-                {
-                    // The active segment is full, allocate a new one
-                    _activeSegment = _segmentManager.AllocateSegment(SegmentSize);
-                }
+            var allocated = (long)regionCount << Region.Shift;
+            acontext.alloc_bytes_uoh += allocated;
+            _allocatedSinceGC += allocated;
 
-                var desiredSize = Math.Min(Math.Max(minimumSize, AllocationContextSize), _activeSegment.End - _activeSegment.Current);
-
-                result = _activeSegment.Current + IntPtr.Size;
-                _activeSegment.Current += desiredSize;
-
-                acontext.alloc_ptr = Align(result + size);
-                acontext.alloc_limit = _activeSegment.Current - IntPtr.Size * 2;
-
-                _activeSegment.MarkObject(result);
-
-                return (GCObject*)result;
-            }
+            return (GCObject*)(spanBase + IntPtr.Size);
+        }
+        finally
+        {
+            _allocLock.Release();
         }
     }
 
@@ -258,6 +253,9 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             return;
         }
 
+        // Un-account the window remainder the context never consumed (SPEC-M2 §4.1)
+        acontext.alloc_bytes -= acontext.alloc_limit - acontext.alloc_ptr;
+
         AllocateFreeObject(acontext.alloc_ptr, (uint)(acontext.alloc_limit - acontext.alloc_ptr));
 
         // Invalidate the allocation context so threads get a fresh one
@@ -274,13 +272,40 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private IEnumerable<IntPtr> WalkHeapObjects()
     {
-        foreach (var segment in _segmentManager.Segments)
+        var count = _regionAllocator.CarvedCount;
+
+        for (int i = 0; i < count; i++)
         {
-            foreach (var obj in WalkHeapObjects(segment.ObjectStart + IntPtr.Size, segment.Current))
+            var (kind, start, end) = GetWalkRange(i);
+
+            switch (kind)
             {
-                yield return obj;
+                case RegionKind.Bump:
+                    foreach (var obj in WalkHeapObjects(start, end))
+                    {
+                        yield return obj;
+                    }
+                    break;
+
+                case RegionKind.SpanStart:
+                    yield return start;
+                    break;
             }
         }
+    }
+
+    private (RegionKind kind, nint start, nint end) GetWalkRange(int index)
+    {
+        var entry = _regionAllocator.GetEntry(index);
+
+        return entry->Kind switch
+        {
+            // Objects live in [base + 8, Cursor); the tail past Cursor is virgin zero
+            RegionKind.Bump => (RegionKind.Bump, _regionAllocator.RegionBase(index) + IntPtr.Size, entry->Cursor),
+            // A span holds exactly one object
+            RegionKind.SpanStart => (RegionKind.SpanStart, _regionAllocator.RegionBase(index) + IntPtr.Size, 0),
+            _ => (entry->Kind, 0, 0),
+        };
     }
 
     private static IEnumerable<IntPtr> WalkHeapObjects(nint objectStart, nint end)
