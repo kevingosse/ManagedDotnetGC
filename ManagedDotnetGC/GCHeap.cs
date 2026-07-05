@@ -26,6 +26,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private readonly SegmentManager _segmentManager;
     private readonly object _allocationLock = new();
+    private readonly GcAwareLock _gcLock;
     private Segment _activeSegment;
 
     private GCHandle _handle;
@@ -37,6 +38,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         _handle = GCHandle.Alloc(this);
         _gcToClr = gcToClr;
+        _gcLock = new GcAwareLock(gcToClr);
         _gcHandleManager = new GCHandleManager();
         _nativeAllocator = new(HeapReserveSize);
         _segmentManager = new SegmentManager(_nativeAllocator);
@@ -80,24 +82,54 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         Write($"GarbageCollect({generation}, {low_memory_p}, {mode})");
 
-        Interlocked.Increment(ref _gcCount);
-
-        _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
-
-        FixAllocContexts();
-
-        Write("Mark phase");
-        MarkPhase();
-
-        Write("Sweep phase");
-        SweepPhase();
-
-        // DumpHeap();
-
-        _gcToClr.RestartEE(finishedGC: true);
-        _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
+        // Explicit collections always collect (the caller is entitled to a collection that
+        // starts after its call), so the snapshot is ignored via force
+        Collect(_gcCount, force: true);
 
         return HResult.S_OK;
+    }
+
+    /// <summary>
+    /// The single entry point for collections (SPEC-M2 §8.2). Safe to call from cooperative
+    /// mode (allocation-triggered GCs): the preemptive switch happens before SuspendEE.
+    /// When not forced, the collection is skipped if another thread completed one since the
+    /// caller read <paramref name="gcCountSnapshot"/> — that is what stops racing allocators
+    /// from running back-to-back collections.
+    /// </summary>
+    private void Collect(uint gcCountSnapshot, bool force = false)
+    {
+        // Switch before acquiring so the lock's own restore leaves us preemptive: calling
+        // SuspendEE from cooperative mode would self-deadlock
+        var wasCooperative = _gcToClr.EnablePreemptiveGC();
+
+        _gcLock.Acquire();
+
+        if (force || Volatile.Read(ref _gcCount) == gcCountSnapshot)
+        {
+            _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
+
+            FixAllocContexts();
+
+            Write("Mark phase");
+            MarkPhase();
+
+            Write("Sweep phase");
+            SweepPhase();
+
+            // DumpHeap();
+
+            Interlocked.Increment(ref _gcCount);
+
+            _gcToClr.RestartEE(finishedGC: true);
+            _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
+        }
+
+        _gcLock.Release();
+
+        if (wasCooperative)
+        {
+            _gcToClr.DisablePreemptiveGC();
+        }
     }
 
     public void SetWaitForGCEvent() => _gcEvent.Set();
