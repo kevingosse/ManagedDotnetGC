@@ -69,6 +69,11 @@ internal partial class NativeAllocator : IDisposable
         return VirtualAlloc(address, (UIntPtr)size, MEM_COMMIT, PAGE_READWRITE) != IntPtr.Zero;
     }
 
+    public static void OsRelease(nint address)
+    {
+        VirtualFree(address, UIntPtr.Zero, MEM_RELEASE);
+    }
+
     public void Dispose()
     {
         if (_reservation != IntPtr.Zero)

@@ -133,7 +133,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             // SPEC-M2 §8.3: the heap converges to ≈ 2× live
             _allocatedSinceGC = 0;
-            _budget = Math.Max(Region.MinGCBudget, _lastLiveBytes);
+            _budget = Region.ComputeBudget(_lastLiveBytes);
 
             Interlocked.Increment(ref _gcCount);
 
@@ -303,7 +303,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private GCObject* AllocSpan(ref gc_alloc_context acontext, nint size)
     {
         // The caller's context is left untouched: it may still serve small allocations
-        var regionCount = (int)((size + IntPtr.Size + Region.Size - 1) >> Region.Shift);
+        var regionCount = Region.SpanRegionCount(size);
 
         _allocLock.Acquire();
 
@@ -332,19 +332,19 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     /// </summary>
     private void AdvanceEpoch()
     {
-        _currentEpoch++;
+        var next = GCObject.NextEpoch(_currentEpoch);
 
-        if (_currentEpoch == 0)
+        if (next < _currentEpoch)
         {
+            // Wrapped: clear every stale stamp so it cannot alias the restarted sequence
             foreach (var ptr in WalkHeapObjects())
             {
                 ((GCObject*)ptr)->Epoch = 0;
             }
-
-            _currentEpoch = 1;
         }
 
-        GCObject.CurrentEpoch = _currentEpoch;
+        _currentEpoch = next;
+        GCObject.CurrentEpoch = next;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

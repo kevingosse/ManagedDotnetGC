@@ -31,6 +31,16 @@ internal static class Region
     public const int ClassCount = 20;
     public const nint SizeClassMaxSize = 1024 * 1024;
 
+    /// <summary>Post-collection allocation budget (SPEC-M2 §8.3): the heap converges to ≈ 2× live.</summary>
+    public static long ComputeBudget(long liveBytes) => Math.Max(MinGCBudget, liveBytes);
+
+    /// <summary>Committed slack kept in the free pool after a sweep (SPEC-M2 §7.4).</summary>
+    public static long PoolRetentionTarget(long liveBytes) => Math.Max(MinGCBudget, liveBytes / 4);
+
+    /// <summary>Regions needed for a span object of the given size (SPEC-M2 §4.3): the
+    /// object ref sits at spanBase + 8, so the pre-header byte counts toward the span.</summary>
+    public static int SpanRegionCount(nint size) => (int)((size + IntPtr.Size + Size - 1) >> Shift);
+
     public static int SelectClass(nint size)
     {
         var needed = size + IntPtr.Size;

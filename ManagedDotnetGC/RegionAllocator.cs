@@ -7,7 +7,7 @@ namespace ManagedDotnetGC;
 /// reservation. Not thread-safe by itself — every mutating call runs either under the
 /// GCHeap allocation lock or during a suspension (sweep).
 /// </summary>
-internal unsafe class RegionAllocator
+internal unsafe class RegionAllocator : IDisposable
 {
     private readonly NativeAllocator _memory;
     private readonly RegionEntry* _table;
@@ -54,6 +54,14 @@ internal unsafe class RegionAllocator
         }
 
         _classHeads.AsSpan().Fill(-1);
+    }
+
+    /// <summary>Releases the metadata reservations. Production never disposes (the GC
+    /// lives as long as the process); this exists for the unit tests.</summary>
+    public void Dispose()
+    {
+        NativeAllocator.OsRelease((nint)_table);
+        NativeAllocator.OsRelease((nint)_pool);
     }
 
     public void SetFreeObjectMethodTable(MethodTable* methodTable) => _freeObjectMethodTable = methodTable;
@@ -688,7 +696,7 @@ internal unsafe class RegionAllocator
     /// </summary>
     private void TrimPool(long liveBytes)
     {
-        var target = Math.Max(Region.MinGCBudget, liveBytes / 4);
+        var target = Region.PoolRetentionTarget(liveBytes);
 
         for (int i = 0; i < _poolCount && _pooledCommittedBytes > target; i++)
         {

@@ -62,6 +62,14 @@ public unsafe ref struct GCObject
 
     public readonly MethodTable* MethodTable => RawMethodTable;
 
+    /// <summary>
+    /// The epoch following <paramref name="epoch"/>, skipping 0 on wrap (0 is what
+    /// freshly-zeroed memory reads, so it must always mean "never marked"). A wrap means
+    /// stamps from 2³² collections ago could alias the new epoch; the caller must clear
+    /// every stamp in the heap before using the returned value.
+    /// </summary>
+    internal static uint NextEpoch(uint epoch) => epoch + 1 == 0 ? 1 : epoch + 1;
+
     public bool IsMarked() => Epoch == CurrentEpoch;
 
     public void Mark() => Epoch = CurrentEpoch;
