@@ -27,9 +27,6 @@ var pendingFeatures = new HashSet<GcFeature>
     GcFeature.EventCounters,
     GcFeature.AllocationAccounting,
     GcFeature.MemoryInfo,
-    GcFeature.GcTriggering,
-    GcFeature.MemoryReuse,
-    GcFeature.HardLimitOom,
     GcFeature.GcEvents,
     GcFeature.GcInternals,
 };

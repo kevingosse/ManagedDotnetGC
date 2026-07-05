@@ -26,6 +26,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private readonly GcAwareLock _gcLock;
     private long _allocatedSinceGC;
     private long _lastLiveBytes;
+    private long _budget = Region.MinGCBudget;
 
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
@@ -45,6 +46,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         _nativeObject = IGCHeap.Wrap(this);
         _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
+        _regionAllocator.SetFreeObjectMethodTable(_freeObjectMethodTable);
         Write($"Free Object Method Table: {(nint)_freeObjectMethodTable:x2}");
 
         InitializeManagedApi();
@@ -60,6 +62,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         if (DacManager.TryLoad(out var dacManager))
         {
             _dacManager = dacManager;
+        }
+
+        // Honor DOTNET_GCHeapHardLimit as a cap on committed region bytes (SPEC-M2 §9)
+        fixed (byte* privateKey = "GCHeapHardLimit"u8)
+        fixed (byte* publicKey = "System.GC.HeapHardLimit"u8)
+        {
+            if (_gcToClr.GetIntConfigValue(privateKey, publicKey, out var hardLimit) && hardLimit > 0)
+            {
+                Write($"Heap hard limit: {hardLimit}");
+                _regionAllocator.SetHardLimit(hardLimit);
+            }
         }
 
         var parameters = new WriteBarrierParameters
@@ -118,6 +131,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             // DumpHeap();
 
+            // SPEC-M2 §8.3: the heap converges to ≈ 2× live
+            _allocatedSinceGC = 0;
+            _budget = Math.Max(Region.MinGCBudget, _lastLiveBytes);
+
             Interlocked.Increment(ref _gcCount);
 
             _gcToClr.RestartEE(finishedGC: true);
@@ -160,21 +177,70 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)
     {
-        // The EE only calls this when [alloc_ptr, alloc_limit) can't fit the request.
-        // Three tiers per SPEC-M2 §4; the direct tiers leave the caller's context alone
-        // (it may still serve small allocations from its remaining window).
-        var obj = size <= Region.BumpMaxSize
-            ? AllocFromWindow(ref acontext, size)
-            : size + IntPtr.Size <= Region.SizeClassMaxSize
-                ? AllocBlock(ref acontext, size)
-                : AllocSpan(ref acontext, size);
+        var obj = AllocWithRetry(ref acontext, size);
 
         if (obj != null && flags.HasFlag(GC_ALLOC_FLAGS.GC_ALLOC_FINALIZE))
         {
-            RegisterForFinalization(0, obj);
+            if (!RegisterForFinalization(0, obj))
+            {
+                // Couldn't grow the finalization queue: surface as OOM (SPEC-M2 §9.1).
+                // The object has no MethodTable yet (the EE writes it after we return), so
+                // plug its extent from the requested size to keep the heap walkable.
+                AllocateFreeObject((nint)obj, (uint)(Align(size) - SizeOfObject));
+                return null;
+            }
         }
 
         return obj;
+    }
+
+    /// <summary>
+    /// The collect-and-retry protocol (SPEC-M2 §8.3 + §9.1): one budget-triggered collection
+    /// per call at most, then one forced collection between the first genuine allocation
+    /// failure and surrendering with null (the EE turns null into OutOfMemoryException).
+    /// </summary>
+    private GCObject* AllocWithRetry(ref gc_alloc_context acontext, nint size)
+    {
+        var budgetChecked = false;
+        var collectedForOom = false;
+
+        while (true)
+        {
+            var snapshot = Volatile.Read(ref _gcCount);
+
+            if (!budgetChecked)
+            {
+                budgetChecked = true;
+
+                // Reads outside the alloc lock are approximate; the trigger doesn't care
+                if (_allocatedSinceGC > _budget)
+                {
+                    Collect(snapshot);
+                    continue;
+                }
+            }
+
+            // Three tiers per SPEC-M2 §4; the direct tiers leave the caller's context
+            // alone (it may still serve small allocations from its remaining window)
+            var obj = size <= Region.BumpMaxSize
+                ? AllocFromWindow(ref acontext, size)
+                : size + IntPtr.Size <= Region.SizeClassMaxSize
+                    ? AllocBlock(ref acontext, size)
+                    : AllocSpan(ref acontext, size);
+
+            if (obj != null)
+            {
+                return obj;
+            }
+
+            if (collectedForOom)
+            {
+                return null;
+            }
+
+            collectedForOom = true;
+            Collect(snapshot);
+        }
     }
 
     private GCObject* AllocFromWindow(ref gc_alloc_context acontext, nint size)

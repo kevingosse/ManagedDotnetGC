@@ -58,9 +58,18 @@ unsafe partial class GCHeap
         {
             if (_finalizationQueueCount >= _finalizationQueue.Length)
             {
-                var newQueue = new GCObject*[_finalizationQueue.Length * 2];
-                Array.Copy(_finalizationQueue, newQueue, _finalizationQueue.Length);
-                _finalizationQueue = newQueue;
+                try
+                {
+                    var newQueue = new GCObject*[_finalizationQueue.Length * 2];
+                    Array.Copy(_finalizationQueue, newQueue, _finalizationQueue.Length);
+                    _finalizationQueue = newQueue;
+                }
+                catch (OutOfMemoryException)
+                {
+                    // The EE turns false into a managed OutOfMemoryException; an exception
+                    // escaping this UnmanagedCallersOnly frame would be a fail-fast (§9)
+                    return false;
+                }
             }
 
             _finalizationQueue[_finalizationQueueCount++] = obj;

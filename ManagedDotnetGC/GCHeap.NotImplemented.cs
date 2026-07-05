@@ -140,8 +140,10 @@ unsafe partial class GCHeap
 
     public void SetYieldProcessorScalingFactor(float yieldProcessorScalingFactor)
     {
+        // The EE publishes its yield-processor normalization measurement here whenever
+        // suspension activity makes it re-measure — reachable as soon as the GC triggers
+        // collections on its own. Nothing to do for this GC (missing-features 6.x: no-op).
         Write("SetYieldProcessorScalingFactor");
-        throw new NotImplementedException();
     }
 
     public void PublishObject(IntPtr obj)

@@ -29,6 +29,12 @@ internal unsafe class RegionAllocator
     // Head of the intrusive list of bump regions with linked holes (via NextRecycled)
     private int _recycledHead = -1;
 
+    // Set once at startup, needed to write plugs when carving holes and sweeping
+    private MethodTable* _freeObjectMethodTable;
+
+    // DOTNET_GCHeapHardLimit: cap on committed region bytes, 0 = none
+    private long _hardLimit;
+
     // Committed bytes currently sitting in the free pool (drives the retention trim)
     private long _pooledCommittedBytes;
 
@@ -49,6 +55,12 @@ internal unsafe class RegionAllocator
 
         _classHeads.AsSpan().Fill(-1);
     }
+
+    public void SetFreeObjectMethodTable(MethodTable* methodTable) => _freeObjectMethodTable = methodTable;
+
+    public void SetHardLimit(long limit) => _hardLimit = limit;
+
+    private bool CanCommit(nint bytes) => _hardLimit == 0 || CommittedRegionBytes + bytes <= _hardLimit;
 
     public static int BlockCount(int sizeClass) => (int)(Region.Size / Region.ClassSizes[sizeClass]);
 
@@ -84,6 +96,12 @@ internal unsafe class RegionAllocator
     public bool TryGetWindow(nint size, out nint window, out nint length)
     {
         var needed = Align(size) + 3 * IntPtr.Size;
+
+        // Hole-first policy (SPEC-M2 §4.1): reuse swept holes before touching fresh memory
+        if (TryCarveFromHoles(needed, out window, out length))
+        {
+            return true;
+        }
 
         while (true)
         {
@@ -123,6 +141,101 @@ internal unsafe class RegionAllocator
 
             _activeBump = index;
         }
+    }
+
+    /// <summary>
+    /// Carves a window from the first hole that fits, per SPEC-M2 §4.4. A hole is a linked
+    /// free-object plug in a swept bump region: extent [ref - 8, ref + 16 + Length).
+    /// </summary>
+    private bool TryCarveFromHoles(nint needed, out nint window, out nint length)
+    {
+        window = 0;
+        length = 0;
+
+        var regionIndex = _recycledHead;
+        var previousRegion = -1;
+
+        while (regionIndex >= 0)
+        {
+            var entry = GetEntry(regionIndex);
+
+            var holeRef = entry->FirstHole;
+            nint previousHoleRef = 0;
+
+            while (holeRef != 0)
+            {
+                var plug = (GCObject*)holeRef;
+                var extent = (nint)plug->Length + 3 * IntPtr.Size;
+                var next = *(nint*)(holeRef + 2 * IntPtr.Size);
+
+                if (extent >= needed)
+                {
+                    window = holeRef - IntPtr.Size;
+
+                    length = Math.Min(Math.Max(Region.WindowSize, needed), extent);
+
+                    if (extent - length < 6 * IntPtr.Size)
+                    {
+                        // A remainder too small to re-plug-and-link must not be left behind
+                        length = extent;
+                    }
+
+                    // Unlink the hole
+                    if (previousHoleRef == 0)
+                    {
+                        entry->FirstHole = next;
+                    }
+                    else
+                    {
+                        *(nint*)(previousHoleRef + 2 * IntPtr.Size) = next;
+                    }
+
+                    entry->HoleBytes -= (int)extent;
+
+                    // Erase the plug header and link word; the rest of the hole body is
+                    // already zero, so the window hands out zeroed memory
+                    ZeroMemory(window, 4 * IntPtr.Size);
+
+                    if (length < extent)
+                    {
+                        // Re-plug the remainder and link it back (its bytes are still zero)
+                        var remainderStart = window + length;
+                        var remainder = (GCObject*)(remainderStart + IntPtr.Size);
+                        remainder->RawMethodTable = _freeObjectMethodTable;
+                        remainder->Length = (uint)(extent - length - 3 * IntPtr.Size);
+
+                        *(nint*)(remainderStart + 3 * IntPtr.Size) = entry->FirstHole;
+                        entry->FirstHole = remainderStart + IntPtr.Size;
+                        entry->HoleBytes += (int)(extent - length);
+                    }
+
+                    if (entry->FirstHole == 0)
+                    {
+                        // No holes left: unlink the region from the recycled list
+                        if (previousRegion < 0)
+                        {
+                            _recycledHead = entry->NextRecycled;
+                        }
+                        else
+                        {
+                            GetEntry(previousRegion)->NextRecycled = entry->NextRecycled;
+                        }
+
+                        entry->NextRecycled = -1;
+                    }
+
+                    return true;
+                }
+
+                previousHoleRef = holeRef;
+                holeRef = next;
+            }
+
+            previousRegion = regionIndex;
+            regionIndex = entry->NextRecycled;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -194,7 +307,7 @@ internal unsafe class RegionAllocator
 
             start = _frontier;
 
-            if (!_memory.TryCommit(RegionBase(start), (nint)count << Region.Shift))
+            if (!CanCommit((nint)count << Region.Shift) || !_memory.TryCommit(RegionBase(start), (nint)count << Region.Shift))
             {
                 return false;
             }
@@ -266,7 +379,7 @@ internal unsafe class RegionAllocator
 
             if (entry->IsCommitted == 0)
             {
-                if (!_memory.TryCommit(RegionBase(start + i), Region.Size))
+                if (!CanCommit(Region.Size) || !_memory.TryCommit(RegionBase(start + i), Region.Size))
                 {
                     return false;
                 }
@@ -311,7 +424,7 @@ internal unsafe class RegionAllocator
             }
             else
             {
-                if (!_memory.TryCommit(RegionBase(index), Region.Size))
+                if (!CanCommit(Region.Size) || !_memory.TryCommit(RegionBase(index), Region.Size))
                 {
                     _poolCount++; // put it back
                     return false;
@@ -327,6 +440,7 @@ internal unsafe class RegionAllocator
         index = _frontier;
 
         if (index >= Region.Count
+            || !CanCommit(Region.Size)
             || !EnsureTableCommitted(index + 1)
             || !_memory.TryCommit(RegionBase(index), Region.Size))
         {
@@ -343,7 +457,7 @@ internal unsafe class RegionAllocator
     /// Sweeps every carved region (SPEC-M2 §7). Runs under STW after marking and takes no
     /// locks (see GcAwareLock for why that is safe). Returns total live bytes.
     /// </summary>
-    public long Sweep(MethodTable* freeObjectMethodTable)
+    public long Sweep()
     {
         long liveTotal = 0;
 
@@ -366,7 +480,7 @@ internal unsafe class RegionAllocator
                     else
                     {
                         liveTotal += entry->LiveBytes;
-                        SweepBumpRegion(i, freeObjectMethodTable);
+                        SweepBumpRegion(i);
                     }
                     break;
 
@@ -410,7 +524,7 @@ internal unsafe class RegionAllocator
         MakeFree(index);
     }
 
-    private void SweepBumpRegion(int index, MethodTable* freeObjectMethodTable)
+    private void SweepBumpRegion(int index)
     {
         var entry = GetEntry(index);
 
@@ -432,7 +546,7 @@ internal unsafe class RegionAllocator
                 if (deadStart != 0)
                 {
                     // The extent ends at the live object's pre-header slot (SPEC-M2 §3)
-                    ClosePlug(entry, deadStart, ptr - IntPtr.Size, freeObjectMethodTable);
+                    ClosePlug(entry, deadStart, ptr - IntPtr.Size);
                     deadStart = 0;
                 }
             }
@@ -447,7 +561,7 @@ internal unsafe class RegionAllocator
 
         if (deadStart != 0)
         {
-            ClosePlug(entry, deadStart, end, freeObjectMethodTable);
+            ClosePlug(entry, deadStart, end);
         }
 
         if (entry->FirstHole != 0)
@@ -463,14 +577,14 @@ internal unsafe class RegionAllocator
     /// Zeroes a dead extent [start, end), writes the free-object plug over it, and links it
     /// as a carveable hole when big enough (SPEC-M2 §7.1).
     /// </summary>
-    private void ClosePlug(RegionEntry* entry, nint start, nint end, MethodTable* freeObjectMethodTable)
+    private void ClosePlug(RegionEntry* entry, nint start, nint end)
     {
         var extent = end - start;
 
         ZeroMemory(start, extent);
 
         var plug = (GCObject*)(start + IntPtr.Size);
-        plug->RawMethodTable = freeObjectMethodTable;
+        plug->RawMethodTable = _freeObjectMethodTable;
         plug->Length = (uint)(extent - 3 * IntPtr.Size);
 
         if (extent >= Region.MinLinkedHole)

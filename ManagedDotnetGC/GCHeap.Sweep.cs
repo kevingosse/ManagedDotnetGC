@@ -4,7 +4,7 @@ unsafe partial class GCHeap
 {
     private void SweepPhase()
     {
-        _lastLiveBytes = _regionAllocator.Sweep(_freeObjectMethodTable);
+        _lastLiveBytes = _regionAllocator.Sweep();
     }
 
     private void ClearHandles(ReadOnlySpan<HandleType> handleTypes)
