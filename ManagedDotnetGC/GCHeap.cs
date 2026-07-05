@@ -25,6 +25,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private readonly GcAwareLock _allocLock;
     private readonly GcAwareLock _gcLock;
     private long _allocatedSinceGC;
+    private long _lastLiveBytes;
 
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();

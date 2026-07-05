@@ -26,6 +26,12 @@ internal unsafe class RegionAllocator
     // Head of the intrusive list of regions with free blocks, per size class
     private readonly int[] _classHeads = new int[Region.ClassCount];
 
+    // Head of the intrusive list of bump regions with linked holes (via NextRecycled)
+    private int _recycledHead = -1;
+
+    // Committed bytes currently sitting in the free pool (drives the retention trim)
+    private long _pooledCommittedBytes;
+
     public RegionAllocator(NativeAllocator memory)
     {
         _memory = memory;
@@ -171,28 +177,36 @@ internal unsafe class RegionAllocator
     }
 
     /// <summary>
-    /// Allocates a span of contiguous regions for a single large object (SPEC-M2 §4.3).
+    /// Allocates a span of contiguous regions for a single large object (SPEC-M2 §4.3):
+    /// first a contiguous run of pooled free regions, else the frontier (contiguous by
+    /// construction).
     /// </summary>
     public bool TryAllocSpan(int count, out nint spanBase)
     {
-        // Frontier runs are contiguous by construction. TODO(S5): scan the pool for a
-        // contiguous run first, so recycled spans get reused.
         spanBase = 0;
 
-        if (_frontier + count > Region.Count || !EnsureTableCommitted(_frontier + count))
+        if (!TryTakeFreeRun(count, out var start))
         {
-            return false;
+            if (_frontier + count > Region.Count || !EnsureTableCommitted(_frontier + count))
+            {
+                return false;
+            }
+
+            start = _frontier;
+
+            if (!_memory.TryCommit(RegionBase(start), (nint)count << Region.Shift))
+            {
+                return false;
+            }
+
+            CommittedRegionBytes += (long)count << Region.Shift;
+            _frontier = start + count;
+
+            for (int i = 0; i < count; i++)
+            {
+                GetEntry(start + i)->IsCommitted = 1;
+            }
         }
-
-        var start = _frontier;
-        var startBase = RegionBase(start);
-
-        if (!_memory.TryCommit(startBase, (nint)count << Region.Shift))
-        {
-            return false;
-        }
-
-        CommittedRegionBytes += (long)count << Region.Shift;
 
         var startEntry = GetEntry(start);
         startEntry->Kind = RegionKind.SpanStart;
@@ -207,9 +221,81 @@ internal unsafe class RegionAllocator
             entry->SpanStartIndex = start;
         }
 
-        _frontier = start + count;
-        spanBase = startBase;
+        spanBase = RegionBase(start);
         return true;
+    }
+
+    /// <summary>
+    /// Finds a contiguous run of pooled free regions, commits any decommitted member, and
+    /// removes the run from the pool. Every Free region is in the pool, so a run of Free
+    /// table entries is a run of pool members.
+    /// </summary>
+    private bool TryTakeFreeRun(int count, out int start)
+    {
+        start = -1;
+
+        if (_poolCount < count)
+        {
+            return false;
+        }
+
+        var runLength = 0;
+
+        for (int i = 0; i < _frontier; i++)
+        {
+            if (GetEntry(i)->Kind != RegionKind.Free)
+            {
+                runLength = 0;
+            }
+            else if (++runLength >= count)
+            {
+                start = i - count + 1;
+                break;
+            }
+        }
+
+        if (start < 0)
+        {
+            return false;
+        }
+
+        // Commit any decommitted member first: a failure here leaves the pool intact
+        for (int i = 0; i < count; i++)
+        {
+            var entry = GetEntry(start + i);
+
+            if (entry->IsCommitted == 0)
+            {
+                if (!_memory.TryCommit(RegionBase(start + i), Region.Size))
+                {
+                    return false;
+                }
+
+                entry->IsCommitted = 1;
+                CommittedRegionBytes += Region.Size;
+                _pooledCommittedBytes += Region.Size;
+            }
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            RemoveFromPool(start + i);
+            _pooledCommittedBytes -= Region.Size;
+        }
+
+        return true;
+    }
+
+    private void RemoveFromPool(int index)
+    {
+        for (int i = 0; i < _poolCount; i++)
+        {
+            if (_pool[i] == index)
+            {
+                _pool[i] = _pool[--_poolCount];
+                return;
+            }
+        }
     }
 
     private bool TryCarveRegion(out int index)
@@ -219,7 +305,11 @@ internal unsafe class RegionAllocator
             index = _pool[--_poolCount];
             var entry = GetEntry(index);
 
-            if (entry->IsCommitted == 0)
+            if (entry->IsCommitted != 0)
+            {
+                _pooledCommittedBytes -= Region.Size;
+            }
+            else
             {
                 if (!_memory.TryCommit(RegionBase(index), Region.Size))
                 {
@@ -243,9 +333,271 @@ internal unsafe class RegionAllocator
             return false;
         }
 
+        GetEntry(index)->IsCommitted = 1;
         CommittedRegionBytes += Region.Size;
         _frontier = index + 1;
         return true;
+    }
+
+    /// <summary>
+    /// Sweeps every carved region (SPEC-M2 §7). Runs under STW after marking and takes no
+    /// locks (see GcAwareLock for why that is safe). Returns total live bytes.
+    /// </summary>
+    public long Sweep(MethodTable* freeObjectMethodTable)
+    {
+        long liveTotal = 0;
+
+        // Hole lists and class lists are rebuilt from scratch on every sweep
+        _recycledHead = -1;
+        _classHeads.AsSpan().Fill(-1);
+
+        for (int i = 0; i < _frontier; i++)
+        {
+            var entry = GetEntry(i);
+
+            switch (entry->Kind)
+            {
+                case RegionKind.Bump:
+                    if (entry->LiveBytes == 0)
+                    {
+                        // The wholesale-recycle path: no per-object work (SPEC-M2 §7.1)
+                        RecycleBumpRegion(i);
+                    }
+                    else
+                    {
+                        liveTotal += entry->LiveBytes;
+                        SweepBumpRegion(i, freeObjectMethodTable);
+                    }
+                    break;
+
+                case RegionKind.SizeClass:
+                    liveTotal += entry->LiveBytes;
+                    SweepSizeClassRegion(i);
+                    break;
+
+                case RegionKind.SpanStart:
+                    if (entry->LiveBytes == 0)
+                    {
+                        RecycleSpan(i);
+                    }
+                    else
+                    {
+                        liveTotal += entry->LiveBytes;
+                        entry->LiveBytes = 0;
+                    }
+                    break;
+            }
+        }
+
+        TrimPool(liveTotal);
+
+        return liveTotal;
+    }
+
+    private void RecycleBumpRegion(int index)
+    {
+        var entry = GetEntry(index);
+        var regionBase = RegionBase(index);
+
+        // Only [base, Cursor) was ever written; the tail is still virgin zero
+        ZeroMemory(regionBase, entry->Cursor - regionBase);
+
+        if (_activeBump == index)
+        {
+            _activeBump = -1;
+        }
+
+        MakeFree(index);
+    }
+
+    private void SweepBumpRegion(int index, MethodTable* freeObjectMethodTable)
+    {
+        var entry = GetEntry(index);
+
+        entry->FirstHole = 0;
+        entry->HoleBytes = 0;
+        entry->NextRecycled = -1;
+
+        var ptr = RegionBase(index) + IntPtr.Size;
+        var end = entry->Cursor;
+        nint deadStart = 0;
+
+        while (ptr < end)
+        {
+            var obj = (GCObject*)ptr;
+            var next = Align(ptr + (nint)obj->ComputeSize());
+
+            if (obj->IsMarked())
+            {
+                if (deadStart != 0)
+                {
+                    // The extent ends at the live object's pre-header slot (SPEC-M2 §3)
+                    ClosePlug(entry, deadStart, ptr - IntPtr.Size, freeObjectMethodTable);
+                    deadStart = 0;
+                }
+            }
+            else if (deadStart == 0)
+            {
+                // Free plugs are never marked, so they coalesce into the extent for free
+                deadStart = ptr - IntPtr.Size;
+            }
+
+            ptr = next;
+        }
+
+        if (deadStart != 0)
+        {
+            ClosePlug(entry, deadStart, end, freeObjectMethodTable);
+        }
+
+        if (entry->FirstHole != 0)
+        {
+            entry->NextRecycled = _recycledHead;
+            _recycledHead = index;
+        }
+
+        entry->LiveBytes = 0;
+    }
+
+    /// <summary>
+    /// Zeroes a dead extent [start, end), writes the free-object plug over it, and links it
+    /// as a carveable hole when big enough (SPEC-M2 §7.1).
+    /// </summary>
+    private void ClosePlug(RegionEntry* entry, nint start, nint end, MethodTable* freeObjectMethodTable)
+    {
+        var extent = end - start;
+
+        ZeroMemory(start, extent);
+
+        var plug = (GCObject*)(start + IntPtr.Size);
+        plug->RawMethodTable = freeObjectMethodTable;
+        plug->Length = (uint)(extent - 3 * IntPtr.Size);
+
+        if (extent >= Region.MinLinkedHole)
+        {
+            // The link lives in the plug's dead body, at ref + 16 (SPEC-M2 §4.4)
+            *(nint*)(start + 3 * IntPtr.Size) = entry->FirstHole;
+            entry->FirstHole = start + IntPtr.Size;
+            entry->HoleBytes += (int)extent;
+        }
+    }
+
+    private void SweepSizeClassRegion(int index)
+    {
+        var entry = GetEntry(index);
+        var regionBase = RegionBase(index);
+        var sizeClass = entry->SizeClass;
+        var classSize = Region.ClassSizes[sizeClass];
+
+        var bitmap = entry->AllocatedBlocks;
+
+        while (bitmap != 0)
+        {
+            var bit = BitOperations.TrailingZeroCount(bitmap);
+            bitmap &= bitmap - 1;
+
+            var blockBase = regionBase + (nint)bit * classSize;
+            var obj = (GCObject*)(blockBase + IntPtr.Size);
+
+            if (!obj->IsMarked())
+            {
+                // Re-establish Invariant P: only the object's extent was ever dirtied
+                ZeroMemory(blockBase, IntPtr.Size + Align((nint)obj->ComputeSize()));
+                entry->AllocatedBlocks &= ~(1ul << bit);
+            }
+        }
+
+        entry->LiveBytes = 0;
+
+        var fullMask = FullMask(sizeClass);
+
+        if (entry->AllocatedBlocks == 0)
+        {
+            MakeFree(index); // every block was zeroed as it died
+        }
+        else if ((entry->AllocatedBlocks & fullMask) != fullMask)
+        {
+            entry->NextInClassList = _classHeads[sizeClass];
+            _classHeads[sizeClass] = index;
+        }
+        else
+        {
+            entry->NextInClassList = -1;
+        }
+    }
+
+    private void RecycleSpan(int index)
+    {
+        var entry = GetEntry(index);
+        var count = entry->SpanCount;
+        var spanBase = RegionBase(index);
+        var spanBytes = (nint)count << Region.Shift;
+
+        // Big spans: decommit — the OS re-zeroes lazily and we skip a giant memset
+        if (count >= 4 && _memory.Decommit(spanBase, spanBytes))
+        {
+            CommittedRegionBytes -= spanBytes;
+
+            for (int i = 0; i < count; i++)
+            {
+                GetEntry(index + i)->IsCommitted = 0;
+            }
+        }
+        else
+        {
+            ZeroMemory(spanBase, spanBytes);
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            MakeFree(index + i);
+        }
+    }
+
+    private void MakeFree(int index)
+    {
+        var entry = GetEntry(index);
+        entry->Kind = RegionKind.Free;
+        entry->LiveBytes = 0;
+
+        _pool[_poolCount++] = index;
+
+        if (entry->IsCommitted != 0)
+        {
+            _pooledCommittedBytes += Region.Size;
+        }
+    }
+
+    /// <summary>
+    /// Shrinks the pool's committed slack to max(64 MB, live/4) by decommitting the oldest
+    /// (coldest) pool entries first (SPEC-M2 §7.4).
+    /// </summary>
+    private void TrimPool(long liveBytes)
+    {
+        var target = Math.Max(Region.MinGCBudget, liveBytes / 4);
+
+        for (int i = 0; i < _poolCount && _pooledCommittedBytes > target; i++)
+        {
+            var entry = GetEntry(_pool[i]);
+
+            if (entry->IsCommitted != 0 && _memory.Decommit(RegionBase(_pool[i]), Region.Size))
+            {
+                entry->IsCommitted = 0;
+                _pooledCommittedBytes -= Region.Size;
+                CommittedRegionBytes -= Region.Size;
+            }
+        }
+    }
+
+    private static void ZeroMemory(nint start, nint length)
+    {
+        while (length > 0)
+        {
+            var chunk = (int)Math.Min(length, int.MaxValue & ~7);
+            new Span<byte>((void*)start, chunk).Clear();
+            start += chunk;
+            length -= chunk;
+        }
     }
 
     private bool EnsureTableCommitted(int requiredEntries)
