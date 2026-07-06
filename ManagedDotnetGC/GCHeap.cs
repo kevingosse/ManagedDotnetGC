@@ -35,6 +35,9 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private long _liveAtLastFull;
     private long _promotedSinceFull;
 
+    // DOTNET_GCgen0size: latency knob capping the young allocation budget, 0 = uncapped
+    private long _youngBudgetCap;
+
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
     private uint _currentEpoch = 1;
@@ -81,6 +84,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             {
                 Write($"Heap hard limit: {hardLimit}");
                 _regionAllocator.SetHardLimit(hardLimit);
+            }
+        }
+
+        // Honor DOTNET_GCgen0size as the young-budget latency knob (see Collect)
+        fixed (byte* privateKey = "GCgen0size"u8)
+        fixed (byte* publicKey = "System.GC.Gen0Size"u8)
+        {
+            if (_gcToClr.GetIntConfigValue(privateKey, publicKey, out var gen0Size) && gen0Size > 0)
+            {
+                Write($"Young budget cap: {gen0Size}");
+                _youngBudgetCap = gen0Size;
             }
         }
 
@@ -232,9 +246,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             var tSwept = GcStats.Timestamp();
 
-            // SPEC-M2 §8.3: the heap converges to ≈ 2× live
+            // SPEC-M2 §8.3: the heap converges to ≈ 2× live. A configured gen0 size caps
+            // the young budget instead: young pauses scale with the nursery while total
+            // work per allocated byte does not, so DOTNET_GCgen0size trades throughput
+            // (~+12% wall on soh at live/4) for young pauses in proportion (73 → 25 ms p50)
             _allocatedSinceGC = 0;
             _budget = Region.ComputeBudget(_lastLiveBytes);
+
+            if (young && _youngBudgetCap > 0)
+            {
+                _budget = Math.Min(_budget, Math.Max(Region.MinGCBudget, _youngBudgetCap));
+            }
 
             // Retain a budget's worth of committed pool slack: the next cycle carves
             // exactly that much back out, so trimming lower is pure recommit churn

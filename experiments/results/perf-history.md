@@ -29,6 +29,7 @@ ratios are the archive's currency.
 | M1 complete (EE brackets, card/bundle tables, collectible mark edge, ref-counted scan) | `3c25f87` | 9.01 (3.20×) | 8.42 (2.77×) | 8.97 (2.72×) |
 | stock WKS reference (2026-07-06) | — | 2.00 | 2.23 | 1.98 |
 | M4 sticky generations (young GCs via cards, Reopened regions, 64 KB hole floor, zero-at-carve) | `5db0ed9` | 5.04 (2.52×) | 4.96 (2.23×) | 5.01 (2.53×) |
+| M4 + card-offset tables (card scan by dirty runs) | `5ab6a54` | 4.46 (2.23×) | 4.55 (2.04×) | 4.86 (2.45×)* | 
 
 `pinheavy` (same sitting): stock 2.92 s / **4.53 GB peak WS, 4.32 GB final heap**; M4
 4.92 s (1.69×) / 8.5 GB peak, **1.39 GB final**. Wall vs memory: see
@@ -63,6 +64,13 @@ ratios are the archive's currency.
   store). The remaining gap is walk-bound: card-scan and sweep walks of
   allocation-touched regions — card-offset tables and survivor packing are the M5/M7
   levers.
+- **Card-offset tables: soh 2.52× → 2.23×, card scan 2.60 s → 0.96 s.** One ushort per
+  card back-links to the nearest object start (rebuilt free inside sweep walks, stamped
+  at window carves); the card scan walks dirty runs only. `pin`'s median (*) had one
+  outlier iteration (5.97 s vs 4.44) — machine noise or full-GC alignment; re-measure
+  with the next step. `pinheavy` same sitting: 4.53 s (1.55×). Remaining young-pause
+  pools are now the sweep walk of allocation-touched regions and densely-dirty reopened
+  regions — parallelism (M5) is the next lever.
 
 ## How to add a step
 
