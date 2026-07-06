@@ -62,7 +62,14 @@ $env:DOTNET_gcConcurrent = '0'
 $env:DOTNET_gcConservative = '0'
 
 if (-not (Test-Path $csv)) {
-    'utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb' | Set-Content $csv
+    'utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb,avg_ws_mb' | Set-Content $csv
+}
+elseif ((Get-Content $csv -TotalCount 1) -notmatch 'avg_ws_mb') {
+    # avg_ws_mb added 2026-07-06 (memory is half the SVR-comparison story); older rows
+    # simply lack the trailing column
+    $lines = Get-Content $csv
+    $lines[0] += ',avg_ws_mb'
+    Set-Content $csv $lines
 }
 
 foreach ($name in $scenarios.Keys) {
@@ -76,8 +83,15 @@ foreach ($name in $scenarios.Keys) {
         $p = Start-Process -FilePath $exe -ArgumentList $scenarios[$name] -NoNewWindow -PassThru -RedirectStandardOutput $out
 
         $peak = 0
+        $wsSum = [long]0
+        $wsSamples = 0
         while (-not $p.HasExited) {
-            try { $p.Refresh(); if ($p.PeakWorkingSet64 -gt $peak) { $peak = $p.PeakWorkingSet64 } } catch {}
+            try {
+                $p.Refresh()
+                if ($p.PeakWorkingSet64 -gt $peak) { $peak = $p.PeakWorkingSet64 }
+                $wsSum += $p.WorkingSet64
+                $wsSamples++
+            } catch {}
             Start-Sleep -Milliseconds 50
         }
 
@@ -93,8 +107,10 @@ foreach ($name in $scenarios.Keys) {
         $wall = [math]::Round($sw.Elapsed.TotalSeconds, 3)
         $walls += $wall
 
-        "{0},{1},{2},{3},{4},{5},{6},{7},{8:F1},{9},{10:F1}" -f `
-            (Get-Date -AsUTC -Format s), $Sha, $Label, $name, $gcName, $i, $wall, $simS, ($peak / 1MB), $counts, $heapMb |
+        $avgWs = if ($wsSamples -gt 0) { $wsSum / $wsSamples / 1MB } else { -1 }
+
+        "{0},{1},{2},{3},{4},{5},{6},{7},{8:F1},{9},{10:F1},{11:F1}" -f `
+            (Get-Date -AsUTC -Format s), $Sha, $Label, $name, $gcName, $i, $wall, $simS, ($peak / 1MB), $counts, $heapMb, $avgWs |
             Add-Content $csv
     }
 

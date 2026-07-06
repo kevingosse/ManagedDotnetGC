@@ -19,6 +19,12 @@ Machine: AMD Ryzen 9 7950X3D (16C/32T), 96 GB RAM, Windows 11. Re-benchmark the 
 reference in the same sitting as any new step — absolute numbers drift with machine state;
 ratios are the archive's currency.
 
+**Memory is half the comparison** (rule added 2026-07-06 after the beat-WKS milestone):
+every step note must report peak and average working set alongside wall ratios — the CSV
+records `peak_ws_mb` and `avg_ws_mb` per iteration. This becomes non-negotiable for the
+Server-GC rows: SVR trades memory for throughput exactly like we do, so a wall-only table
+would flatter whichever collector wastes more.
+
 ## Median wall seconds (ratio vs same-day stock)
 
 | Step | Commit | soh | lohmix | pin |

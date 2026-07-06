@@ -1,4 +1,4 @@
-utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb
+utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb,avg_ws_mb
 2026-07-05T21:34:34,reference,stock,soh,stock-wks,1,2.809,2.7224465,1060.0,463/99/3,968.6
 2026-07-05T21:34:37,reference,stock,soh,stock-wks,2,2.816,2.7500484,1038.4,469/111/3,965.9
 2026-07-05T21:34:39,reference,stock,soh,stock-wks,3,2.848,2.7514164,1061.8,468/150/3,967.8
@@ -113,3 +113,4 @@ utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb
 2026-07-06T07:37:49,266284a,m5-parallel-cards,pinheavy,custom,1,1.881,1.8164563,8294.5,22/22/22,1384.2
 2026-07-06T07:37:51,266284a,m5-parallel-cards,pinheavy,custom,2,1.935,1.829293,8416.4,22/22/22,1388.8
 2026-07-06T07:37:53,266284a,m5-parallel-cards,pinheavy,custom,3,1.96,1.8707634,8550.4,22/22/22,1386.3
+2026-07-06T07:50:38,bd215d8,stock,soh,stock-wks,1,2.117,2.0116751,1058.0,466/88/3,968.4,775.9
