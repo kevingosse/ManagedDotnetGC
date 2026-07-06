@@ -35,6 +35,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private long _liveAtLastFull;
     private long _promotedSinceFull;
 
+    // The committed>8×live full trigger mutes itself when a full collection proves unable
+    // to get committed back under the line (scattered survivors pin regions open — a
+    // structural state on a non-moving heap, not reclaimable garbage). Left armed it fires
+    // on every subsequent collection: a permanent full-GC storm. It re-arms once committed
+    // grows a budget past what that impotent full could reach.
+    private bool _committedTriggerMuted;
+    private long _committedTriggerRearm;
+
     // DOTNET_GCgen0size: latency knob capping the young allocation budget, 0 = uncapped
     private long _youngBudgetCap;
 
@@ -44,6 +52,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private GcWorkerPool? _workerPool;
     private MarkStack[]? _cardScanStacks;
     private List<nint>[]? _cardScanDeferred;
+    private MarkShareQueue? _markShareQueue;
+
+    // Set while a buffered (parallel) full mark enumerates roots: ScanRoots accumulates
+    // instead of draining inline. Only touched on the GC thread during suspension.
+    private bool _bufferMarkRoots;
 
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
@@ -121,6 +134,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         if (participants > 1)
         {
             _workerPool = new GcWorkerPool(participants - 1);
+            _markShareQueue = new MarkShareQueue();
             _cardScanStacks = new MarkStack[participants];
             _cardScanDeferred = new List<nint>[participants];
 
@@ -219,11 +233,20 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             // The multiple is deliberately loose: a non-moving heap cannot pack scattered
             // survivors, so on hostile scatter committed legitimately sits at several
             // times live and a tight bound just degenerates every collection to full.
+            // When even a full pass can't get back under the line the trigger mutes
+            // (see _committedTriggerMuted) until the heap has actually grown since.
+            if (_committedTriggerMuted
+                && _regionAllocator.CommittedRegionBytes >= _committedTriggerRearm)
+            {
+                _committedTriggerMuted = false;
+            }
+
             var young = !requireFull
                 && !_regionAllocator.UnderMemoryPressure
                 && _promotedSinceFull < Math.Max(Region.MinGCBudget, _liveAtLastFull)
-                && _regionAllocator.CommittedRegionBytes
-                    < 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes);
+                && (_committedTriggerMuted
+                    || _regionAllocator.CommittedRegionBytes
+                        < 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes));
 
             // EE notifications get condemned = 0 for young collections (like a stock gen0:
             // skips the full-only EE work) and 2 for full ones, so JIT code-heap cleanup and
@@ -294,6 +317,16 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             // Retain a budget's worth of committed pool slack: the next cycle carves
             // exactly that much back out, so trimming lower is pure recommit churn
             _regionAllocator.TrimPool(_budget);
+
+            if (!young)
+            {
+                // Post-trim is the honest measure of what this full pass achieved: if
+                // committed still exceeds the trigger line, re-firing would only repeat
+                // this collection's work, so the trigger stands down until the heap grows
+                var committed = _regionAllocator.CommittedRegionBytes;
+                _committedTriggerMuted = committed >= 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes);
+                _committedTriggerRearm = committed + _budget;
+            }
 
             var gcNumber = _gcCount;
             Interlocked.Increment(ref _gcCount);
