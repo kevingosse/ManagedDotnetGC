@@ -16,6 +16,13 @@ unsafe partial class GCHeap
 
         NotifyBeforeGcScanRoots(condemned, isBgc: false, isConcurrent: false);
 
+        // Full marks trace the whole graph from a handful of fat entry points, so instead
+        // of draining inline per root (fine for young marks, whose tracing is mostly done
+        // by the parallel card scan) the strong roots accumulate on the GC thread's stack
+        // and the worker pool traces them together, sharing excess through the share queue.
+        var buffered = !young && _workerPool is not null;
+        _bufferMarkRoots = buffered;
+
         var t0 = GcStats.Timestamp();
 
         Write("Scan roots");
@@ -43,6 +50,17 @@ unsafe partial class GCHeap
         ScanHandles();
         ScanRefCountedHandles();
 
+        long drainTicks = 0;
+
+        if (buffered)
+        {
+            _bufferMarkRoots = false;
+
+            var tDrain = GcStats.Timestamp();
+            ParallelDrainMark();
+            drainTicks = GcStats.Timestamp() - tDrain;
+        }
+
         var t4 = GcStats.Timestamp();
 
         ScanDependentHandles();
@@ -66,10 +84,12 @@ unsafe partial class GCHeap
         if (GcStats.Enabled)
         {
             var t7 = GcStats.Timestamp();
-            GcStats.RootsTicks = t1 - t0;
+            // The parallel drain traces what root/handle enumeration buffered, so it counts
+            // as root marking even though it runs after the handle scans
+            GcStats.RootsTicks = t1 - t0 + drainTicks;
             GcStats.CardScanTicks = t2 - t1;
             GcStats.FReachableTicks = t3 - t2;
-            GcStats.HandleTicks = t4 - t3;
+            GcStats.HandleTicks = t4 - t3 - drainTicks;
             GcStats.DependentTicks = t5 - t4;
             GcStats.AfterScanTicks = t6 - t5;
             GcStats.WeakTicks = t7 - t6;
@@ -224,8 +244,110 @@ unsafe partial class GCHeap
 
         _markStack.Push((nint)root);
 
+        if (!_bufferMarkRoots)
+        {
+            DrainMarkStack(_markStack, deferredCollectible: null);
+        }
+    }
+
+    /// <summary>
+    /// Traces the strong roots a buffered full mark accumulated on <see cref="_markStack"/>
+    /// (M5). The roots are dealt round-robin to the participants' stacks, but that alone
+    /// cannot balance a full mark — a couple of stack slots typically own the entire live
+    /// graph — so drains donate excess to the share queue and idle workers take from it. A
+    /// participant that runs fully dry idles in the termination protocol: when every
+    /// participant is idle at once, no one holds work that could refill the queue, and the
+    /// phase is over.
+    /// </summary>
+    private void ParallelDrainMark()
+    {
+        var stacks = _cardScanStacks!;
+        var share = _markShareQueue!;
+        var participants = stacks.Length;
+
+        for (int i = 0; !_markStack.IsEmpty; i++)
+        {
+            stacks[i % participants].Push(_markStack.Pop());
+        }
+
+        var workerId = -1;
+        var idle = 0;
+
+        _workerPool!.Run(() =>
+        {
+            var id = Interlocked.Increment(ref workerId);
+            var stack = stacks[id];
+            var deferred = _cardScanDeferred![id];
+
+            while (true)
+            {
+                DrainMarkStack(stack, deferred, share);
+
+                if (share.TakeInto(stack, TakeChunk) > 0)
+                {
+                    continue;
+                }
+
+                Interlocked.Increment(ref idle);
+
+                var spin = new SpinWait();
+                var working = false;
+
+                while (!working)
+                {
+                    if (Volatile.Read(ref idle) == participants)
+                    {
+                        return;
+                    }
+
+                    if (!share.IsEmpty)
+                    {
+                        // Leave idle before taking so the termination check can't trip
+                        // while this worker holds work
+                        Interlocked.Decrement(ref idle);
+
+                        if (share.TakeInto(stack, TakeChunk) > 0)
+                        {
+                            working = true;
+                        }
+                        else
+                        {
+                            Interlocked.Increment(ref idle);
+                        }
+
+                        continue;
+                    }
+
+                    spin.SpinOnce();
+                }
+            }
+        });
+
+        // The deferred collectible edges call into the EE, so only the GC thread takes
+        // them; anything they reach traces inline (and further collectible edges too)
+        foreach (var deferred in _cardScanDeferred!)
+        {
+            foreach (var ptr in deferred)
+            {
+                var loaderAllocator = (GCObject*)_gcToClr.GetLoaderAllocatorObjectForGC((GCObject*)ptr);
+
+                if (loaderAllocator != null)
+                {
+                    _markStack.Push((nint)loaderAllocator);
+                }
+            }
+
+            deferred.Clear();
+        }
+
         DrainMarkStack(_markStack, deferredCollectible: null);
     }
+
+    // A drain donates the bottom half of its stack whenever it grows past the threshold,
+    // and idle workers refill in TakeChunk-sized bites: big enough to amortize the lock,
+    // small enough that the tail of the phase stays spread across participants.
+    private const int DonateThreshold = 4096;
+    private const int TakeChunk = 4096;
 
     /// <summary>
     /// The transitive trace: marks every unmarked reachable object on the stack. Entries
@@ -235,12 +357,18 @@ unsafe partial class GCHeap
     /// interlocked adds, and the one EE call in the loop — the collectible
     /// LoaderAllocator edge — is deferred to <paramref name="deferredCollectible"/> when
     /// set, because worker threads must never call into the EE. Pass null on the GC
-    /// thread to take the edge inline.
+    /// thread to take the edge inline. With <paramref name="share"/> set (parallel full
+    /// mark), excess work is donated for idle workers to take.
     /// </summary>
-    private void DrainMarkStack(MarkStack stack, List<nint>? deferredCollectible)
+    private void DrainMarkStack(MarkStack stack, List<nint>? deferredCollectible, MarkShareQueue? share = null)
     {
         while (!stack.IsEmpty)
         {
+            if (share is not null && stack.Count > DonateThreshold)
+            {
+                share.DonateFrom(stack, stack.Count / 2);
+            }
+
             var ptr = stack.Pop();
             var o = (GCObject*)ptr;
 

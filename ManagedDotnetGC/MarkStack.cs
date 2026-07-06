@@ -32,6 +32,8 @@ internal sealed unsafe class MarkStack
 
     public bool IsEmpty => _count == 0;
 
+    public long Count => _count;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Push(nint value)
     {
@@ -45,6 +47,20 @@ internal sealed unsafe class MarkStack
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public nint Pop() => _base[--_count];
+
+    /// <summary>
+    /// Removes the <paramref name="count"/> oldest entries into <paramref name="dest"/>,
+    /// for donating work to <see cref="MarkShareQueue"/>. The bottom of the stack holds the
+    /// coarsest subtrees (pushed nearest the roots), so donating from there hands stealers
+    /// large units of work while the owner keeps its cache-hot top. Only the owning worker
+    /// may call this.
+    /// </summary>
+    public void RemoveBottom(nint* dest, int count)
+    {
+        Buffer.MemoryCopy(_base, dest, count * sizeof(nint), count * sizeof(nint));
+        Buffer.MemoryCopy(_base + count, _base, (_count - count) * sizeof(nint), (_count - count) * sizeof(nint));
+        _count -= count;
+    }
 
     private void Grow()
     {
