@@ -13,7 +13,8 @@ internal unsafe class RegionAllocator : IDisposable
     private readonly RegionEntry* _table;
     private nint _tableCommittedEnd;
 
-    // LIFO stack of free region indices (fully zero or decommitted — Invariant P)
+    // LIFO stack of free region indices. Committed members hold stale recycled contents
+    // (M4 zero-at-carve): every tier zeroes what it hands out, outside the alloc lock
     private readonly int* _pool;
     private int _poolCount;
 
@@ -169,9 +170,18 @@ internal unsafe class RegionAllocator : IDisposable
         var needed = Align(size) + 3 * IntPtr.Size;
 
         // Hole-first policy (SPEC-M2 §4.1): reuse swept holes before touching fresh memory
-        if (TryCarveFromHoles(needed, out window, out length))
+        if (TryCarveFromHoles(needed, out window, out length, out needsZero))
         {
-            needsZero = true;
+            if (GcStats.Enabled)
+            {
+                GcStats.HoleWindowCount++;
+
+                if (!needsZero)
+                {
+                    GcStats.CleanWindowCount++;
+                }
+            }
+
             return true;
         }
 
@@ -195,7 +205,12 @@ internal unsafe class RegionAllocator : IDisposable
                     length = Math.Min(Math.Max(Region.WindowSize, needed), available);
                     window = entry->Cursor;
                     entry->Cursor += length;
-                    needsZero = entry->BumpIsDirty != 0;
+                    needsZero = (entry->BumpFlags & RegionEntry.BumpDirtyFlag) != 0;
+
+                    if (GcStats.Enabled && !needsZero)
+                    {
+                        GcStats.CleanWindowCount++;
+                    }
 
                     // Card offsets for the new window resolve to its first object (M4):
                     // beyond the last sweep's extent the table would otherwise be stale.
@@ -221,7 +236,7 @@ internal unsafe class RegionAllocator : IDisposable
 
             var fresh = GetEntry(index);
             fresh->Kind = RegionKind.Bump;
-            fresh->BumpIsDirty = dirty ? (byte)1 : (byte)0;
+            fresh->BumpFlags = dirty ? RegionEntry.BumpDirtyFlag : (byte)0;
             fresh->Age = RegionAge.Fresh;
             fresh->LiveBytes = 0;
             fresh->Cursor = RegionBase(index);
@@ -236,11 +251,15 @@ internal unsafe class RegionAllocator : IDisposable
     /// <summary>
     /// Carves a window from the first hole that fits, per SPEC-M2 §4.4. A hole is a linked
     /// free-object plug in a swept bump region: extent [ref - 8, ref + 16 + Length).
+    /// When the background zeroer pre-zeroed the region's hole bodies (M7), only the
+    /// 32-byte plug header + link prefix is stale — cleaned right here — and the window
+    /// goes out with no zeroing debt.
     /// </summary>
-    private bool TryCarveFromHoles(nint needed, out nint window, out nint length)
+    private bool TryCarveFromHoles(nint needed, out nint window, out nint length, out bool needsZero)
     {
         window = 0;
         length = 0;
+        needsZero = true;
 
         var regionIndex = _recycledHead;
         var previousRegion = -1;
@@ -317,6 +336,14 @@ internal unsafe class RegionAllocator : IDisposable
                     // interval runs one ref past the window so stamps tile gap-free.
                     WriteCardOffsets(regionIndex, window + IntPtr.Size, window + length + IntPtr.Size);
 
+                    if ((entry->BumpFlags & RegionEntry.HolesZeroedFlag) != 0)
+                    {
+                        // Pre-zeroed hole body (M7): only the plug's preheader, header and
+                        // link bytes at the window start are stale
+                        new Span<byte>((void*)window, 4 * IntPtr.Size).Clear();
+                        needsZero = false;
+                    }
+
                     if (entry->FirstHole == 0)
                     {
                         // No holes left: unlink the region from the recycled list
@@ -347,10 +374,12 @@ internal unsafe class RegionAllocator : IDisposable
     }
 
     /// <summary>
-    /// Allocates one block from a size-class region (SPEC-M2 §4.2). Block memory is fully
-    /// zero while free (Invariant P), so this writes nothing but the region-table bit.
+    /// Allocates one block from a size-class region (SPEC-M2 §4.2). When
+    /// <paramref name="needsZero"/> is true the block holds stale recycled contents and the
+    /// caller must zero the object extent before use — after releasing the allocation lock,
+    /// since the block is private to the caller from this point (M4 zero-at-carve).
     /// </summary>
-    public bool TryAllocBlock(int sizeClass, out nint block)
+    public bool TryAllocBlock(int sizeClass, out nint block, out bool needsZero)
     {
         var head = _classHeads[sizeClass];
 
@@ -359,14 +388,8 @@ internal unsafe class RegionAllocator : IDisposable
             if (!TryCarveRegion(out var index, out var dirty))
             {
                 block = 0;
+                needsZero = false;
                 return false;
-            }
-
-            if (dirty)
-            {
-                // The block tier keeps "free blocks are zero" (sweep re-zeroes dead
-                // blocks), so a recycled region must be cleaned once up front
-                ZeroMemory(RegionBase(index), Region.Size);
             }
 
             var fresh = GetEntry(index);
@@ -375,6 +398,7 @@ internal unsafe class RegionAllocator : IDisposable
             fresh->SizeClass = (byte)sizeClass;
             fresh->LiveBytes = 0;
             fresh->AllocatedBlocks = 0;
+            fresh->DirtyBlocks = dirty ? ulong.MaxValue : 0;
             fresh->NextInClassList = -1;
 
             _classHeads[sizeClass] = index;
@@ -394,6 +418,11 @@ internal unsafe class RegionAllocator : IDisposable
         // The head of a class list always has a free block: full regions are unlinked
         var i = BitOperations.TrailingZeroCount(~entry->AllocatedBlocks & fullMask);
         entry->AllocatedBlocks |= 1ul << i;
+
+        // Once handed out the block is dirty for every future tenant; dead blocks keep
+        // their contents (sweeps no longer zero), so the bit never clears
+        needsZero = (entry->DirtyBlocks & (1ul << i)) != 0;
+        entry->DirtyBlocks |= 1ul << i;
 
         if ((entry->AllocatedBlocks & fullMask) == fullMask)
         {
@@ -456,7 +485,7 @@ internal unsafe class RegionAllocator : IDisposable
             for (int i = 0; i < count; i++)
             {
                 var entry = GetEntry(start + i);
-                entry->IsCommitted = 1;
+                entry->IsCommitted = RegionEntry.CommitDirty;
                 entry->SpanIsDirty = 0; // freshly committed: OS-zeroed
             }
         }
@@ -497,7 +526,10 @@ internal unsafe class RegionAllocator : IDisposable
 
         for (int i = 0; i < _frontier; i++)
         {
-            if (GetEntry(i)->Kind != RegionKind.Free)
+            // A checked-out region is Free but not in the pool (the background zeroer
+            // owns its memory): taking it here would hand the span a region that is
+            // being memset concurrently
+            if (GetEntry(i)->Kind != RegionKind.Free || GetEntry(i)->ZeroerCheckedOut != 0)
             {
                 runLength = 0;
             }
@@ -521,22 +553,23 @@ internal unsafe class RegionAllocator : IDisposable
         {
             var entry = GetEntry(start + i);
 
-            if (entry->IsCommitted == 0)
+            if (entry->IsCommitted == RegionEntry.CommitNone)
             {
                 if (!CanCommit(Region.Size) || !_memory.TryCommit(RegionBase(start + i), Region.Size))
                 {
                     return false;
                 }
 
-                entry->IsCommitted = 1;
                 _committedRegionBytes += Region.Size;
                 _pooledCommittedBytes += Region.Size;
                 entry->SpanIsDirty = 0; // freshly committed: OS-zeroed
             }
             else
             {
-                entry->SpanIsDirty = 1;
+                entry->SpanIsDirty = entry->IsCommitted == RegionEntry.CommitDirty ? (byte)1 : (byte)0;
             }
+
+            entry->IsCommitted = RegionEntry.CommitDirty;
         }
 
         for (int i = 0; i < count; i++)
@@ -569,10 +602,12 @@ internal unsafe class RegionAllocator : IDisposable
             index = _pool[--_poolCount];
             var entry = GetEntry(index);
 
-            if (entry->IsCommitted != 0)
+            if (entry->IsCommitted != RegionEntry.CommitNone)
             {
-                // Recycled content is stale: sweeps no longer zero (M4 zero-at-carve)
-                dirty = true;
+                // Recycled content is stale (M4 zero-at-carve) unless the background
+                // zeroer got to it first (M7); either way its tenant dirties it now
+                dirty = entry->IsCommitted == RegionEntry.CommitDirty;
+                entry->IsCommitted = RegionEntry.CommitDirty;
                 _pooledCommittedBytes -= Region.Size;
             }
             else
@@ -583,7 +618,7 @@ internal unsafe class RegionAllocator : IDisposable
                     return false;
                 }
 
-                entry->IsCommitted = 1;
+                entry->IsCommitted = RegionEntry.CommitDirty;
                 _committedRegionBytes += Region.Size;
             }
 
@@ -600,7 +635,7 @@ internal unsafe class RegionAllocator : IDisposable
             return false;
         }
 
-        GetEntry(index)->IsCommitted = 1;
+        GetEntry(index)->IsCommitted = RegionEntry.CommitDirty;
         _committedRegionBytes += Region.Size;
         _frontier = index + 1;
         return true;
@@ -842,6 +877,9 @@ internal unsafe class RegionAllocator : IDisposable
         entry->HoleBytes = 0;
         entry->NextRecycled = -1;
 
+        // The rebuilt holes cover freshly dead objects: their bodies are dirty again
+        entry->BumpFlags &= unchecked((byte)~RegionEntry.HolesZeroedFlag);
+
         var ptr = RegionBase(index) + IntPtr.Size;
         var end = entry->Cursor;
         nint deadStart = 0;
@@ -930,13 +968,13 @@ internal unsafe class RegionAllocator : IDisposable
             var bit = BitOperations.TrailingZeroCount(bitmap);
             bitmap &= bitmap - 1;
 
-            var blockBase = regionBase + (nint)bit * classSize;
-            var obj = (GCObject*)(blockBase + IntPtr.Size);
+            var obj = (GCObject*)(regionBase + (nint)bit * classSize + IntPtr.Size);
 
             if (!obj->IsMarked())
             {
-                // Re-establish Invariant P: only the object's extent was ever dirtied
-                ZeroMemory(blockBase, IntPtr.Size + Align((nint)obj->ComputeSize()));
+                // Zero-at-carve (M4): the dead block keeps its stale contents (its
+                // DirtyBlocks bit is already set); nothing reads a block whose
+                // AllocatedBlocks bit is clear
                 entry->AllocatedBlocks &= ~(1ul << bit);
             }
         }
@@ -948,7 +986,7 @@ internal unsafe class RegionAllocator : IDisposable
 
         if (entry->AllocatedBlocks == 0)
         {
-            MakeFree(index); // every block was zeroed as it died
+            MakeFree(index); // stale contents stay; the next carve flags it dirty
         }
         else if ((entry->AllocatedBlocks & fullMask) != fullMask)
         {
@@ -975,7 +1013,7 @@ internal unsafe class RegionAllocator : IDisposable
 
             for (int i = 0; i < count; i++)
             {
-                GetEntry(index + i)->IsCommitted = 0;
+                GetEntry(index + i)->IsCommitted = RegionEntry.CommitNone;
             }
         }
 
@@ -991,15 +1029,156 @@ internal unsafe class RegionAllocator : IDisposable
         entry->Kind = RegionKind.Free;
         entry->LiveBytes = 0;
 
+        // The offset-8 union held a Cursor/bitmap from the region's last life; stale bits
+        // there would make the span run scan treat the region as checked out forever
+        entry->ZeroerCheckedOut = 0;
+
         // Lock-free push: parallel sweep workers free regions concurrently. Allocation
-        // never runs during a sweep (STW), so pushes only race with each other.
+        // never runs during a sweep (STW) and the zeroer gate is held by the collecting
+        // thread, so pushes only race with each other.
         var slot = Interlocked.Increment(ref _poolCount) - 1;
         _pool[slot] = index;
 
-        if (entry->IsCommitted != 0)
+        if (entry->IsCommitted != RegionEntry.CommitNone)
         {
             Interlocked.Add(ref _pooledCommittedBytes, Region.Size);
         }
+    }
+
+    /// <summary>The background zeroer's exclusion against STW pool mutation (M7): the
+    /// collecting thread holds this for the whole suspension (SuspendEE does not park the
+    /// zeroer — it is not an EE thread), and the zeroer holds it around every checkout and
+    /// checkin. Both sides do bounded work under it.</summary>
+    public Lock ZeroerGate { get; } = new();
+
+    private bool _collectorWaitingForGate;
+
+    /// <summary>True while a collection is trying to enter (or holds) the gate. The zeroer
+    /// polls this and stands down instead of re-entering — an unfair lock could otherwise
+    /// let a busy zeroer starve the pause start; the post-collection kick resumes it.</summary>
+    public bool CollectorWaitingForGate => Volatile.Read(ref _collectorWaitingForGate);
+
+    public void EnterGateForCollection()
+    {
+        Volatile.Write(ref _collectorWaitingForGate, true);
+        ZeroerGate.Enter();
+    }
+
+    public void ExitGateForCollection()
+    {
+        Volatile.Write(ref _collectorWaitingForGate, false);
+        ZeroerGate.Exit();
+    }
+
+    /// <summary>
+    /// Removes the topmost committed-dirty pool region and flags it checked out (M7): still
+    /// Kind Free, but owned by the zeroer — carves cannot pop it and the span run scan
+    /// skips it. Refuses when the pool is nearly empty or the heap is under memory
+    /// pressure, so checkouts never push an allocation to the frontier (or to a spurious
+    /// OOM collection) that the pool could have served. Caller must hold
+    /// <see cref="ZeroerGate"/> and the allocation lock.
+    /// </summary>
+    public bool TryCheckOutDirtyRegion(out int index, out nint regionBase)
+    {
+        index = 0;
+        regionBase = 0;
+
+        if (_poolCount <= 8 || UnderMemoryPressure)
+        {
+            return false;
+        }
+
+        // Top-down: LIFO carves consume the top first, so zeroing there pays off soonest;
+        // the pre-zeroed prefix the zeroer builds up is skipped on each pass
+        for (int i = _poolCount - 1; i >= 0; i--)
+        {
+            var entry = GetEntry(_pool[i]);
+
+            if (entry->IsCommitted == RegionEntry.CommitDirty)
+            {
+                index = _pool[i];
+                _pool[i] = _pool[--_poolCount];
+                entry->ZeroerCheckedOut = 1;
+                _pooledCommittedBytes -= Region.Size;
+                regionBase = RegionBase(index);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Returns a checked-out region to the pool top, pre-zeroed: the next carve
+    /// hands its memory out with no zeroing debt. Caller must hold <see cref="ZeroerGate"/>
+    /// and the allocation lock.</summary>
+    public void CheckInZeroedRegion(int index)
+    {
+        var entry = GetEntry(index);
+        entry->ZeroerCheckedOut = 0;
+        entry->IsCommitted = RegionEntry.CommitZeroed;
+        _pool[_poolCount++] = index;
+        _pooledCommittedBytes += Region.Size;
+    }
+
+    /// <summary>
+    /// Unlinks the first recycled region whose hole bodies are still dirty (M7): out of the
+    /// recycled list, its holes are unreachable to carves, while window carves of its virgin
+    /// tail (it may be the active bump region) touch disjoint memory and fields. Unlike pool
+    /// checkouts this must not straddle a collection — the sweep rebuilds the recycled list
+    /// and walks hole memory — so the zeroer holds <see cref="ZeroerGate"/> from here through
+    /// <see cref="CheckInZeroedHoleRegion"/>. Caller must also hold the allocation lock.
+    /// </summary>
+    public bool TryCheckOutDirtyHoleRegion(out int index)
+    {
+        var previous = -1;
+
+        for (index = _recycledHead; index >= 0; index = GetEntry(index)->NextRecycled)
+        {
+            var entry = GetEntry(index);
+
+            if ((entry->BumpFlags & RegionEntry.HolesZeroedFlag) == 0)
+            {
+                if (previous < 0)
+                {
+                    _recycledHead = entry->NextRecycled;
+                }
+                else
+                {
+                    GetEntry(previous)->NextRecycled = entry->NextRecycled;
+                }
+
+                entry->NextRecycled = -1;
+                return true;
+            }
+
+            previous = index;
+        }
+
+        return false;
+    }
+
+    /// <summary>Zeroes every linked hole's body in a checked-out region, preserving the
+    /// 32-byte prefix each carve expects: preheader slot, plug header and next-hole link.
+    /// Called with <see cref="ZeroerGate"/> held but not the allocation lock — the list is
+    /// frozen (unlinked from carves, and no sweep can start while the gate is held).</summary>
+    public void ZeroCheckedOutHoleBodies(int index)
+    {
+        for (var holeRef = GetEntry(index)->FirstHole; holeRef != 0; holeRef = *(nint*)(holeRef + 2 * IntPtr.Size))
+        {
+            // Hole extent is [ref - 8, ref + 16 + Length); the body starts after the link
+            ZeroMemory(holeRef + 3 * IntPtr.Size, (nint)((GCObject*)holeRef)->Length - IntPtr.Size);
+        }
+    }
+
+    /// <summary>Relinks a checked-out hole region at the recycled-list head with its holes
+    /// flagged pre-zeroed. Caller must hold <see cref="ZeroerGate"/> (continuously since the
+    /// checkout) and the allocation lock.</summary>
+    public void CheckInZeroedHoleRegion(int index)
+    {
+        var entry = GetEntry(index);
+        entry->BumpFlags |= RegionEntry.HolesZeroedFlag;
+        entry->NextRecycled = _recycledHead;
+        _recycledHead = index;
     }
 
     /// <summary>
@@ -1015,18 +1194,19 @@ internal unsafe class RegionAllocator : IDisposable
         {
             var entry = GetEntry(_pool[i]);
 
-            if (entry->IsCommitted != 0 && _memory.Decommit(RegionBase(_pool[i]), Region.Size))
+            if (entry->IsCommitted != RegionEntry.CommitNone && _memory.Decommit(RegionBase(_pool[i]), Region.Size))
             {
-                entry->IsCommitted = 0;
+                entry->IsCommitted = RegionEntry.CommitNone;
                 _pooledCommittedBytes -= Region.Size;
                 _committedRegionBytes -= Region.Size;
             }
         }
     }
 
-    /// <summary>Zeroes a recycled window before first use (M4 zero-at-carve). Called by
-    /// the allocation path after releasing the allocation lock: the window is private to
-    /// the requesting thread by then, and concurrent windows zero in parallel.</summary>
+    /// <summary>Zeroes a recycled window or block extent before first use (M4
+    /// zero-at-carve). Called by the allocation path after releasing the allocation lock:
+    /// the memory is private to the requesting thread by then, and concurrent carves zero
+    /// in parallel.</summary>
     public static void ZeroWindow(nint window, nint length) => ZeroMemory(window, length);
 
     /// <summary>

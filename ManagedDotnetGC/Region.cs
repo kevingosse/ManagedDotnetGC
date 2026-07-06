@@ -99,14 +99,26 @@ internal enum RegionAge : byte
 [StructLayout(LayoutKind.Explicit, Size = 32)]
 internal struct RegionEntry
 {
+    // IsCommitted states. In-use regions always sit at CommitDirty; the dirty/zeroed
+    // distinction only matters while a region is pooled (Kind == Free).
+    public const byte CommitNone = 0;   // decommitted: the OS re-zeroes on recommit
+    public const byte CommitDirty = 1;  // committed with stale contents (M4 zero-at-carve)
+    public const byte CommitZeroed = 2; // committed and pre-zeroed by the background zeroer (M7)
+
+    // BumpFlags bits
+    public const byte BumpDirtyFlag = 1;   // recycled without zeroing: windows must be
+                                           // zeroed at carve (M4)
+    public const byte HolesZeroedFlag = 2; // every linked hole's body is zero (M7 background
+                                           // zeroer): hole carves only clean the 32-byte
+                                           // plug header + link prefix
+
     [FieldOffset(0)] public RegionKind Kind;
     [FieldOffset(1)] public byte SizeClass;        // SizeClass only
-    [FieldOffset(1)] public byte BumpIsDirty;      // Bump only: 1 = recycled without zeroing,
-                                                   // windows must be zeroed at carve (M4)
+    [FieldOffset(1)] public byte BumpFlags;        // Bump only: see the flag bits above
     [FieldOffset(1)] public byte SpanIsDirty;      // SpanStart/SpanExtension only: 1 = carved
                                                    // with stale contents; the object extent is
                                                    // zeroed outside the alloc lock (M4)
-    [FieldOffset(2)] public byte IsCommitted;      // Free only: 0 after decommit
+    [FieldOffset(2)] public byte IsCommitted;      // Free only: one of the Commit* states
     [FieldOffset(3)] public RegionAge Age;         // sticky-generation age (SPEC-M4)
     [FieldOffset(4)] public int LiveBytes;         // rebuilt by every mark phase, consumed by sweep
 
@@ -114,10 +126,15 @@ internal struct RegionEntry
     [FieldOffset(8)] public ulong AllocatedBlocks; // SizeClass: bit i set = block i allocated
     [FieldOffset(8)] public int SpanCount;         // SpanStart: regions in the span (incl. self)
     [FieldOffset(8)] public int SpanStartIndex;    // SpanExtension: region index of the SpanStart
+    [FieldOffset(8)] public byte ZeroerCheckedOut; // Free only: out of the pool, owned by the
+                                                   // background zeroer — span run scans skip it
 
     [FieldOffset(16)] public nint FirstHole;       // Bump: head of hole list (plug object ref, 0 = none)
     [FieldOffset(16)] public int NextInClassList;  // SizeClass: next region index in class alloc list (-1 = end)
 
     [FieldOffset(24)] public int HoleBytes;        // Bump: total carveable extent bytes
     [FieldOffset(28)] public int NextRecycled;     // Bump: next region index in recycled list (-1 = end)
+    [FieldOffset(24)] public ulong DirtyBlocks;    // SizeClass: bit i set = block i holds stale
+                                                   // contents; its extent is zeroed at carve,
+                                                   // outside the alloc lock (M4)
 }

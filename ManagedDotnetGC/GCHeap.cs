@@ -50,6 +50,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     // own runtime and never call into the EE. Each participant gets its own mark stack
     // and collectible-deferral list for the parallel card scan.
     private GcWorkerPool? _workerPool;
+    private GcRegionZeroer? _regionZeroer;
     private MarkStack[]? _cardScanStacks;
     private List<nint>[]? _cardScanDeferred;
     private MarkShareQueue? _markShareQueue;
@@ -143,6 +144,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 _cardScanStacks[i] = new MarkStack();
                 _cardScanDeferred[i] = [];
             }
+        }
+
+        if (Environment.ProcessorCount > 1)
+        {
+            // Background pre-zeroing (M7): an idle core zeroes recycled regions between
+            // collections so carves hand out clean memory instead of paying the memset
+            // on the allocating thread
+            _regionZeroer = new GcRegionZeroer(_regionAllocator, _allocLock);
         }
 
         // The Initialize contract wants real heap bounds and a non-null card table — debug
@@ -258,6 +267,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
 
+            // The background zeroer is not an EE thread, so SuspendEE does not park it:
+            // holding its gate for the whole suspension is what lets the sweep push to
+            // the pool lock-free and TrimPool decommit without racing a checkout (M7)
+            _regionAllocator.EnterGateForCollection();
+
             var tSuspended = GcStats.Timestamp();
 
             NotifyGcStartWork(condemned, 2);
@@ -279,8 +293,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             MarkPhase(young);
 
             var tMarked = GcStats.Timestamp();
-            var zeroBytesBefore = GcStats.ZeroBytes;
-            var zeroTicksBefore = GcStats.ZeroTicks;
 
             Write("Sweep phase");
             var swept = _regionAllocator.Sweep(youngOnly: young, _workerPool);
@@ -333,17 +345,22 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             NotifyGcDone(condemned);
 
+            _regionAllocator.ExitGateForCollection();
+
             _gcToClr.RestartEE(finishedGC: true);
 
             if (GcStats.Enabled)
             {
                 GcStats.RecordCollection(gcNumber, young ? "young" : "full",
                     tStart, tSuspended, tFixed, tMarked, tSwept, GcStats.Timestamp(),
-                    GcStats.ZeroBytes - zeroBytesBefore, GcStats.ZeroTicks - zeroTicksBefore,
+                    Volatile.Read(ref GcStats.ZeroBytes), Volatile.Read(ref GcStats.ZeroTicks),
                     _lastLiveBytes, _regionAllocator.CommittedRegionBytes);
             }
 
             _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
+
+            // The sweep just refilled the pool with dirty regions
+            _regionZeroer?.Kick();
         }
 
         _gcLock.Release();
@@ -506,12 +523,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private GCObject* AllocBlock(ref gc_alloc_context acontext, nint size)
     {
         var sizeClass = Region.SelectClass(size);
+        nint block;
+        bool needsZero;
 
         _allocLock.Acquire();
 
         try
         {
-            if (!_regionAllocator.TryAllocBlock(sizeClass, out var block))
+            if (!_regionAllocator.TryAllocBlock(sizeClass, out block, out needsZero))
             {
                 return null;
             }
@@ -525,13 +544,21 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             acontext.alloc_bytes_uoh += classSize;
             _allocatedSinceGC += classSize;
             _totalAllocatedBytes += classSize;
-
-            return (GCObject*)(block + IntPtr.Size);
         }
         finally
         {
             _allocLock.Release();
         }
+
+        if (needsZero)
+        {
+            // Zero-at-carve (M4), outside the lock: only the object's extent — the block's
+            // tail beyond it is never read (every reader gates on the allocated bitmap and
+            // walks per-block, not contiguously)
+            RegionAllocator.ZeroWindow(block, IntPtr.Size + Align(size));
+        }
+
+        return (GCObject*)(block + IntPtr.Size);
     }
 
     private GCObject* AllocSpan(ref gc_alloc_context acontext, nint size)

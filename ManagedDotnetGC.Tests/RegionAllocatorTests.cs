@@ -247,7 +247,8 @@ public unsafe class RegionAllocatorTests
 
         for (int i = 0; i < blockCount; i++)
         {
-            _allocator.TryAllocBlock(sizeClass, out var block).ShouldBeTrue();
+            _allocator.TryAllocBlock(sizeClass, out var block, out var needsZero).ShouldBeTrue();
+            needsZero.ShouldBeFalse(); // fresh region: OS-zeroed
             WriteObject(block + IntPtr.Size, objectSize);
             blocks.Add(block);
         }
@@ -264,7 +265,7 @@ public unsafe class RegionAllocatorTests
         bitmap.ShouldBe(RegionAllocator.FullMask(sizeClass));
 
         // The region is full and unlinked: the next block carves a fresh region
-        _allocator.TryAllocBlock(sizeClass, out var overflow).ShouldBeTrue();
+        _allocator.TryAllocBlock(sizeClass, out var overflow, out _).ShouldBeTrue();
         _allocator.TryGetIndex(overflow, out var overflowIndex).ShouldBeTrue();
         overflowIndex.ShouldNotBe(index);
         WriteObject(overflow + IntPtr.Size, objectSize); // the EE always writes the MT before a GC can run
@@ -277,8 +278,8 @@ public unsafe class RegionAllocatorTests
         (bitmap, _) = _allocator.GetSizeClassInfo(index);
         bitmap.ShouldBe((1ul << 3) | (1ul << 17));
 
-        // Dead blocks were re-zeroed over their dirtied extent (Invariant P)
-        AssertZero(blocks[0], IntPtr.Size + objectSize);
+        // Zero-at-carve (M4): the sweep left the dead block's contents in place
+        AssertPayloadPattern(blocks[0] + IntPtr.Size, objectSize);
 
         // Survivors intact
         ((GCObject*)(blocks[3] + IntPtr.Size))->ComputeSize().ShouldBe((uint)objectSize);
@@ -287,9 +288,14 @@ public unsafe class RegionAllocatorTests
         // The overflow region was all-dead: recycled wholesale
         _allocator.GetEntry(overflowIndex)->Kind.ShouldBe(RegionKind.Free);
 
-        // The swept region was relinked: the next alloc reuses its lowest free block
-        _allocator.TryAllocBlock(sizeClass, out var reused).ShouldBeTrue();
+        // The swept region was relinked: the next alloc reuses its lowest free block,
+        // flagged for zeroing — the caller cleans the object extent outside the lock
+        _allocator.TryAllocBlock(sizeClass, out var reused, out var reusedNeedsZero).ShouldBeTrue();
         reused.ShouldBe(blocks[0]);
+        reusedNeedsZero.ShouldBeTrue();
+
+        RegionAllocator.ZeroWindow(reused, IntPtr.Size + objectSize);
+        AssertZero(reused, IntPtr.Size + objectSize);
     }
 
     // ----- §7.1 wholesale recycle + zero-at-carve -----
@@ -320,7 +326,7 @@ public unsafe class RegionAllocatorTests
         TryGetZeroedWindow(1024, out var window, out var length).ShouldBeTrue();
         _allocator.TryGetIndex(window, out var reusedIndex).ShouldBeTrue();
         reusedIndex.ShouldBe(index);
-        entry->BumpIsDirty.ShouldBe((byte)1);
+        (entry->BumpFlags & RegionEntry.BumpDirtyFlag).ShouldBe(RegionEntry.BumpDirtyFlag);
         AssertZero(window, length);
     }
 
@@ -571,7 +577,7 @@ public unsafe class RegionAllocatorTests
 
         for (int i = 0; i < 3; i++)
         {
-            _allocator.TryAllocBlock(sizeClass, out blocks[i]).ShouldBeTrue();
+            _allocator.TryAllocBlock(sizeClass, out blocks[i], out _).ShouldBeTrue();
             WriteObject(blocks[i] + IntPtr.Size, objectSize);
         }
 
@@ -592,8 +598,9 @@ public unsafe class RegionAllocatorTests
         // free blocks allocatable, and allocating from it re-opens it
         _allocator.Sweep(youngOnly: true);
 
-        _allocator.TryAllocBlock(sizeClass, out var reused).ShouldBeTrue();
+        _allocator.TryAllocBlock(sizeClass, out var reused, out var needsZero).ShouldBeTrue();
         reused.ShouldBe(blocks[1]);
+        needsZero.ShouldBeTrue(); // blocks[1] died with its contents in place
         entry->Age.ShouldBe(RegionAge.Reopened);
     }
 
@@ -625,6 +632,125 @@ public unsafe class RegionAllocatorTests
 
         liveEntry->Kind.ShouldBe(RegionKind.SpanStart);
         ((GCObject*)(liveSpan + IntPtr.Size))->ComputeSize().ShouldBe((uint)spanObjectSize);
+    }
+
+    // ----- M7 background-zeroer checkout/checkin -----
+
+    [Test]
+    public void Zeroer_CheckOutHidesRegionFromSpanRuns_AndCheckInHandsBackPreZeroed()
+    {
+        // Four dead 3-region spans -> 12 committed dirty pool regions (spans below the
+        // 4-region decommit threshold keep their memory on recycle)
+        var spanObjectSize = (nint)(3 * Region.Size - 4 * IntPtr.Size);
+
+        for (int i = 0; i < 4; i++)
+        {
+            _allocator.TryAllocSpan(3, out var span).ShouldBeTrue();
+            WriteObject(span + IntPtr.Size, spanObjectSize);
+        }
+
+        _allocator.Sweep();
+
+        _allocator.TryCheckOutDirtyRegion(out var index, out var regionBase).ShouldBeTrue();
+        regionBase.ShouldBe(_allocator.RegionBase(index));
+
+        // While checked out the region is invisible to the span run scan: a new 3-run
+        // must never overlap the memory the zeroer owns
+        _allocator.TryAllocSpan(3, out var newSpan).ShouldBeTrue();
+        (regionBase >= newSpan + 3 * Region.Size || regionBase + Region.Size <= newSpan).ShouldBeTrue();
+
+        RegionAllocator.ZeroWindow(regionBase, Region.Size);
+        _allocator.CheckInZeroedRegion(index);
+
+        // Checked back in on the pool top: the next window carve hands it out with no
+        // zeroing debt
+        _allocator.TryGetWindow(1000, out var window, out _, out var needsZero).ShouldBeTrue();
+        _allocator.TryGetIndex(window, out var windowRegion).ShouldBeTrue();
+        windowRegion.ShouldBe(index);
+        needsZero.ShouldBeFalse();
+    }
+
+    [Test]
+    public void Zeroer_PreZeroedHoleCarvesArriveCleanAndKeepHoleInvariants()
+    {
+        var size = (nint)30000;
+        var objects = new List<nint>();
+
+        for (int i = 0; i < 20; i++)
+        {
+            objects.Add(AllocObject(size));
+        }
+
+        FixContext();
+
+        _allocator.TryGetIndex(objects[0], out var index).ShouldBeTrue();
+
+        MarkLive(objects[0]);
+        MarkLive(objects[19]);
+        _allocator.Sweep(); // one big linked hole between the two survivors
+
+        _allocator.TryCheckOutDirtyHoleRegion(out var holeRegion).ShouldBeTrue();
+        holeRegion.ShouldBe(index);
+
+        // While checked out, hole carves cannot reach the region — the next window comes
+        // from the bump cursor, not the hole (window carves of the virgin tail stay legal)
+        TryGetZeroedWindow(1000, out var fromCursor, out var cursorLength).ShouldBeTrue();
+        fromCursor.ShouldNotBe(objects[1] - IntPtr.Size);
+
+        // Plug it (context protocol) so the region stays walkable for the checks below
+        _ctxPtr = fromCursor + IntPtr.Size;
+        _ctxLimit = fromCursor + cursorLength - 2 * IntPtr.Size;
+        FixContext();
+
+        _allocator.ZeroCheckedOutHoleBodies(holeRegion);
+        _allocator.CheckInZeroedHoleRegion(holeRegion);
+
+        // Back in the list and flagged: hole carves arrive with no zeroing debt — the
+        // 32-byte plug prefix was cleaned inline — and the survivors are untouched
+        _allocator.TryGetWindow(1000, out var window, out var length, out var needsZero).ShouldBeTrue();
+        window.ShouldBe(objects[1] - IntPtr.Size);
+        needsZero.ShouldBeFalse();
+        AssertZero(window, length);
+
+        AssertPayloadPattern(objects[0], size);
+        AssertPayloadPattern(objects[19], size);
+
+        // Plug the window like AllocFromWindow's context protocol would: the remainder
+        // was re-plugged inside its pre-zeroed body, so the region must walk end-to-end
+        _ctxPtr = window + IntPtr.Size;
+        _ctxLimit = window + length - 2 * IntPtr.Size;
+        FixContext();
+        WalkBumpRegion(index);
+    }
+
+    [Test]
+    public void MakeFree_ClearsCheckedOutFlag_SoRecycledBumpRegionsFormSpanRuns()
+    {
+        // Fill two adjacent bump regions; their entries' offset-8 union (the bump Cursor)
+        // holds nonzero bytes that would read as ZeroerCheckedOut if MakeFree left them
+        var first = AllocObject(1024);
+        _allocator.TryGetIndex(first, out var firstIndex).ShouldBeTrue();
+
+        while (true)
+        {
+            var obj = AllocObject(Region.BumpMaxSize);
+            obj.ShouldNotBe(0);
+            _allocator.TryGetIndex(obj, out var index).ShouldBeTrue();
+
+            if (index != firstIndex)
+            {
+                break;
+            }
+        }
+
+        FixContext();
+
+        // Nothing marked: both regions recycle wholesale, Cursor bytes left in the union
+        _allocator.Sweep();
+
+        _allocator.TryAllocSpan(2, out var spanBase).ShouldBeTrue();
+        _allocator.TryGetIndex(spanBase, out var spanIndex).ShouldBeTrue();
+        spanIndex.ShouldBe(firstIndex); // reused the recycled run, not the frontier
     }
 
     [Test]

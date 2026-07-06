@@ -22,6 +22,11 @@ internal static class GcStats
     public static long BlockCount;
     public static long SpanCount;
 
+    // --- Window-source split (M7, written under the alloc lock): hole carves always zero
+    // inline; clean windows arrived pre-zeroed (fresh commit or the background zeroer) ---
+    public static long HoleWindowCount;
+    public static long CleanWindowCount;
+
     // --- Zeroing accumulators: only written under the alloc lock or during STW ---
     public static long ZeroBytes;
     public static long ZeroTicks;
@@ -52,7 +57,7 @@ internal static class GcStats
         try
         {
             _writer = new StreamWriter(path, append: false) { AutoFlush = true };
-            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n");
+            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n,hole_n,clean_n");
             Enabled = true;
         }
         catch
@@ -79,10 +84,12 @@ internal static class GcStats
         CardRegionsScanned = 0;
     }
 
+    // zeroBytes/zeroTicks are the cumulative alloc-path totals (M4 zero-at-carve moved all
+    // zeroing outside pauses, so per-collection deltas would always read zero)
     public static void RecordCollection(
         uint gcNumber, string kind,
         long start, long afterSuspend, long afterFix, long afterMark, long afterSweep, long end,
-        long zeroBytesDelta, long zeroTicksDelta, long liveBytes, long committedBytes)
+        long zeroBytes, long zeroTicks, long liveBytes, long committedBytes)
     {
         if (_writer is null)
         {
@@ -90,7 +97,7 @@ internal static class GcStats
         }
 
         var row = string.Create(CultureInfo.InvariantCulture,
-            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicksDelta):F0},{zeroBytesDelta / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)}");
+            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)}");
 
         _writer.WriteLine(row);
     }
