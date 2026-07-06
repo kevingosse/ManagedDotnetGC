@@ -194,6 +194,12 @@ internal unsafe class RegionAllocator : IDisposable
                     entry->Cursor += length;
                     needsZero = entry->BumpIsDirty != 0;
 
+                    // Card offsets for the new window resolve to its first object (M4):
+                    // beyond the last sweep's extent the table would otherwise be stale.
+                    // The interval runs to the next window's first ref so consecutive
+                    // stamps tile without a pre-header gap.
+                    WriteCardOffsets(_activeBump, window + IntPtr.Size, window + length + IntPtr.Size);
+
                     return true;
                 }
 
@@ -298,8 +304,15 @@ internal unsafe class RegionAllocator : IDisposable
                             entry->HoleBytes += (int)(extent - length);
                         }
                         // else: a sub-window remainder floats until the next full collection
+
+                        // The remainder keeps its own card-offset interval
+                        WriteCardOffsets(regionIndex, remainderStart + IntPtr.Size, holeRef + extent);
                     }
 
+                    // The window's card offsets resolve to its first object (M4): tighter
+                    // than the stale entries pointing at the consumed hole's plug. The
+                    // interval runs one ref past the window so stamps tile gap-free.
+                    WriteCardOffsets(regionIndex, window + IntPtr.Size, window + length + IntPtr.Size);
 
                     if (entry->FirstHole == 0)
                     {
@@ -753,7 +766,7 @@ internal unsafe class RegionAllocator : IDisposable
     /// be cleared: a stale stamp there could alias the current epoch and make the plug
     /// look live to a sweep walk or card scan.
     /// </summary>
-    private void ClosePlug(RegionEntry* entry, nint start, nint end)
+    private void ClosePlug(RegionEntry* entry, int regionIndex, nint start, nint end)
     {
         var extent = end - start;
 
@@ -761,6 +774,9 @@ internal unsafe class RegionAllocator : IDisposable
         plug->RawMethodTable = _freeObjectMethodTable;
         plug->Length = (uint)(extent - 3 * IntPtr.Size);
         plug->Epoch = 0;
+
+        // The plug's card-offset interval runs to the ref after its extent (M4)
+        WriteCardOffsets(regionIndex, start + IntPtr.Size, end + IntPtr.Size);
 
         if (extent >= _minLinkedHole)
         {

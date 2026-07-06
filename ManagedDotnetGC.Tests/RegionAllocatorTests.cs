@@ -821,12 +821,45 @@ public unsafe class RegionAllocatorTests
             {
                 seen.Add(obj);
             }
+
+            AssertCardOffsetsResolve(i);
         }
 
         // Every live object must be reachable by the walk (sweep depends on it)
         foreach (var obj in expectedLive.Keys)
         {
             seen.Contains(obj).ShouldBeTrue($"live object {obj:x} not found by the region walk");
+        }
+    }
+
+    /// <summary>
+    /// Ground-truths the card-offset table (M4): for every card start below the cursor,
+    /// the resolver must land on a real object boundary at or before it — after sweeps
+    /// (exact entries) and after carves (conservative window-start entries) alike.
+    /// </summary>
+    private void AssertCardOffsetsResolve(int index)
+    {
+        var entry = _allocator.GetEntry(index);
+        var regionBase = _allocator.RegionBase(index);
+        var end = entry->Cursor;
+
+        var boundaries = new HashSet<nint>();
+        var ptr = regionBase + IntPtr.Size;
+
+        while (ptr < end)
+        {
+            boundaries.Add(ptr);
+            ptr = Align(ptr + (nint)((GCObject*)ptr)->ComputeSize());
+        }
+
+        for (var card = regionBase; card < end; card += 1 << 11)
+        {
+            var resolved = _allocator.FindBumpObjectAtOrBefore(index, card);
+
+            (resolved <= card || resolved == regionBase + IntPtr.Size).ShouldBeTrue(
+                $"card {card:x} resolved forward to {resolved:x}");
+            boundaries.Contains(resolved).ShouldBeTrue(
+                $"card {card:x} resolved to {resolved:x}, not an object boundary");
         }
     }
 

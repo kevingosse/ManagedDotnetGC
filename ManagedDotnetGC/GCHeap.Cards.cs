@@ -102,28 +102,56 @@ unsafe partial class GCHeap
     }
 
     /// <summary>
-    /// Linear object walk of one dirty old bump region, bounded by the 2 MB region size.
-    /// No per-card first-object table yet — a dirty region pays the full walk; the fast
-    /// path is RegionHasDirtyCard skipping clean regions wholesale.
+    /// Scans one dirty old bump region by dirty-card runs: the card-offset table maps each
+    /// run's first card to a nearby object start, so only the dirty neighborhoods get
+    /// walked — a sparsely mutated region costs a few object hops instead of a 2 MB walk.
+    /// An object spanning two runs can be enumerated twice; the mark-stack pop side
+    /// deduplicates via IsMarked, so that is waste, not a bug.
     /// </summary>
     private void ScanBumpRegionCards(nint cardBase, int index, RegionEntry* entry)
     {
-        var ptr = _regionAllocator.RegionBase(index) + IntPtr.Size;
+        var regionBase = _regionAllocator.RegionBase(index);
         var end = entry->Cursor;
+        var cards = (byte*)(cardBase + ((nint)index << (Region.Shift - 11)));
+        var cardCount = (int)Math.Min(Region.Size >> 11, ((end - regionBase) + 2047) >> 11);
 
-        while (ptr < end)
+        for (int c = 0; c < cardCount;)
         {
-            var obj = (GCObject*)ptr;
-            var size = (nint)obj->ComputeSize();
-
-            // Free plugs and dead-or-untraced-young objects are never card sources; marked
-            // objects only matter where a card under them is dirty
-            if (obj->IsMarked() && RangeHasDirtyCard(cardBase, ptr, ptr + size))
+            if (cards[c] == 0)
             {
-                GCObject.EnumerateObjectReferences(obj, _markStack);
+                c++;
+                continue;
             }
 
-            ptr = Align(ptr + size);
+            var runEnd = c + 1;
+
+            while (runEnd < cardCount && cards[runEnd] != 0)
+            {
+                runEnd++;
+            }
+
+            var runStart = regionBase + ((nint)c << 11);
+            var runLimit = Math.Min(regionBase + ((nint)runEnd << 11), end);
+
+            var ptr = _regionAllocator.FindBumpObjectAtOrBefore(index, runStart);
+
+            while (ptr < runLimit)
+            {
+                var obj = (GCObject*)ptr;
+                var size = (nint)obj->ComputeSize();
+
+                // Free plugs and dead-or-untraced-young objects are never card sources;
+                // marked objects only matter where a card under them is dirty
+                if (ptr + size > runStart
+                    && obj->IsMarked() && RangeHasDirtyCard(cardBase, ptr, ptr + size))
+                {
+                    GCObject.EnumerateObjectReferences(obj, _markStack);
+                }
+
+                ptr = Align(ptr + size);
+            }
+
+            c = runEnd;
         }
 
         FinishRegionCardScan();
