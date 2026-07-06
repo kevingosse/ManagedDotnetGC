@@ -258,7 +258,7 @@ unsafe partial class GCHeap
             Write("Full cycle: concurrent sweep");
 
             var tSweep = GcStats.Timestamp();
-            _regionAllocator.SweepConcurrentFull(_allocLock, _workerPool);
+            _regionAllocator.SweepConcurrentFull(_workerPool);
             GcStats.CycleConcurrentSweepTicks = GcStats.Timestamp() - tSweep;
 
             _regionAllocator.ExitGateForCollection();

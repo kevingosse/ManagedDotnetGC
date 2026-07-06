@@ -29,12 +29,12 @@ internal static class GcStats
     public static long WindowCarveTicks;
     public static long WindowZeroTicks;
 
-    // --- Window-source split (M7, written under the alloc lock): hole carves always zero
-    // inline; clean windows arrived pre-zeroed (fresh commit or the background zeroer) ---
+    // --- Window-source split (M7, interlocked — shard locks don't serialize these):
+    // hole carves always zero inline; clean windows arrived pre-zeroed ---
     public static long HoleWindowCount;
     public static long CleanWindowCount;
 
-    // --- Zeroing accumulators: only written under the alloc lock or during STW ---
+    // --- Zeroing accumulators: interlocked (zeroer + concurrent carves) ---
     public static long ZeroBytes;
     public static long ZeroTicks;
 

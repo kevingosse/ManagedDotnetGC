@@ -22,7 +22,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private MethodTable* _freeObjectMethodTable;
 
     private readonly RegionAllocator _regionAllocator;
-    private readonly GcAwareLock _allocLock;
+
+    // Sharded allocation supply (M7): one lock per supply shard, the reservoir lock,
+    // and the global pool lock. Threads are round-robined across shards at first
+    // allocation; the affinity rides in the per-thread stash struct ([ThreadStatic]
+    // dies on EE threads).
+    private GcAwareLock[] _shardLocks;
+    private readonly GcAwareLock _reservoirLock;
+    private readonly GcAwareLock _poolLock;
     private readonly GcAwareLock _gcLock;
     private long _allocatedSinceGC;
     private long _totalAllocatedBytes;
@@ -87,10 +94,13 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         _handle = GCHandle.Alloc(this);
         _gcToClr = gcToClr;
         _gcLock = new GcAwareLock(gcToClr);
-        _allocLock = new GcAwareLock(gcToClr);
+        _shardLocks = [new GcAwareLock(gcToClr)];
+        _reservoirLock = new GcAwareLock(gcToClr);
+        _poolLock = new GcAwareLock(gcToClr);
         _gcHandleManager = new GCHandleManager();
         _nativeAllocator = new(Region.HeapReserveSize);
         _regionAllocator = new RegionAllocator(_nativeAllocator);
+        _regionAllocator.SetLocks(_shardLocks, _reservoirLock, _poolLock);
 
         _nativeObject = IGCHeap.Wrap(this);
         _freeObjectMethodTable = (MethodTable*)gcToClr.GetFreeObjectMethodTable();
@@ -230,6 +240,35 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
+        // Sharded allocation supply (M7): sized to the machine, not the GC worker pool —
+        // the contenders are allocating app threads. DOTNET_GCAllocShards overrides
+        // (hex, like every config int); =1 restores a single supply lock for A/B runs.
+        var shardCount = Math.Min(Environment.ProcessorCount, 16);
+
+        fixed (byte* privateKey = "GCAllocShards"u8)
+        fixed (byte* publicKey = "System.GC.AllocShards"u8)
+        {
+            if (_gcToClr.GetIntConfigValue(privateKey, publicKey, out var shards) && shards > 0)
+            {
+                Write($"Alloc shards: {shards}");
+                shardCount = (int)Math.Min(shards, 64);
+            }
+        }
+
+        if (shardCount != _shardLocks.Length)
+        {
+            // Nothing has allocated yet (Initialize precedes managed code), so the
+            // ctor's single-shard supply can be replaced wholesale
+            _shardLocks = new GcAwareLock[shardCount];
+
+            for (int i = 0; i < shardCount; i++)
+            {
+                _shardLocks[i] = new GcAwareLock(_gcToClr);
+            }
+
+            _regionAllocator.SetLocks(_shardLocks, _reservoirLock, _poolLock);
+        }
+
         if (participants > 1)
         {
             _workerPool = new GcWorkerPool(participants - 1);
@@ -249,7 +288,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             // Background pre-zeroing (M7): an idle core zeroes recycled regions between
             // collections so carves hand out clean memory instead of paying the memset
             // on the allocating thread
-            _regionZeroer = new GcRegionZeroer(_regionAllocator, _allocLock);
+            _regionZeroer = new GcRegionZeroer(_regionAllocator, _reservoirLock, _poolLock);
         }
 
         // The Initialize contract wants real heap bounds and a non-null card table — debug
@@ -578,6 +617,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         public int Epoch;
         public int Count;
         public uint ZeroMask;
+        public int Shard;
         public fixed long Window[WindowStashCapacity];
         public fixed long Length[WindowStashCapacity];
     }
@@ -585,7 +625,28 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     // Bumped under STW by every path that rebuilds the allocation supply
     private static int _stashEpoch;
 
+    // Round-robins new threads across supply shards (also rotates span-path assists)
+    private static int _nextShard;
+
     private bool _windowStashEnabled = true;
+
+    /// <summary>The per-thread alloc state riding <c>gc_reserved_1</c>: shard affinity
+    /// plus the window stash. Allocated on first use, freed never — contexts die with
+    /// their threads, and 72 stale bytes are cheaper than guessing at a retirement
+    /// hook. Lives in native memory because [ThreadStatic] dies on EE threads.</summary>
+    private WindowStash* GetThreadAllocState(ref gc_alloc_context acontext)
+    {
+        var stash = (WindowStash*)acontext.gc_reserved_1;
+
+        if (stash == null)
+        {
+            stash = (WindowStash*)NativeMemory.AllocZeroed((nuint)sizeof(WindowStash));
+            stash->Shard = (int)((uint)Interlocked.Increment(ref _nextShard) % (uint)_shardLocks.Length);
+            acontext.gc_reserved_1 = stash;
+        }
+
+        return stash;
+    }
 
     private GCObject* AllocFromWindow(ref gc_alloc_context acontext, nint size)
     {
@@ -598,23 +659,15 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         bool needsZero;
         long tBeforeLock = 0, tLocked = 0;
 
-        // Allocated on first use, freed never: contexts die with their threads, and 64
-        // stale bytes are cheaper than guessing at a retirement hook
-        var stash = (WindowStash*)acontext.gc_reserved_1;
+        var stash = GetThreadAllocState(ref acontext);
 
-        if (stash == null && _windowStashEnabled)
-        {
-            stash = (WindowStash*)NativeMemory.AllocZeroed((nuint)sizeof(WindowStash));
-            acontext.gc_reserved_1 = stash;
-        }
-
-        if (stash != null && stash->Epoch != Volatile.Read(ref _stashEpoch))
+        if (stash->Epoch != Volatile.Read(ref _stashEpoch))
         {
             // A collection ran since the refill: the sweep owns those extents now
             stash->Count = 0;
         }
 
-        if (stash != null && stash->Count > 0 && (nint)stash->Length[stash->Count - 1] >= Align(size) + 3 * IntPtr.Size)
+        if (stash->Count > 0 && (nint)stash->Length[stash->Count - 1] >= Align(size) + 3 * IntPtr.Size)
         {
             var i = --stash->Count;
             window = (nint)stash->Window[i];
@@ -630,32 +683,31 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
         else
         {
+            var shard = stash->Shard;
+            var shardLock = _shardLocks[shard];
+
             tBeforeLock = GcStats.Timestamp();
-            _allocLock.Acquire();
+            shardLock.Acquire();
             tLocked = GcStats.Timestamp();
 
             try
             {
-                if (!_regionAllocator.TryGetWindow(size, out window, out length, out needsZero))
+                if (!_regionAllocator.TryGetWindow(shard, size, out window, out length, out needsZero))
                 {
                     return null;
                 }
 
-                _allocatedSinceGC += length;
-                _totalAllocatedBytes += length;
+                var carvedBytes = (long)length;
 
                 // Refill under the same acquisition. Epoch is re-read after Acquire: a
                 // suspension can complete inside a contended Acquire, and the stash must
                 // belong to the supply lists this refill actually carves from. Budget
                 // accounting happens here (the trigger reads are approximate anyway);
                 // alloc_bytes accrues per window at pop, where the EE's thread owns it.
-                if (stash != null)
-                {
-                    stash->Epoch = Volatile.Read(ref _stashEpoch);
-                }
+                stash->Epoch = Volatile.Read(ref _stashEpoch);
 
-                while (stash != null && stash->Count < WindowStashCapacity
-                    && _regionAllocator.TryGetStashWindow(size, out var extra, out var extraLength, out var extraZero))
+                while (_windowStashEnabled && stash->Count < WindowStashCapacity
+                    && _regionAllocator.TryGetStashWindow(shard, size, out var extra, out var extraLength, out var extraZero))
                 {
                     var i = stash->Count++;
                     stash->Window[i] = extra;
@@ -678,13 +730,15 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                     // MethodTable at pause A.)
                     AllocateFreeObject(extra + IntPtr.Size, (uint)(extraLength - 3 * IntPtr.Size));
 
-                    _allocatedSinceGC += extraLength;
-                    _totalAllocatedBytes += extraLength;
+                    carvedBytes += extraLength;
                 }
+
+                Interlocked.Add(ref _allocatedSinceGC, carvedBytes);
+                Interlocked.Add(ref _totalAllocatedBytes, carvedBytes);
             }
             finally
             {
-                _allocLock.Release();
+                shardLock.Release();
             }
         }
 
@@ -725,28 +779,31 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         nint block;
         bool needsZero;
 
-        _allocLock.Acquire();
+        var shard = GetThreadAllocState(ref acontext)->Shard;
+        var shardLock = _shardLocks[shard];
+
+        shardLock.Acquire();
 
         try
         {
-            if (!_regionAllocator.TryAllocBlock(sizeClass, out block, out needsZero))
+            if (!_regionAllocator.TryAllocBlock(shard, sizeClass, out block, out needsZero))
             {
                 return null;
             }
 
             if (GcStats.Enabled)
             {
-                GcStats.BlockCount++;
+                Interlocked.Increment(ref GcStats.BlockCount);
             }
 
             var classSize = Region.ClassSizes[sizeClass];
             acontext.alloc_bytes_uoh += classSize;
-            _allocatedSinceGC += classSize;
-            _totalAllocatedBytes += classSize;
+            Interlocked.Add(ref _allocatedSinceGC, classSize);
+            Interlocked.Add(ref _totalAllocatedBytes, classSize);
         }
         finally
         {
-            _allocLock.Release();
+            shardLock.Release();
         }
 
         if (needsZero)
@@ -766,35 +823,59 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         var regionCount = Region.SpanRegionCount(size);
         nint spanBase;
 
-        _allocLock.Acquire();
-
-        try
+        // The span tier runs on the pool lock inside TryAllocSpan (M7 sharded supply).
+        // Its old inline sweep assists moved out here: an assist splices supply into a
+        // shard, which must never be waited on while holding the pool lock, so a dry
+        // pool retries through standalone assists and reaches the frontier only once
+        // the plan is exhausted — the same ordering the single-lock path enforced.
+        while (!_regionAllocator.TryAllocSpan(regionCount, out spanBase, allowFrontier: false))
         {
-            if (!_regionAllocator.TryAllocSpan(regionCount, out spanBase))
+            if (!AssistSweepStandalone())
             {
-                return null;
-            }
+                if (!_regionAllocator.TryAllocSpan(regionCount, out spanBase, allowFrontier: true))
+                {
+                    return null;
+                }
 
-            if (GcStats.Enabled)
-            {
-                GcStats.SpanCount++;
+                break;
             }
-
-            var allocated = (long)regionCount << Region.Shift;
-            acontext.alloc_bytes_uoh += allocated;
-            _allocatedSinceGC += allocated;
-            _totalAllocatedBytes += allocated;
         }
-        finally
+
+        if (GcStats.Enabled)
         {
-            _allocLock.Release();
+            Interlocked.Increment(ref GcStats.SpanCount);
         }
+
+        var allocated = (long)regionCount << Region.Shift;
+        acontext.alloc_bytes_uoh += allocated;
+        Interlocked.Add(ref _allocatedSinceGC, allocated);
+        Interlocked.Add(ref _totalAllocatedBytes, allocated);
 
         // Recycled members hold stale contents; zeroing happens out here so concurrent
-        // span carves clean in parallel instead of serializing the allocation lock
+        // span carves clean in parallel instead of serializing the supply locks
         _regionAllocator.ZeroSpanCarve(spanBase, size);
 
         return (GCObject*)(spanBase + IntPtr.Size);
+    }
+
+    /// <summary>One sweep-assist chunk on behalf of the span path, under a rotating
+    /// shard lock and nothing else: the chunk's supply splices into that shard, freed
+    /// regions reach the pool for the caller's retry.</summary>
+    private bool AssistSweepStandalone()
+    {
+        var shard = (int)((uint)Interlocked.Increment(ref _nextShard) % (uint)_shardLocks.Length);
+        var shardLock = _shardLocks[shard];
+
+        shardLock.Acquire();
+
+        try
+        {
+            return _regionAllocator.TrySweepAssist(shard);
+        }
+        finally
+        {
+            shardLock.Release();
+        }
     }
 
     /// <summary>Sweep + the sticky-generation live accounting + the card reset, shared
@@ -845,7 +926,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     /// The decommit half of budget application, run on the triggering thread after
     /// RestartEE but still under <c>_gcLock</c> (M6 stage 3: the in-pause trim measured
     /// ~46 ms of pause B on the ASP.NET soak — 70% of the pause — and free regions can
-    /// be decommitted while the world runs). Batches hold the allocation lock so carves
+    /// be decommitted while the world runs). Batches hold the pool lock so carves
     /// and the zeroer interleave; no Collect can start (we hold <c>_gcLock</c>), so the
     /// zeroer's lock-free suspension escape never engages against us.
     /// </summary>
@@ -866,21 +947,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         // 45% of its collections as starved fulls — pool-fed heaps have few holes, so
         // post-trim free capacity could never reach the demand).
         var cursor = 0;
-        bool more;
 
-        do
+        // Each batch takes the pool lock internally, so carves and the zeroer interleave
+        while (_regionAllocator.TrimPoolBatch(demand, maxDecommits: 8, ref cursor))
         {
-            _allocLock.Acquire();
-
-            try
-            {
-                more = _regionAllocator.TrimPoolBatch(demand, maxDecommits: 8, ref cursor);
-            }
-            finally
-            {
-                _allocLock.Release();
-            }
-        } while (more);
+        }
 
         GcStats.TrimTicks = GcStats.Timestamp() - tStart;
 

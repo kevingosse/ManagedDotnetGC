@@ -4,8 +4,14 @@ namespace ManagedDotnetGC;
 
 /// <summary>
 /// The region heap (SPEC-M2 §2-§4): a flat table of 2 MB regions carved from one 2 TB
-/// reservation. Not thread-safe by itself — every mutating call runs either under the
-/// GCHeap allocation lock or during a suspension (sweep).
+/// reservation. Thread safety (M7 sharded supply): the carveable supply — recycled hole
+/// regions, size-class lists, active bump regions — is split across shards, each guarded
+/// by its own lock; the pool and the frontier stay global behind the pool lock (span run
+/// scans, the trim and zeroer checkouts need one coherent pool). Lock order: at most one
+/// shard lock, then the pool lock; the only cross-shard operation (stealing) TryAcquires
+/// its victim and skips on contention. Sweeps mutate everything with no locks, under a
+/// suspension with the zeroer gated. The unit tests never call <see cref="SetLocks"/> and
+/// drive a single unlocked shard single-threaded.
 /// </summary>
 internal unsafe class RegionAllocator : IDisposable
 {
@@ -14,21 +20,48 @@ internal unsafe class RegionAllocator : IDisposable
     private nint _tableCommittedEnd;
 
     // LIFO stack of free region indices. Committed members hold stale recycled contents
-    // (M4 zero-at-carve): every tier zeroes what it hands out, outside the alloc lock
+    // (M4 zero-at-carve): every tier zeroes what it hands out, outside the pool lock
     private readonly int* _pool;
     private int _poolCount;
 
     // Next never-carved region index; the frontier only grows
     private int _frontier;
 
-    // Active fresh bump region being carved into windows, -1 if none
-    private int _activeBump = -1;
+    // Sharded carveable supply (M7): handouts stopped convoying on one global lock when
+    // each shard got its own private slice of the supply behind its own lock. New
+    // threads are round-robined across shards by GCHeap; a dry shard pulls a batch from
+    // the reservoir, then steals from siblings, before touching the pool — so
+    // hole-first stays a whole-heap policy.
+    private AllocShard[] _shards;
+    private GcAwareLock[]? _shardLocks;
+    private GcAwareLock? _poolLock;
 
-    // Head of the intrusive list of regions with free blocks, per size class
-    private readonly int[] _classHeads = new int[Region.ClassCount];
+    // The supply reservoir (M7 sharded supply): sweeps splice ALL rebuilt supply here,
+    // and shards pull private batches on demand. The first cut spliced sweep output
+    // round-robin across the shards themselves, and the soak ratcheted +600 MB at
+    // +30% handout wait: supply landed uniformly while demand concentrated, so hot
+    // shards drained the pool while cold shards hoarded holes. Demand-directed pulls
+    // are what make N private lists consume like the old single global list.
+    private int _reservoirRecycledHead = -1;
+    private readonly int[] _reservoirClassHeads = new int[Region.ClassCount];
+    private GcAwareLock? _reservoirLock;
 
-    // Head of the intrusive list of bump regions with linked holes (via NextRecycled)
-    private int _recycledHead = -1;
+    private sealed class AllocShard
+    {
+        // Active fresh bump region being carved into windows, -1 if none
+        public int ActiveBump = -1;
+
+        // Head of the intrusive list of bump regions with linked holes (via NextRecycled)
+        public int RecycledHead = -1;
+
+        // Head of the intrusive list of regions with free blocks, per size class
+        public readonly int[] ClassHeads = new int[Region.ClassCount];
+
+        // Assist scratch: only touched while holding this shard's lock
+        public readonly List<int> AssistFreed = new();
+
+        public AllocShard() => ClassHeads.AsSpan().Fill(-1);
+    }
 
     // Set once at startup, needed to write plugs when carving holes and sweeping
     private MethodTable* _freeObjectMethodTable;
@@ -72,9 +105,6 @@ internal unsafe class RegionAllocator : IDisposable
     private int _sweepCursor;
     private volatile bool _sweepInFlight;
 
-    // Assist scratch: only touched under the allocation lock
-    private readonly List<int> _assistFreed = new();
-
     public RegionAllocator(NativeAllocator memory)
     {
         _memory = memory;
@@ -94,13 +124,34 @@ internal unsafe class RegionAllocator : IDisposable
             throw new OutOfMemoryException("Failed to reserve GC region metadata");
         }
 
-        _classHeads.AsSpan().Fill(-1);
+        _shards = [new AllocShard()];
+        _reservoirClassHeads.AsSpan().Fill(-1);
 
         // Mark operations live on GCObject but the storage is ours: one heap per process
         // in production; the unit tests create allocators sequentially
         GCObject.MarkBitmap = _markBitmap;
         GCObject.MarkHeapBase = memory.LowestAddress;
     }
+
+    /// <summary>Arms production locking (M7 sharded supply): one lock per shard, the
+    /// reservoir lock, and the global pool lock. Called once, before any allocation
+    /// reaches the heap; the unit tests never call it and keep the single unlocked
+    /// shard. Lock order: at most one shard lock, then reservoir or pool (never both
+    /// nested); cross-shard steals only TryAcquire.</summary>
+    public void SetLocks(GcAwareLock[] shardLocks, GcAwareLock reservoirLock, GcAwareLock poolLock)
+    {
+        _shardLocks = shardLocks;
+        _reservoirLock = reservoirLock;
+        _poolLock = poolLock;
+        _shards = new AllocShard[shardLocks.Length];
+
+        for (int i = 0; i < _shards.Length; i++)
+        {
+            _shards[i] = new AllocShard();
+        }
+    }
+
+    public int ShardCount => _shards.Length;
 
     /// <summary>Releases the metadata reservations. Production never disposes (the GC
     /// lives as long as the process); this exists for the unit tests.</summary>
@@ -191,38 +242,47 @@ internal unsafe class RegionAllocator : IDisposable
         return (uint)index < (uint)_frontier;
     }
 
+    /// <summary>Unit-test compatibility: shard 0 (tests run single-shard).</summary>
+    public bool TryGetWindow(nint size, out nint window, out nint length, out bool needsZero)
+        => TryGetWindow(0, size, out window, out length, out needsZero);
+
     /// <summary>
     /// Hands out a bump window of at least Align(size) + 24 bytes (SPEC-M2 §3-§4.1).
     /// When <paramref name="needsZero"/> is true the window holds recycled garbage and the
-    /// caller must zero it before use — after releasing the allocation lock, since the
+    /// caller must zero it before use — after releasing the shard lock, since the
     /// window is private to the caller from this point (M4 zero-at-carve).
+    /// Caller holds <paramref name="shard"/>'s lock.
     /// </summary>
-    public bool TryGetWindow(nint size, out nint window, out nint length, out bool needsZero)
+    public bool TryGetWindow(int shard, nint size, out nint window, out nint length, out bool needsZero)
     {
         var needed = Align(size) + 3 * IntPtr.Size;
+        var s = _shards[shard];
 
         // Hole-first policy (SPEC-M2 §4.1): reuse swept holes before touching fresh memory
-        if (TryCarveFromHoles(needed, out window, out length, out needsZero))
+        if (TryCarveFromHoles(s, needed, out window, out length, out needsZero))
         {
-            if (GcStats.Enabled)
-            {
-                GcStats.HoleWindowCount++;
-
-                if (!needsZero)
-                {
-                    GcStats.CleanWindowCount++;
-                }
-            }
-
+            NoteHoleWindow(needsZero);
             return true;
         }
 
         while (true)
         {
-            if (_activeBump >= 0)
+            // Dry shard: restock from the reservoir, else a sibling's private list,
+            // BEFORE consuming the active bump region — hole-first is a whole-heap
+            // policy, not a per-shard one (ordering the active bump above the restock
+            // measured +640 MB on the soak: hot shards chained fresh 2 MB regions off
+            // the pool while holes piled up elsewhere).
+            if ((TryPullFromReservoir(shard, needed) || TryStealRecycled(shard, needed))
+                && TryCarveFromHoles(s, needed, out window, out length, out needsZero))
             {
-                var entry = GetEntry(_activeBump);
-                var dataEnd = RegionBase(_activeBump) + Region.Size - Region.GuardBytes;
+                NoteHoleWindow(needsZero);
+                return true;
+            }
+
+            if (s.ActiveBump >= 0)
+            {
+                var entry = GetEntry(s.ActiveBump);
+                var dataEnd = RegionBase(s.ActiveBump) + Region.Size - Region.GuardBytes;
                 var available = dataEnd - entry->Cursor;
 
                 if (available >= needed)
@@ -241,7 +301,7 @@ internal unsafe class RegionAllocator : IDisposable
 
                     if (GcStats.Enabled && !needsZero)
                     {
-                        GcStats.CleanWindowCount++;
+                        Interlocked.Increment(ref GcStats.CleanWindowCount);
                     }
 
                     return true;
@@ -249,33 +309,24 @@ internal unsafe class RegionAllocator : IDisposable
 
                 // Abandon the tail: it is below every walk bound, so it needs no plug; it
                 // is reclaimed when the region dies (SPEC-M2 §4.1)
-                _activeBump = -1;
+                s.ActiveBump = -1;
             }
 
             // Dry supply during a concurrent sweep: drain the plan instead of
             // fresh-committing, then retry holes first — on smear heaps the assist
             // publishes holes, not pool regions
-            if (_poolCount == 0 && TrySweepAssist())
+            if (Volatile.Read(ref _poolCount) == 0 && TrySweepAssist(shard))
             {
-                if (TryCarveFromHoles(needed, out window, out length, out needsZero))
+                if (TryCarveFromHoles(s, needed, out window, out length, out needsZero))
                 {
-                    if (GcStats.Enabled)
-                    {
-                        GcStats.HoleWindowCount++;
-
-                        if (!needsZero)
-                        {
-                            GcStats.CleanWindowCount++;
-                        }
-                    }
-
+                    NoteHoleWindow(needsZero);
                     return true;
                 }
 
                 continue;
             }
 
-            if (!TryCarveRegion(out var index, out var dirty))
+            if (!TryCarveRegion(RegionKind.Bump, out var index, out var dirty))
             {
                 window = 0;
                 length = 0;
@@ -283,46 +334,243 @@ internal unsafe class RegionAllocator : IDisposable
                 return false;
             }
 
+            // Kind, Cursor and the hole fields were stamped under the pool lock
+            // (see InitializeCarvedEntry); the rest is ours under the shard lock
             var fresh = GetEntry(index);
-            fresh->Kind = RegionKind.Bump;
             fresh->BumpFlags = dirty ? RegionEntry.BumpDirtyFlag : (byte)0;
-            fresh->Age = RegionAge.Fresh;
             fresh->LiveBytes = 0;
-            fresh->Cursor = RegionBase(index);
-            fresh->FirstHole = 0;
-            fresh->HoleBytes = 0;
             fresh->NextRecycled = -1;
 
-            _activeBump = index;
+            s.ActiveBump = index;
+        }
+    }
+
+    private static void NoteHoleWindow(bool needsZero)
+    {
+        if (GcStats.Enabled)
+        {
+            Interlocked.Increment(ref GcStats.HoleWindowCount);
+
+            if (!needsZero)
+            {
+                Interlocked.Increment(ref GcStats.CleanWindowCount);
+            }
         }
     }
 
     /// <summary>Hole-only carve for stash refills (M7): redistributes committed supply
-    /// without deepening a drought — no active-bump, assist, pool or frontier
+    /// without deepening a drought — no active-bump, steal, assist, pool or frontier
     /// fallthrough, so a dry hole list just means no refill. (The first stash shipped
     /// refills through the full TryGetWindow and two of three lohmix runs ratcheted
     /// +0.5 GB: 4 fresh 128 KB carves per acquisition outran the concurrent sweep's
-    /// publications exactly like the pre-assist M6.5 gate story.)</summary>
-    public bool TryGetStashWindow(nint size, out nint window, out nint length, out bool needsZero)
+    /// publications exactly like the pre-assist M6.5 gate story.)
+    /// Caller holds <paramref name="shard"/>'s lock.</summary>
+    public bool TryGetStashWindow(int shard, nint size, out nint window, out nint length, out bool needsZero)
     {
         var needed = Align(size) + 3 * IntPtr.Size;
 
-        if (!TryCarveFromHoles(needed, out window, out length, out needsZero))
+        if (!TryCarveFromHoles(_shards[shard], needed, out window, out length, out needsZero))
         {
             return false;
         }
 
-        if (GcStats.Enabled)
-        {
-            GcStats.HoleWindowCount++;
+        NoteHoleWindow(needsZero);
+        return true;
+    }
 
-            if (!needsZero)
+    private const int MaxStealProbes = 8;
+    private const int PullBatch = 4;
+
+    /// <summary>
+    /// Restocks a dry shard from the reservoir (M7 sharded supply): first-fit walk for a
+    /// region holding a hole ≥ <paramref name="needed"/> — the same walk the old global
+    /// recycled list did — then that region plus up to <see cref="PullBatch"/>-1 of its
+    /// followers move to the shard's private list. The batch is what amortizes the
+    /// reservoir lock down to one acquisition per dozens of carves. Caller holds the
+    /// shard's lock; the reservoir lock nests inside (shard → reservoir order).
+    /// </summary>
+    private bool TryPullFromReservoir(int shard, nint needed)
+    {
+        // Racy peeks gate the lock: when the heap has no carveable holes at all
+        // (post-full, pool-fed phases) every window would otherwise pay a failed walk
+        if (Volatile.Read(ref _reservoirRecycledHead) < 0 || Volatile.Read(ref _linkedHoleBytes) < needed)
+        {
+            return false;
+        }
+
+        var s = _shards[shard];
+
+        _reservoirLock?.Acquire();
+
+        try
+        {
+            var previous = -1;
+            var i = _reservoirRecycledHead;
+
+            while (i >= 0)
             {
-                GcStats.CleanWindowCount++;
+                var entry = GetEntry(i);
+
+                if (entry->HoleBytes >= needed && HasHole(entry, needed))
+                {
+                    // Take [i .. i+PullBatch) in list order: the fitting region plus
+                    // followers whatever their hole sizes — they serve future requests
+                    var tail = i;
+                    var taken = 1;
+
+                    while (taken < PullBatch && GetEntry(tail)->NextRecycled >= 0)
+                    {
+                        tail = GetEntry(tail)->NextRecycled;
+                        taken++;
+                    }
+
+                    var next = GetEntry(tail)->NextRecycled;
+
+                    if (previous < 0)
+                    {
+                        _reservoirRecycledHead = next;
+                    }
+                    else
+                    {
+                        GetEntry(previous)->NextRecycled = next;
+                    }
+
+                    GetEntry(tail)->NextRecycled = s.RecycledHead;
+                    s.RecycledHead = i;
+                    return true;
+                }
+
+                previous = i;
+                i = entry->NextRecycled;
+            }
+
+            return false;
+        }
+        finally
+        {
+            _reservoirLock?.Release();
+        }
+    }
+
+    /// <summary>Class-list flavor of <see cref="TryPullFromReservoir"/>: adopts one
+    /// reservoir region of the class — guaranteed useful, a listed region always has a
+    /// free block.</summary>
+    private bool TryPullClassRegion(int shard, int sizeClass)
+    {
+        if (Volatile.Read(ref _reservoirClassHeads[sizeClass]) < 0)
+        {
+            return false;
+        }
+
+        _reservoirLock?.Acquire();
+
+        try
+        {
+            var head = _reservoirClassHeads[sizeClass];
+
+            if (head < 0)
+            {
+                return false;
+            }
+
+            var entry = GetEntry(head);
+            _reservoirClassHeads[sizeClass] = entry->NextInClassList;
+
+            var s = _shards[shard];
+            entry->NextInClassList = s.ClassHeads[sizeClass];
+            s.ClassHeads[sizeClass] = head;
+            return true;
+        }
+        finally
+        {
+            _reservoirLock?.Release();
+        }
+    }
+
+    /// <summary>
+    /// Straggler drain (M7 sharded supply): when the reservoir is dry, moves one recycled
+    /// region holding a hole ≥ <paramref name="needed"/> from a sibling's private list —
+    /// privates hold at most a pull batch each, but without the steal they would strand
+    /// through a whole young cycle. Victims are TryAcquired — a contended victim is
+    /// skipped, never waited on (the caller holds its own shard lock, so a blocking wait
+    /// here could deadlock two thieves).
+    /// </summary>
+    private bool TryStealRecycled(int shard, nint needed)
+    {
+        if (_shardLocks is null || Volatile.Read(ref _linkedHoleBytes) < needed)
+        {
+            return false;
+        }
+
+        var shardCount = _shards.Length;
+
+        for (int k = 1; k < shardCount; k++)
+        {
+            var victimIndex = (shard + k) % shardCount;
+            var victim = _shards[victimIndex];
+
+            if (Volatile.Read(ref victim.RecycledHead) < 0 || !_shardLocks[victimIndex].TryAcquire())
+            {
+                continue;
+            }
+
+            try
+            {
+                var previous = -1;
+                var probes = 0;
+                var i = victim.RecycledHead;
+
+                while (i >= 0 && probes++ < MaxStealProbes)
+                {
+                    var entry = GetEntry(i);
+                    var next = entry->NextRecycled;
+
+                    if (entry->HoleBytes >= needed && HasHole(entry, needed))
+                    {
+                        if (previous < 0)
+                        {
+                            victim.RecycledHead = next;
+                        }
+                        else
+                        {
+                            GetEntry(previous)->NextRecycled = next;
+                        }
+
+                        var s = _shards[shard];
+                        entry->NextRecycled = s.RecycledHead;
+                        s.RecycledHead = i;
+                        return true;
+                    }
+
+                    previous = i;
+                    i = next;
+                }
+            }
+            finally
+            {
+                _shardLocks[victimIndex].Release();
             }
         }
 
-        return true;
+        return false;
+    }
+
+    private static bool HasHole(RegionEntry* entry, nint needed)
+    {
+        // Bounded: a post-full region can hold hundreds of floor-sized holes (deep
+        // linking), and a fragmented victim must not turn a failed steal into thousands
+        // of pointer chases under two locks. A miss just skips the region.
+        var probes = 0;
+
+        for (var holeRef = entry->FirstHole; holeRef != 0 && probes++ < 16; holeRef = *(nint*)(holeRef + 2 * IntPtr.Size))
+        {
+            if ((nint)((GCObject*)holeRef)->Length + 3 * IntPtr.Size >= needed)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -332,13 +580,13 @@ internal unsafe class RegionAllocator : IDisposable
     /// 32-byte plug header + link prefix is stale — cleaned right here — and the window
     /// goes out with no zeroing debt.
     /// </summary>
-    private bool TryCarveFromHoles(nint needed, out nint window, out nint length, out bool needsZero)
+    private bool TryCarveFromHoles(AllocShard shard, nint needed, out nint window, out nint length, out bool needsZero)
     {
         window = 0;
         length = 0;
         needsZero = true;
 
-        var regionIndex = _recycledHead;
+        var regionIndex = shard.RecycledHead;
         var previousRegion = -1;
 
         while (regionIndex >= 0)
@@ -385,7 +633,7 @@ internal unsafe class RegionAllocator : IDisposable
                     }
 
                     entry->HoleBytes -= (int)extent;
-                    _linkedHoleBytes -= extent;
+                    Interlocked.Add(ref _linkedHoleBytes, -extent);
 
                     if (length < extent)
                     {
@@ -401,7 +649,7 @@ internal unsafe class RegionAllocator : IDisposable
                             *(nint*)(remainderStart + 3 * IntPtr.Size) = entry->FirstHole;
                             entry->FirstHole = remainderStart + IntPtr.Size;
                             entry->HoleBytes += (int)(extent - length);
-                            _linkedHoleBytes += extent - length;
+                            Interlocked.Add(ref _linkedHoleBytes, extent - length);
                         }
                         // else: a sub-window remainder floats until the next full collection
                     }
@@ -419,7 +667,7 @@ internal unsafe class RegionAllocator : IDisposable
                         // No holes left: unlink the region from the recycled list
                         if (previousRegion < 0)
                         {
-                            _recycledHead = entry->NextRecycled;
+                            shard.RecycledHead = entry->NextRecycled;
                         }
                         else
                         {
@@ -443,42 +691,54 @@ internal unsafe class RegionAllocator : IDisposable
         return false;
     }
 
+    /// <summary>Unit-test compatibility: shard 0 (tests run single-shard).</summary>
+    public bool TryAllocBlock(int sizeClass, out nint block, out bool needsZero)
+        => TryAllocBlock(0, sizeClass, out block, out needsZero);
+
     /// <summary>
     /// Allocates one block from a size-class region (SPEC-M2 §4.2). When
     /// <paramref name="needsZero"/> is true the block holds stale recycled contents and the
-    /// caller must zero the object extent before use — after releasing the allocation lock,
+    /// caller must zero the object extent before use — after releasing the shard lock,
     /// since the block is private to the caller from this point (M4 zero-at-carve).
+    /// Caller holds <paramref name="shard"/>'s lock.
     /// </summary>
-    public bool TryAllocBlock(int sizeClass, out nint block, out bool needsZero)
+    public bool TryAllocBlock(int shard, int sizeClass, out nint block, out bool needsZero)
     {
-        var head = _classHeads[sizeClass];
+        var s = _shards[shard];
+        var head = s.ClassHeads[sizeClass];
+
+        // Dry shard: restock from the reservoir, else a sibling, before carving fresh —
+        // same restock-before-pool rationale as the window tier
+        if (head < 0 && (TryPullClassRegion(shard, sizeClass) || TryStealClassRegion(shard, sizeClass)))
+        {
+            head = s.ClassHeads[sizeClass];
+        }
 
         // Dry class list during a concurrent sweep: the plan may hold partially-free
         // regions of this class — drain it before carving a fresh region
-        while (head < 0 && _poolCount == 0 && TrySweepAssist())
+        while (head < 0 && Volatile.Read(ref _poolCount) == 0 && TrySweepAssist(shard))
         {
-            head = _classHeads[sizeClass];
+            head = s.ClassHeads[sizeClass];
         }
 
         if (head < 0)
         {
-            if (!TryCarveRegion(out var index, out var dirty))
+            if (!TryCarveRegion(RegionKind.SizeClass, out var index, out var dirty))
             {
                 block = 0;
                 needsZero = false;
                 return false;
             }
 
+            // Kind, SizeClass and AllocatedBlocks were stamped under the pool lock
+            // (see InitializeCarvedEntry)
             var fresh = GetEntry(index);
-            fresh->Kind = RegionKind.SizeClass;
-            fresh->Age = RegionAge.Fresh;
             fresh->SizeClass = (byte)sizeClass;
             fresh->LiveBytes = 0;
-            fresh->AllocatedBlocks = 0;
             fresh->DirtyBlocks = dirty ? ulong.MaxValue : 0;
             fresh->NextInClassList = -1;
 
-            _classHeads[sizeClass] = index;
+            s.ClassHeads[sizeClass] = index;
             head = index;
         }
 
@@ -503,12 +763,60 @@ internal unsafe class RegionAllocator : IDisposable
 
         if ((entry->AllocatedBlocks & fullMask) == fullMask)
         {
-            _classHeads[sizeClass] = entry->NextInClassList;
+            s.ClassHeads[sizeClass] = entry->NextInClassList;
             entry->NextInClassList = -1;
         }
 
         block = RegionBase(head) + (nint)i * Region.ClassSizes[sizeClass];
         return true;
+    }
+
+    /// <summary>Class-list flavor of <see cref="TryStealRecycled"/>: adopts a sibling's
+    /// head region for the class — guaranteed useful, a listed region always has a free
+    /// block. Same TryAcquire-only discipline.</summary>
+    private bool TryStealClassRegion(int shard, int sizeClass)
+    {
+        if (_shardLocks is null)
+        {
+            return false;
+        }
+
+        var shardCount = _shards.Length;
+
+        for (int k = 1; k < shardCount; k++)
+        {
+            var victimIndex = (shard + k) % shardCount;
+            var victim = _shards[victimIndex];
+
+            if (Volatile.Read(ref victim.ClassHeads[sizeClass]) < 0 || !_shardLocks[victimIndex].TryAcquire())
+            {
+                continue;
+            }
+
+            try
+            {
+                var head = victim.ClassHeads[sizeClass];
+
+                if (head < 0)
+                {
+                    continue; // emptied between the peek and the acquire
+                }
+
+                var entry = GetEntry(head);
+                victim.ClassHeads[sizeClass] = entry->NextInClassList;
+
+                var s = _shards[shard];
+                entry->NextInClassList = s.ClassHeads[sizeClass];
+                s.ClassHeads[sizeClass] = head;
+                return true;
+            }
+            finally
+            {
+                _shardLocks[victimIndex].Release();
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Safe accessor for iterating a size-class region's allocated blocks.</summary>
@@ -518,15 +826,38 @@ internal unsafe class RegionAllocator : IDisposable
         return (entry->AllocatedBlocks, Region.ClassSizes[entry->SizeClass]);
     }
 
+    /// <summary>Unit-test compatibility (and the OOM last stand): frontier allowed.</summary>
+    public bool TryAllocSpan(int count, out nint spanBase) => TryAllocSpan(count, out spanBase, allowFrontier: true);
+
     /// <summary>
     /// Allocates a span of contiguous regions for a single large object (SPEC-M2 §4.3):
     /// first a contiguous run of pooled free regions, else the frontier (contiguous by
     /// construction). Recycled members come back with stale contents and their
     /// <see cref="RegionEntry.SpanIsDirty"/> set — the caller zeroes the object extent
-    /// via <see cref="ZeroSpanCarve"/> *after releasing the allocation lock* (M4
+    /// via <see cref="ZeroSpanCarve"/> *after releasing the pool lock* (M4
     /// zero-at-carve, extended to spans).
+    ///
+    /// The whole operation runs under the pool lock (M7 sharded supply). The inline sweep
+    /// assists this tier used to run moved to the caller's retry loop: an assist splices
+    /// supply into a shard, and shard locks must never be waited on while holding the pool
+    /// lock. With <paramref name="allowFrontier"/> false a dry pool fails instead of
+    /// committing past the frontier — the caller still has assists to try.
     /// </summary>
-    public bool TryAllocSpan(int count, out nint spanBase)
+    public bool TryAllocSpan(int count, out nint spanBase, bool allowFrontier)
+    {
+        _poolLock?.Acquire();
+
+        try
+        {
+            return TryAllocSpanLocked(count, out spanBase, allowFrontier);
+        }
+        finally
+        {
+            _poolLock?.Release();
+        }
+    }
+
+    private bool TryAllocSpanLocked(int count, out nint spanBase, bool allowFrontier)
     {
         spanBase = 0;
         int start;
@@ -534,21 +865,15 @@ internal unsafe class RegionAllocator : IDisposable
         if (count == 1)
         {
             // The common case (spans ≤ 2 MB): any one free region works, so take the
-            // pool's LIFO top instead of scanning the table for a run. A dry pool
-            // during a concurrent sweep drains the plan first (dead spans it frees
-            // land in the pool) instead of committing past the frontier.
-            while (_poolCount == 0 && TrySweepAssist())
-            {
-            }
-
-            if (!TryCarveRegion(out start, out var dirty))
+            // pool's LIFO top instead of scanning the table for a run
+            if (!TryCarveRegionLocked(RegionKind.SpanStart, out start, out var dirty, allowFrontier))
             {
                 return false;
             }
 
             GetEntry(start)->SpanIsDirty = dirty ? (byte)1 : (byte)0;
         }
-        else if (TryTakeFreeRunWithAssist(count, out start))
+        else if (TryTakeFreeRun(count, out start))
         {
             // Only the start region can hold the span object's mark bit; extension
             // slices are never consulted (no object starts there)
@@ -556,7 +881,7 @@ internal unsafe class RegionAllocator : IDisposable
         }
         else
         {
-            if (_frontier + count > Region.Count || !EnsureTableCommitted(_frontier + count))
+            if (!allowFrontier || _frontier + count > Region.Count || !EnsureTableCommitted(_frontier + count))
             {
                 return false;
             }
@@ -568,7 +893,7 @@ internal unsafe class RegionAllocator : IDisposable
                 return false;
             }
 
-            _committedRegionBytes += (long)count << Region.Shift;
+            Interlocked.Add(ref _committedRegionBytes, (long)count << Region.Shift);
             _frontier = start + count;
 
             for (int i = 0; i < count; i++)
@@ -602,24 +927,6 @@ internal unsafe class RegionAllocator : IDisposable
     /// removes the run from the pool. Every Free region is in the pool, so a run of Free
     /// table entries is a run of pool members.
     /// </summary>
-    private bool TryTakeFreeRunWithAssist(int count, out int start)
-    {
-        while (true)
-        {
-            if (TryTakeFreeRun(count, out start))
-            {
-                return true;
-            }
-
-            // Multi-region spans: drain the sweep plan hunting for a contiguous free
-            // run before committing fresh regions past the frontier
-            if (!TrySweepAssist())
-            {
-                return false;
-            }
-        }
-    }
-
     private bool TryTakeFreeRun(int count, out int start)
     {
         start = -1;
@@ -667,8 +974,8 @@ internal unsafe class RegionAllocator : IDisposable
                     return false;
                 }
 
-                _committedRegionBytes += Region.Size;
-                _pooledCommittedBytes += Region.Size;
+                Interlocked.Add(ref _committedRegionBytes, Region.Size);
+                Interlocked.Add(ref _pooledCommittedBytes, Region.Size);
                 entry->SpanIsDirty = 0; // freshly committed: OS-zeroed
             }
             else
@@ -682,7 +989,7 @@ internal unsafe class RegionAllocator : IDisposable
         for (int i = 0; i < count; i++)
         {
             RemoveFromPool(start + i);
-            _pooledCommittedBytes -= Region.Size;
+            Interlocked.Add(ref _pooledCommittedBytes, -Region.Size);
         }
 
         return true;
@@ -700,7 +1007,21 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private bool TryCarveRegion(out int index, out bool dirty)
+    private bool TryCarveRegion(RegionKind kind, out int index, out bool dirty)
+    {
+        _poolLock?.Acquire();
+
+        try
+        {
+            return TryCarveRegionLocked(kind, out index, out dirty, allowFrontier: true);
+        }
+        finally
+        {
+            _poolLock?.Release();
+        }
+    }
+
+    private bool TryCarveRegionLocked(RegionKind kind, out int index, out bool dirty, bool allowFrontier)
     {
         dirty = false;
 
@@ -715,7 +1036,7 @@ internal unsafe class RegionAllocator : IDisposable
                 // zeroer got to it first (M7); either way its tenant dirties it now
                 dirty = entry->IsCommitted == RegionEntry.CommitDirty;
                 entry->IsCommitted = RegionEntry.CommitDirty;
-                _pooledCommittedBytes -= Region.Size;
+                Interlocked.Add(ref _pooledCommittedBytes, -Region.Size);
             }
             else
             {
@@ -726,20 +1047,22 @@ internal unsafe class RegionAllocator : IDisposable
                 }
 
                 entry->IsCommitted = RegionEntry.CommitDirty;
-                _committedRegionBytes += Region.Size;
+                Interlocked.Add(ref _committedRegionBytes, Region.Size);
             }
 
             // Sticky marks from the region's previous life would resurrect dead objects
             // (only full collections clear the bitmap); recycled regions restart clean.
             // Frontier regions below skip this: their bitmap slice is freshly committed.
             ClearRegionMarks(index);
+            InitializeCarvedEntry(index, kind);
 
             return true;
         }
 
         index = _frontier;
 
-        if (index >= Region.Count
+        if (!allowFrontier
+            || index >= Region.Count
             || !CanCommit(Region.Size)
             || !EnsureTableCommitted(index + 1)
             || !_memory.TryCommit(RegionBase(index), Region.Size))
@@ -748,9 +1071,42 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         GetEntry(index)->IsCommitted = RegionEntry.CommitDirty;
-        _committedRegionBytes += Region.Size;
+        Interlocked.Add(ref _committedRegionBytes, Region.Size);
         _frontier = index + 1;
+        InitializeCarvedEntry(index, kind);
         return true;
+    }
+
+    /// <summary>
+    /// Stamps, still under the pool lock, the entry fields other threads read without the
+    /// carver's shard lock: the span run scan trusts Kind == Free ⇒ pooled, and the census
+    /// reads kind-specific fields with the world running — a Kind observed with a stale
+    /// union from the region's previous life (e.g. a SizeClass byte ≥ ClassCount) must
+    /// never be visible. The carver finishes the rest under its own shard lock.
+    /// </summary>
+    private void InitializeCarvedEntry(int index, RegionKind kind)
+    {
+        var entry = GetEntry(index);
+        entry->Age = RegionAge.Fresh;
+
+        if (kind == RegionKind.Bump)
+        {
+            entry->BumpFlags = 0;
+            entry->Cursor = RegionBase(index);
+            entry->FirstHole = 0;
+            entry->HoleBytes = 0;
+        }
+        else if (kind == RegionKind.SizeClass)
+        {
+            entry->SizeClass = 0;
+            entry->AllocatedBlocks = 0;
+        }
+        else if (kind == RegionKind.SpanStart)
+        {
+            entry->SpanCount = 1; // exact: multi-region spans never carve through here
+        }
+
+        entry->Kind = kind;
     }
 
     /// <summary>
@@ -775,9 +1131,7 @@ internal unsafe class RegionAllocator : IDisposable
             : Region.FullMinLinkedHole;
 
         // Hole lists and class lists are rebuilt from scratch on every sweep
-        _recycledHead = -1;
-        _linkedHoleBytes = 0;
-        _classHeads.AsSpan().Fill(-1);
+        ResetSupplyLists();
 
         var frontier = _frontier;
 
@@ -785,7 +1139,7 @@ internal unsafe class RegionAllocator : IDisposable
         {
             var lists = NewSweepLists();
             SweepRange(0, frontier, youngOnly, ref lists, deferredFrees: null, plan: null);
-            SpliceSweepLists(ref lists);
+            SpliceToReservoir(ref lists);
             return lists.Live;
         }
 
@@ -817,12 +1171,71 @@ internal unsafe class RegionAllocator : IDisposable
 
             lock (mergeLock)
             {
-                SpliceSweepLists(ref lists);
+                // All sweep supply goes to the reservoir — shards pull on demand; the
+                // merge lock (not the reservoir lock) suffices under STW
+                SpliceToReservoir(ref lists);
                 liveTotal += lists.Live;
             }
         });
 
         return liveTotal;
+    }
+
+    /// <summary>Resets every shard's private supply and the reservoir. Runs under STW
+    /// with the zeroer gated, so no locks are needed: a mutator that won a shard lock
+    /// during the suspension is parked before touching supply state (see GcAwareLock).</summary>
+    private void ResetSupplyLists()
+    {
+        Volatile.Write(ref _linkedHoleBytes, 0);
+        _reservoirRecycledHead = -1;
+        _reservoirClassHeads.AsSpan().Fill(-1);
+
+        foreach (var shard in _shards)
+        {
+            shard.RecycledHead = -1;
+            shard.ClassHeads.AsSpan().Fill(-1);
+        }
+    }
+
+    /// <summary>
+    /// Abandons every shard's active bump region for a concurrent sweep — sealed, not
+    /// dropped: the tail above the cursor is plugged and the cursor advanced to the data
+    /// end, so the following full sweep folds the never-carved space into the trailing
+    /// hole. Merely dropping the reference measured +780 MB of standing strands on the
+    /// ASP.NET soak: one abandoned active per full cycle was noise in the single-lock
+    /// world, but sixteen per cycle — refilling slowly because carves prefer holes —
+    /// strands most of each region until its survivors happen to die.
+    /// Runs under STW at pause B (walkability: the plug is in place before the world
+    /// restarts; the region is unreachable to carves once the lists reset).
+    /// </summary>
+    private void SealActiveBumps()
+    {
+        foreach (var shard in _shards)
+        {
+            var index = shard.ActiveBump;
+
+            if (index < 0)
+            {
+                continue;
+            }
+
+            shard.ActiveBump = -1;
+
+            var entry = GetEntry(index);
+            var dataEnd = RegionBase(index) + Region.Size - Region.GuardBytes;
+            var tail = dataEnd - entry->Cursor;
+
+            if (tail >= 3 * IntPtr.Size)
+            {
+                // Same plug formula as ClosePlug: extent [Cursor, dataEnd), object ref
+                // at Cursor + 8. A sub-plug tail (< 24 bytes) stays below the old walk
+                // bound and floats until the region dies, like an inline abandon.
+                var plug = (GCObject*)(entry->Cursor + IntPtr.Size);
+                plug->RawMethodTable = _freeObjectMethodTable;
+                plug->Length = (uint)(tail - 3 * IntPtr.Size);
+                entry->Cursor = dataEnd;
+            }
+        }
     }
 
     /// <summary>Whole-heap live bytes as accumulated by the mark phase's interlocked
@@ -852,10 +1265,8 @@ internal unsafe class RegionAllocator : IDisposable
     public void BeginConcurrentSweep(int[] plan, int planCount)
     {
         _minLinkedHole = UnderMemoryPressure ? PressureMinLinkedHole : Region.FullMinLinkedHole;
-        _recycledHead = -1;
-        _linkedHoleBytes = 0;
-        _classHeads.AsSpan().Fill(-1);
-        _activeBump = -1;
+        SealActiveBumps();
+        ResetSupplyLists();
 
         // Arm the assist before the world restarts: the first post-restart carve can
         // hit a dry supply before the worker pool has published anything
@@ -866,16 +1277,17 @@ internal unsafe class RegionAllocator : IDisposable
     }
 
     /// <summary>
-    /// Mutator sweep-assist (M6.5 stage 2): called from the carve slow paths — alloc
-    /// lock held — when supply runs dry while a concurrent sweep is in flight. Claims
-    /// one plan chunk, sweeps it right here and publishes inline (the caller already
-    /// holds the publication lock), so allocation demand drains the plan instead of
-    /// fresh-committing. Returns true when a chunk was swept — the caller retries its
-    /// supply — and false once the plan is exhausted. Safe against cycle turnover: a
-    /// claim runs entirely inside one allocation call, and the next cycle's plan is
-    /// rebuilt under a suspension that waits for every such call to drain.
+    /// Mutator sweep-assist (M6.5 stage 2): called from the carve slow paths — the
+    /// caller's shard lock held — when supply runs dry while a concurrent sweep is in
+    /// flight. Claims one plan chunk, sweeps it right here, splices the supply into the
+    /// caller's own shard (demand-driven distribution) and publishes freed regions under
+    /// the pool lock, so allocation demand drains the plan instead of fresh-committing.
+    /// Returns true when a chunk was swept — the caller retries its supply — and false
+    /// once the plan is exhausted. Safe against cycle turnover: a claim runs entirely
+    /// inside one allocation call, and the next cycle's plan is rebuilt under a
+    /// suspension that waits for every such call to drain.
     /// </summary>
-    public bool TrySweepAssist()
+    public bool TrySweepAssist(int shard)
     {
         if (!_sweepInFlight)
         {
@@ -890,10 +1302,10 @@ internal unsafe class RegionAllocator : IDisposable
             return false;
         }
 
-        // Much smaller than the worker chunk: this runs under the allocation lock on
-        // an application thread, and two smear regions' holes (~2-4 MB) already serve
-        // dozens of carves — the assist exists to bridge to the workers' publications,
-        // not to compete with them for the plan
+        // Much smaller than the worker chunk: this runs on an application thread, and
+        // two smear regions' holes (~2-4 MB) already serve dozens of carves — the
+        // assist exists to bridge to the workers' publications, not to compete with
+        // them for the plan
         const int Chunk = 2;
 
         var start = Interlocked.Add(ref _sweepCursor, Chunk) - Chunk;
@@ -903,16 +1315,29 @@ internal unsafe class RegionAllocator : IDisposable
             return false;
         }
 
+        var s = _shards[shard];
         var lists = NewSweepLists();
-        _assistFreed.Clear();
+        s.AssistFreed.Clear();
 
-        SweepRange(start, Math.Min(start + Chunk, planCount), youngOnly: false, ref lists, _assistFreed, plan);
+        SweepRange(start, Math.Min(start + Chunk, planCount), youngOnly: false, ref lists, s.AssistFreed, plan);
 
-        SpliceSweepLists(ref lists);
+        SpliceSweepLists(ref lists, shard);
 
-        foreach (var index in _assistFreed)
+        if (s.AssistFreed.Count > 0)
         {
-            MakeFree(index);
+            _poolLock?.Acquire();
+
+            try
+            {
+                foreach (var index in s.AssistFreed)
+                {
+                    MakeFree(index);
+                }
+            }
+            finally
+            {
+                _poolLock?.Release();
+            }
         }
 
         return true;
@@ -961,15 +1386,15 @@ internal unsafe class RegionAllocator : IDisposable
     /// in-use, with the world running. Safe because none of them is reachable to
     /// allocation until published: <see cref="BeginConcurrentSweep"/> reset the supply
     /// lists under STW, pool pops during the sweep only produce regions the plan says
-    /// to skip, and planned regions' cursors cannot move (only the active bump
-    /// region's does, and it was abandoned). Workers publish their chunk's supply —
-    /// list splices and pool pushes — under <paramref name="publishLock"/> (the
-    /// allocation lock), so carves see complete per-chunk results; the zeroer must be
-    /// gated out by the caller for the whole sweep (it walks hole memory without the
-    /// lock). The return value is Σ LiveBytes over swept regions, for parity checks —
+    /// to skip, and planned regions' cursors cannot move (only active bump regions'
+    /// do, and they were abandoned). Workers publish each chunk's supply under locks —
+    /// list splices into a rotating shard (spreading the rebuilt supply), pool pushes
+    /// under the pool lock — so carves see complete per-chunk results; the zeroer must
+    /// be gated out by the caller for the whole sweep (it walks hole memory without
+    /// locks). The return value is Σ LiveBytes over swept regions, for parity checks —
     /// budgets already consumed <see cref="SumLiveBytes"/> at pause B.
     /// </summary>
-    public long SweepConcurrentFull(GcAwareLock publishLock, GcWorkerPool? pool)
+    public long SweepConcurrentFull(GcWorkerPool? pool)
     {
         var plan = _sweepPlan!;
         var planCount = _sweepPlanCount;
@@ -996,22 +1421,35 @@ internal unsafe class RegionAllocator : IDisposable
                 SweepRange(start, Math.Min(start + Chunk, planCount), youngOnly: false, ref lists, freed, plan);
                 live += lists.Live;
 
-                // Publish this chunk's supply: recycled/class list splices and pool
-                // pushes become visible to carves atomically per chunk
-                publishLock.Acquire();
+                // Publish this chunk's supply. The worker never holds two locks at
+                // once, so it can never participate in a lock-order cycle with carves
+                // (which nest shard → reservoir/pool).
+                _reservoirLock?.Acquire();
 
                 try
                 {
-                    SpliceSweepLists(ref lists);
-
-                    foreach (var index in freed)
-                    {
-                        MakeFree(index);
-                    }
+                    SpliceToReservoir(ref lists);
                 }
                 finally
                 {
-                    publishLock.Release();
+                    _reservoirLock?.Release();
+                }
+
+                if (freed.Count > 0)
+                {
+                    _poolLock?.Acquire();
+
+                    try
+                    {
+                        foreach (var index in freed)
+                        {
+                            MakeFree(index);
+                        }
+                    }
+                    finally
+                    {
+                        _poolLock?.Release();
+                    }
                 }
 
                 lists = NewSweepLists();
@@ -1087,22 +1525,55 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private void SpliceSweepLists(ref SweepLists lists)
+    /// <summary>Splices a sweep harvest into the reservoir. Callers hold the reservoir
+    /// lock (concurrent sweep workers) or run under STW (the merge lock serializes
+    /// parallel workers there).</summary>
+    private void SpliceToReservoir(ref SweepLists lists)
     {
-        _linkedHoleBytes += lists.LinkedHoleBytes;
+        if (lists.LinkedHoleBytes != 0)
+        {
+            Interlocked.Add(ref _linkedHoleBytes, lists.LinkedHoleBytes);
+        }
 
         if (lists.RecycledHead >= 0)
         {
-            GetEntry(lists.RecycledTail)->NextRecycled = _recycledHead;
-            _recycledHead = lists.RecycledHead;
+            GetEntry(lists.RecycledTail)->NextRecycled = _reservoirRecycledHead;
+            _reservoirRecycledHead = lists.RecycledHead;
         }
 
         for (int c = 0; c < Region.ClassCount; c++)
         {
             if (lists.ClassHeads[c] >= 0)
             {
-                GetEntry(lists.ClassTails[c])->NextInClassList = _classHeads[c];
-                _classHeads[c] = lists.ClassHeads[c];
+                GetEntry(lists.ClassTails[c])->NextInClassList = _reservoirClassHeads[c];
+                _reservoirClassHeads[c] = lists.ClassHeads[c];
+            }
+        }
+    }
+
+    /// <summary>Splices an assist harvest into the caller's own shard (demand-driven:
+    /// the assisting thread is about to consume it). Caller holds that shard's lock.</summary>
+    private void SpliceSweepLists(ref SweepLists lists, int shard)
+    {
+        if (lists.LinkedHoleBytes != 0)
+        {
+            Interlocked.Add(ref _linkedHoleBytes, lists.LinkedHoleBytes);
+        }
+
+        var s = _shards[shard];
+
+        if (lists.RecycledHead >= 0)
+        {
+            GetEntry(lists.RecycledTail)->NextRecycled = s.RecycledHead;
+            s.RecycledHead = lists.RecycledHead;
+        }
+
+        for (int c = 0; c < Region.ClassCount; c++)
+        {
+            if (lists.ClassHeads[c] >= 0)
+            {
+                GetEntry(lists.ClassTails[c])->NextInClassList = s.ClassHeads[c];
+                s.ClassHeads[c] = lists.ClassHeads[c];
             }
         }
     }
@@ -1230,10 +1701,16 @@ internal unsafe class RegionAllocator : IDisposable
     private void RecycleBumpRegion(int index, List<int>? deferredFrees)
     {
         // Zero-at-carve (M4): the region returns to the pool with its dead contents in
-        // place; the next carve zeroes the windows it hands out
-        if (_activeBump == index)
+        // place; the next carve zeroes the windows it hands out. The racy reads are
+        // benign on the concurrent path: a planned region can never be a shard's active
+        // bump mid-sweep (actives were abandoned at BeginConcurrentSweep and pool pops
+        // skip planned regions), so a match only ever happens under STW.
+        foreach (var shard in _shards)
         {
-            _activeBump = -1;
+            if (shard.ActiveBump == index)
+            {
+                shard.ActiveBump = -1;
+            }
         }
 
         MakeFree(index, deferredFrees);
@@ -1431,7 +1908,7 @@ internal unsafe class RegionAllocator : IDisposable
 
         // Lock-free push: parallel sweep workers free regions concurrently. STW sweeps
         // run with allocation stopped and the zeroer gated, so pushes only race with
-        // each other; the concurrent sweep reaches here holding the alloc lock instead.
+        // each other; the concurrent sweep reaches here holding the pool lock instead.
         var slot = Interlocked.Increment(ref _poolCount) - 1;
         _pool[slot] = index;
 
@@ -1472,7 +1949,7 @@ internal unsafe class RegionAllocator : IDisposable
     /// skips it. Refuses when the pool is nearly empty or the heap is under memory
     /// pressure, so checkouts never push an allocation to the frontier (or to a spurious
     /// OOM collection) that the pool could have served. Caller must hold
-    /// <see cref="ZeroerGate"/> and the allocation lock.
+    /// <see cref="ZeroerGate"/> and the pool lock.
     /// </summary>
     public bool TryCheckOutDirtyRegion(out int index, out nint regionBase)
     {
@@ -1495,7 +1972,7 @@ internal unsafe class RegionAllocator : IDisposable
                 index = _pool[i];
                 _pool[i] = _pool[--_poolCount];
                 entry->ZeroerCheckedOut = 1;
-                _pooledCommittedBytes -= Region.Size;
+                Interlocked.Add(ref _pooledCommittedBytes, -Region.Size);
                 regionBase = RegionBase(index);
                 return true;
             }
@@ -1506,29 +1983,31 @@ internal unsafe class RegionAllocator : IDisposable
 
     /// <summary>Returns a checked-out region to the pool top, pre-zeroed: the next carve
     /// hands its memory out with no zeroing debt. Caller must hold <see cref="ZeroerGate"/>
-    /// and the allocation lock.</summary>
+    /// and the pool lock.</summary>
     public void CheckInZeroedRegion(int index)
     {
         var entry = GetEntry(index);
         entry->ZeroerCheckedOut = 0;
         entry->IsCommitted = RegionEntry.CommitZeroed;
         _pool[_poolCount++] = index;
-        _pooledCommittedBytes += Region.Size;
+        Interlocked.Add(ref _pooledCommittedBytes, Region.Size);
     }
 
     /// <summary>
-    /// Unlinks the first recycled region whose hole bodies are still dirty (M7): out of the
-    /// recycled list, its holes are unreachable to carves, while window carves of its virgin
-    /// tail (it may be the active bump region) touch disjoint memory and fields. Unlike pool
-    /// checkouts this must not straddle a collection — the sweep rebuilds the recycled list
-    /// and walks hole memory — so the zeroer holds <see cref="ZeroerGate"/> from here through
-    /// <see cref="CheckInZeroedHoleRegion"/>. Caller must also hold the allocation lock.
+    /// Unlinks the first reservoir region whose hole bodies are still dirty (M7): out of
+    /// the reservoir, its holes are unreachable to carves, while window carves of its
+    /// virgin tail touch disjoint memory and fields. Shards' private lists are not
+    /// walked: supply passes through the reservoir, and privates hold at most a pull
+    /// batch each. Unlike pool checkouts this must not straddle a collection — the sweep
+    /// rebuilds the recycled lists and walks hole memory — so the zeroer holds
+    /// <see cref="ZeroerGate"/> from here through <see cref="CheckInZeroedHoleRegion"/>.
+    /// Caller must also hold the reservoir lock.
     /// </summary>
     public bool TryCheckOutDirtyHoleRegion(out int index)
     {
         var previous = -1;
 
-        for (index = _recycledHead; index >= 0; index = GetEntry(index)->NextRecycled)
+        for (index = _reservoirRecycledHead; index >= 0; index = GetEntry(index)->NextRecycled)
         {
             var entry = GetEntry(index);
 
@@ -1536,7 +2015,7 @@ internal unsafe class RegionAllocator : IDisposable
             {
                 if (previous < 0)
                 {
-                    _recycledHead = entry->NextRecycled;
+                    _reservoirRecycledHead = entry->NextRecycled;
                 }
                 else
                 {
@@ -1566,15 +2045,15 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    /// <summary>Relinks a checked-out hole region at the recycled-list head with its holes
-    /// flagged pre-zeroed. Caller must hold <see cref="ZeroerGate"/> (continuously since the
-    /// checkout) and the allocation lock.</summary>
+    /// <summary>Relinks a checked-out hole region at the reservoir head with its holes
+    /// flagged pre-zeroed. Caller must hold <see cref="ZeroerGate"/> (continuously since
+    /// the checkout) and the reservoir lock.</summary>
     public void CheckInZeroedHoleRegion(int index)
     {
         var entry = GetEntry(index);
         entry->BumpFlags |= RegionEntry.HolesZeroedFlag;
-        entry->NextRecycled = _recycledHead;
-        _recycledHead = index;
+        entry->NextRecycled = _reservoirRecycledHead;
+        _reservoirRecycledHead = index;
     }
 
     /// <summary>
@@ -1584,9 +2063,9 @@ internal unsafe class RegionAllocator : IDisposable
     /// a whole budget's worth of regions every cycle, and trimming below the next cycle's
     /// demand just converts the slack into decommit/recommit churn.
     ///
-    /// Batched and called under the allocation lock with the world running (M6 stage 3:
-    /// the whole-pool trim measured ~46 ms inside pause B on the ASP.NET soak, and
-    /// decommitting free regions needs no stopped world — only the allocator's lock
+    /// Batched under the pool lock with the world running (M6 stage 3: the whole-pool
+    /// trim measured ~46 ms inside pause B on the ASP.NET soak, and decommitting free
+    /// regions needs no stopped world — only the allocator's lock
     /// discipline). Pops and zeroer checkouts between batches can shuffle entries past
     /// the caller's cursor; that only under-trims, and the next collection's trim picks
     /// up the remainder. When the pool is already at target the batch is a single
@@ -1644,30 +2123,40 @@ internal unsafe class RegionAllocator : IDisposable
         return census;
     }
 
-    /// <returns>true while entries above target remain (call again for the next batch)</returns>
+    /// <returns>true while entries above target remain (call again for the next batch).
+    /// Each batch holds the pool lock internally (M7 sharded supply).</returns>
     public bool TrimPoolBatch(long target, int maxDecommits, ref int cursor)
     {
-        var done = 0;
+        _poolLock?.Acquire();
 
-        for (; cursor < _poolCount && _pooledCommittedBytes > target; cursor++)
+        try
         {
-            if (done == maxDecommits)
+            var done = 0;
+
+            for (; cursor < _poolCount && Volatile.Read(ref _pooledCommittedBytes) > target; cursor++)
             {
-                return true;
+                if (done == maxDecommits)
+                {
+                    return true;
+                }
+
+                var entry = GetEntry(_pool[cursor]);
+
+                if (entry->IsCommitted != RegionEntry.CommitNone && _memory.Decommit(RegionBase(_pool[cursor]), Region.Size))
+                {
+                    entry->IsCommitted = RegionEntry.CommitNone;
+                    Interlocked.Add(ref _pooledCommittedBytes, -Region.Size);
+                    Interlocked.Add(ref _committedRegionBytes, -Region.Size);
+                    done++;
+                }
             }
 
-            var entry = GetEntry(_pool[cursor]);
-
-            if (entry->IsCommitted != RegionEntry.CommitNone && _memory.Decommit(RegionBase(_pool[cursor]), Region.Size))
-            {
-                entry->IsCommitted = RegionEntry.CommitNone;
-                _pooledCommittedBytes -= Region.Size;
-                _committedRegionBytes -= Region.Size;
-                done++;
-            }
+            return false;
         }
-
-        return false;
+        finally
+        {
+            _poolLock?.Release();
+        }
     }
 
     /// <summary>Zeroes a recycled window or block extent before first use (M4

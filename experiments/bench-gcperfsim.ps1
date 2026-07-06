@@ -21,8 +21,10 @@ param(
     [switch]$Concurrent,          # stock only: DOTNET_gcConcurrent=1 (BGC)
     [int]$HeapCount = 0,          # GC threads/heaps; 0 = collector default. Decimal here;
                                   # the script converts to hex for DOTNET_GCHeapCount.
-    [int]$HardLimitMB = 0         # DOTNET_GCHeapHardLimit in MB; 0 = none. For the
+    [int]$HardLimitMB = 0,        # DOTNET_GCHeapHardLimit in MB; 0 = none. For the
                                   # "memory-lean" fairness rows (cap ours at stock-SVR's peak).
+    [int]$AllocShards = 0         # custom only: DOTNET_GCAllocShards; 0 = collector default,
+                                  # 1 = single supply lock (M7 sharded-supply A/B rows)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,7 +77,12 @@ $env:DOTNET_gcConservative = '0'
 if ($Concurrent -and -not $GcDll) { $gcName += '-bgc' }
 
 # Leftover knobs from a previous shell would silently skew results
-Remove-Item Env:DOTNET_GCgen0size, Env:DOTNET_GCStatsFile, Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCConcurrentCycles, Env:DOTNET_GCConcurrentSweep, Env:DOTNET_GCDynamicAdaptationMode -ErrorAction SilentlyContinue
+Remove-Item Env:DOTNET_GCgen0size, Env:DOTNET_GCStatsFile, Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCConcurrentCycles, Env:DOTNET_GCConcurrentSweep, Env:DOTNET_GCDynamicAdaptationMode, Env:DOTNET_GCWindowStash, Env:DOTNET_GCNtZero, Env:DOTNET_GCCardPreDrain, Env:DOTNET_GCAllocShards -ErrorAction SilentlyContinue
+
+if ($AllocShards -gt 0) {
+    $env:DOTNET_GCAllocShards = '{0:x}' -f $AllocShards   # runtime config ints parse as HEX
+    $gcName += "-shards$AllocShards"
+}
 
 if ($HeapCount -gt 0) {
     $env:DOTNET_GCHeapCount = '{0:x}' -f $HeapCount   # runtime config ints parse as HEX
