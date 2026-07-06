@@ -16,9 +16,9 @@ milestones = [
 ]
 
 stock_refs = [
-    ("stock WKS", 2.276, "#9a988f"),
-    ("stock Server GC", 1.704, "#6b6a63"),
-    ("stock Server GC (8 heaps)", 1.347, "#3a3a37"),
+    ("Workstation GC", 2.276, "#9a988f"),
+    ("Server GC (32 heaps)", 1.704, "#6b6a63"),
+    ("Server GC (8 heaps)", 1.347, "#3a3a37"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -104,8 +104,7 @@ ax.text(-0.4, ys[0] + label_offset + (ymax - ymin) * 0.05, "ManagedDotnetGC (C#)
 fig.text(0.07, 0.93, "A .NET GC written in C#: wall time across milestones",
           fontsize=20, fontweight="bold", color=INK, ha="left", va="top")
 fig.text(0.07, 0.875,
-          "GCPerfSim, 4-scenario geometric mean — all builds re-benchmarked same day, same machine, "
-          "vs same-day stock anchors",
+          "GCPerfSim, 4-scenario geometric mean: soh, lohmix, pin, pinheavy",
           fontsize=12.5, color=SECONDARY_INK, ha="left", va="top")
 
 # ---- small annotation ----
