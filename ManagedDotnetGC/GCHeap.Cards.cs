@@ -22,8 +22,14 @@ unsafe partial class GCHeap
     /// traces through its own mark stack with CAS-claimed marking, and collectible
     /// LoaderAllocator edges — the one EE call in the trace — are deferred to the GC
     /// thread, because workers must never call into the EE.
+    ///
+    /// Remark mode (SPEC-M6 v2 §5.4, <paramref name="includeFresh"/>): a concurrent
+    /// cycle's pause-B remark must scan dirty cards over Fresh regions too. The young
+    /// skip is only sound because young marking is entirely STW — an object traced
+    /// early in the pause cannot be mutated later. A concurrently-traced object can,
+    /// and its re-dirtied card is the only record of the mutation.
     /// </summary>
-    private void ScanCards()
+    private void ScanCards(bool includeFresh = false)
     {
         var cardBase = _regionAllocator.CardTableStorage;
 
@@ -36,7 +42,7 @@ unsafe partial class GCHeap
 
         if (_workerPool is null || _cardScanStacks is null)
         {
-            ScanCardRange(cardBase, 0, count, _markStack, deferredCollectible: null);
+            ScanCardRange(cardBase, 0, count, _markStack, deferredCollectible: null, includeFresh);
             return;
         }
 
@@ -60,7 +66,7 @@ unsafe partial class GCHeap
                     break;
                 }
 
-                ScanCardRange(cardBase, start, Math.Min(start + Chunk, count), stack, deferred);
+                ScanCardRange(cardBase, start, Math.Min(start + Chunk, count), stack, deferred, includeFresh);
             }
         });
 
@@ -84,13 +90,13 @@ unsafe partial class GCHeap
         DrainMarkStack(_markStack, deferredCollectible: null);
     }
 
-    private void ScanCardRange(nint cardBase, int start, int end, MarkStack stack, List<nint>? deferredCollectible)
+    private void ScanCardRange(nint cardBase, int start, int end, MarkStack stack, List<nint>? deferredCollectible, bool includeFresh = false)
     {
         for (int i = start; i < end; i++)
         {
             var entry = _regionAllocator.GetEntry(i);
 
-            if (entry->Age == RegionAge.Fresh)
+            if (!includeFresh && entry->Age == RegionAge.Fresh)
             {
                 continue;
             }

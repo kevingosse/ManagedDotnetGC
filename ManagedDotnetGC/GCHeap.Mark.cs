@@ -63,15 +63,39 @@ unsafe partial class GCHeap
 
         var t4 = GcStats.Timestamp();
 
+        MarkTail(condemned, &scanContext);
+
+        if (GcStats.Enabled)
+        {
+            // The parallel drain traces what root/handle enumeration buffered, so it counts
+            // as root marking even though it runs after the handle scans
+            GcStats.RootsTicks = t1 - t0 + drainTicks;
+            GcStats.CardScanTicks = t2 - t1;
+            GcStats.FReachableTicks = t3 - t2;
+            GcStats.HandleTicks = t4 - t3 - drainTicks;
+        }
+    }
+
+    /// <summary>
+    /// The mark-dependent EE protocol that must run after the strong closure is
+    /// complete, on final marks: dependent-handle fixpoint, RCW/ComWrappers detach,
+    /// weak clearing, finalization promotion. Shared verbatim between the inline STW
+    /// mark and pause B of a concurrent cycle (SPEC-M6 v2 §5.4) — the order is
+    /// load-bearing (stock mark_phase.cpp:3385).
+    /// </summary>
+    private void MarkTail(int condemned, ScanContext* scanContext)
+    {
+        var t0 = GcStats.Timestamp();
+
         ScanDependentHandles();
 
-        var t5 = GcStats.Timestamp();
+        var t1 = GcStats.Timestamp();
 
-        // After all strong marking, before weak clearing (stock mark_phase.cpp:3385): the EE
-        // detaches unmarked RCWs / ComWrappers here, consulting our IsPromoted (2.1)
-        NotifyAfterGcScanRoots(condemned, 2, &scanContext);
+        // After all strong marking, before weak clearing: the EE detaches unmarked
+        // RCWs / ComWrappers here, consulting our IsPromoted (2.1)
+        NotifyAfterGcScanRoots(condemned, 2, scanContext);
 
-        var t6 = GcStats.Timestamp();
+        var t2 = GcStats.Timestamp();
 
         ClearHandles([HandleType.HNDTYPE_WEAK_SHORT]);
         ScanForFinalization();
@@ -83,16 +107,10 @@ unsafe partial class GCHeap
 
         if (GcStats.Enabled)
         {
-            var t7 = GcStats.Timestamp();
-            // The parallel drain traces what root/handle enumeration buffered, so it counts
-            // as root marking even though it runs after the handle scans
-            GcStats.RootsTicks = t1 - t0 + drainTicks;
-            GcStats.CardScanTicks = t2 - t1;
-            GcStats.FReachableTicks = t3 - t2;
-            GcStats.HandleTicks = t4 - t3 - drainTicks;
-            GcStats.DependentTicks = t5 - t4;
-            GcStats.AfterScanTicks = t6 - t5;
-            GcStats.WeakTicks = t7 - t6;
+            var t3 = GcStats.Timestamp();
+            GcStats.DependentTicks = t1 - t0;
+            GcStats.AfterScanTicks = t2 - t1;
+            GcStats.WeakTicks = t3 - t2;
         }
     }
 

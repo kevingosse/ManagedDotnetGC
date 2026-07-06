@@ -117,15 +117,18 @@ unmarked at visit time is covered by that object's own trace when it gets marked
 
 ## 5. The cycle
 
-### 5.1 Trigger and the coordinator
+### 5.1 Trigger and orchestration
 
-Full-collection triggers are unchanged. The cycle runs on a **coordinator thread**
-created at Initialize via `IGCToCLR.CreateThread(…, is_suspendable: false, …)` — the
-standalone-API equivalent of the stock BGC thread, which is what legitimizes calling
-`SuspendEE`/`RestartEE` off a mutator thread. The triggering mutator signals it and
-returns; the coordinator holds `_gcLock` for the whole cycle, which serializes it
-against young collections and other full triggers. Young collections keep running
-inline on triggering threads as today.
+Full-collection triggers are unchanged, and **the triggering thread orchestrates the
+whole cycle itself** — it is a normal EE thread in preemptive mode, i.e. the standard
+GC-induction caller of `SuspendEE`, so it may suspend/restart twice and participate in
+the window's drain in between (it is doing GC work, not waiting). It holds `_gcLock`
+for the whole cycle, which serializes against young collections and other full
+triggers; §6.3's allocate-through keeps other allocators from queueing behind it.
+This deletes the v1 coordinator thread and its `IGCToCLR.CreateThread` verification
+item. A dedicated coordinator remains a follow-up option if dedicating the trigger
+thread for the window ever measures as unfair (stock BGC's shape); nothing in the
+design depends on the choice. Young collections keep running inline as today.
 
 ### 5.2 Pause A
 
@@ -175,8 +178,10 @@ at pause B end restores exactly today's young-collection contract.
 
 ### 6.1 Kill switch
 
-`DOTNET_GCConcurrent=0` runs full collections on the current inline STW path. Default
-stays 0 until the exit criteria in §7 hold.
+Staging knob: `DOTNET_GCConcurrentCycles` (a private name — the EE reports stock
+`gcConcurrent`'s *default* as true, so honoring it would open the path everywhere
+before it earns that). Off = the current inline STW path. Once §7 stage-2 exit
+criteria hold, the gate flips to honoring stock `DOTNET_GCConcurrent`.
 
 ### 6.2 OOM and forced collections
 
@@ -205,11 +210,12 @@ remark measures long on store-heavy workloads.
 
 0. **Side mark bitmap** ✅ (2026-07-06): `m6s0-bitmap` at 0.90–0.93× of baseline,
    suite 56/56, unit 70/70. Also proved out: range-check-before-marks orderings.
-1. **Two-pause STW cycle, empty window**: coordinator thread, `_gcLock` handoff,
-   pause A (root buffering) / pause B (drain + remark scaffolding + protocol + sweep)
-   with the "window" a no-op — the drain runs in pause B. Validates the EE
-   choreography (double suspend/restart, notification flags, `WaitUntilGCComplete`,
-   §8 items) with zero concurrency risk.
+1. **Two-pause STW cycle, empty window**: the triggering thread runs pause A (root
+   buffering) / gap / pause B (drain + full remark + protocol + sweep) — the "window"
+   is a no-op resume/re-suspend, so the remark machinery is exercised against real
+   gap mutations with zero concurrency risk. Allocate-through flag lands here too.
+   Validates the EE choreography (double suspend/restart, notification flags,
+   `WaitUntilGCComplete`, §8 items).
    *Exit: suite/soak green with the split active; pause histograms recorded.*
 2. **Concurrent drain**: move the trace into the window (workers off-STW), remark =
    root re-scan + all-ages card scan. Kill switch honored.
@@ -224,8 +230,9 @@ remark measures long on store-heavy workloads.
 
 - `BeforeGcScanRoots(is_bgc, is_concurrent)` / `GcStartWork` semantics with a real
   BGC-shaped cycle; `RestartEE(finishedGC: false)` at pause A.
-- `SuspendEE` from the coordinator (EE-created, `is_suspendable: false`) — stock BGC
-  precedent, verify against our EE version.
+- Back-to-back `SuspendEE`/`RestartEE` pairs from the same EE thread within one
+  logical GC (pause A, pause B) — believed identical to two consecutive GCs from the
+  EE's perspective; verify notifications and the wait-event protocol around it.
 - `GetLoaderAllocatorObjectForGC` legality off-STW (fallback: defer to pause B).
 - `WaitUntilGCComplete`/`_gcEvent` semantics across a two-pause cycle.
 - Finalizer thread interaction: `GetNextFinalizable` while a window is open (it only

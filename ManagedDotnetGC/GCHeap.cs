@@ -131,6 +131,18 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
+        // SPEC-M6 v2 staging knob: two-pause full cycles. A private name (not stock
+        // gcConcurrent, whose EE-side default reads as true) so the path stays opt-in
+        // until the stage-2 exit criteria hold.
+        fixed (byte* privateKey = "GCConcurrentCycles"u8)
+        fixed (byte* publicKey = "System.GC.ConcurrentCycles"u8)
+        {
+            if (_gcToClr.GetBooleanConfigValue(privateKey, publicKey, out var concurrentCycles))
+            {
+                _concurrentCycles = concurrentCycles;
+            }
+        }
+
         if (participants > 1)
         {
             _workerPool = new GcWorkerPool(participants - 1);
@@ -227,6 +239,16 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     /// </summary>
     private void Collect(uint gcCountSnapshot, bool force = false, bool requireFull = false)
     {
+        // Allocate-through (SPEC-M6 v2 §6.3): while a full cycle is in flight its
+        // trigger thread holds _gcLock; a budget-triggered request could only queue
+        // behind it and then skip via the count snapshot — return instead so allocation
+        // proceeds (the overshoot is bounded by the window length). Forced requests
+        // still queue: their callers are entitled to a collection after their call.
+        if (!force && _fullCycleInFlight)
+        {
+            return;
+        }
+
         // Switch before acquiring so the lock's own restore leaves us preemptive: calling
         // SuspendEE from cooperative mode would self-deadlock
         var wasCooperative = _gcToClr.EnablePreemptiveGC();
@@ -261,6 +283,31 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             // ComWrappers reference tracking engage (missing-features 2.1)
             var condemned = young ? 0 : 2;
 
+            if (!young && _concurrentCycles && _workerPool is not null)
+            {
+                // SPEC-M6 v2 §5: the triggering thread orchestrates the two-pause cycle
+                // itself — a normal EE thread in preemptive mode is the standard
+                // GC-induction caller of SuspendEE, so no coordinator thread is needed
+                CollectFullCycle();
+            }
+            else
+            {
+                CollectInline(young, condemned);
+            }
+        }
+
+        _gcLock.Release();
+
+        if (wasCooperative)
+        {
+            _gcToClr.DisablePreemptiveGC();
+        }
+    }
+
+    /// <summary>The classic single-suspension collection: every phase under one STW.</summary>
+    private void CollectInline(bool young, int condemned)
+    {
+        {
             GcStats.BeginCollection();
             var tStart = GcStats.Timestamp();
 
@@ -294,50 +341,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var tMarked = GcStats.Timestamp();
 
             Write("Sweep phase");
-            var swept = _regionAllocator.Sweep(youngOnly: young, _workerPool);
-
-            if (young)
-            {
-                _promotedSinceFull += swept;
-                _lastLiveBytes = _liveAtLastFull + _promotedSinceFull;
-            }
-            else
-            {
-                _liveAtLastFull = swept;
-                _promotedSinceFull = 0;
-                _lastLiveBytes = swept;
-            }
-
-            // Every traced old→young edge is now marked or dead; cards restart from clean
-            _regionAllocator.ClearCards();
+            SweepAndAccount(young);
 
             var tSwept = GcStats.Timestamp();
 
-            // SPEC-M2 §8.3: the heap converges to ≈ 2× live. A configured gen0 size caps
-            // the young budget instead: young pauses scale with the nursery while total
-            // work per allocated byte does not, so DOTNET_GCgen0size trades throughput
-            // (~+12% wall on soh at live/4) for young pauses in proportion (73 → 25 ms p50)
-            _allocatedSinceGC = 0;
-            _budget = Region.ComputeBudget(_lastLiveBytes);
-
-            if (young && _youngBudgetCap > 0)
-            {
-                _budget = Math.Min(_budget, Math.Max(Region.MinGCBudget, _youngBudgetCap));
-            }
-
-            // Retain a budget's worth of committed pool slack: the next cycle carves
-            // exactly that much back out, so trimming lower is pure recommit churn
-            _regionAllocator.TrimPool(_budget);
-
-            if (!young)
-            {
-                // Post-trim is the honest measure of what this full pass achieved: if
-                // committed still exceeds the trigger line, re-firing would only repeat
-                // this collection's work, so the trigger stands down until the heap grows
-                var committed = _regionAllocator.CommittedRegionBytes;
-                _committedTriggerMuted = committed >= 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes);
-                _committedTriggerRearm = committed + _budget;
-            }
+            ApplyBudgetAndTrim(young);
 
             var gcNumber = _gcCount;
             Interlocked.Increment(ref _gcCount);
@@ -360,13 +368,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             // The sweep just refilled the pool with dirty regions
             _regionZeroer?.Kick();
-        }
-
-        _gcLock.Release();
-
-        if (wasCooperative)
-        {
-            _gcToClr.DisablePreemptiveGC();
         }
     }
 
@@ -595,6 +596,60 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         _regionAllocator.ZeroSpanCarve(spanBase, size);
 
         return (GCObject*)(spanBase + IntPtr.Size);
+    }
+
+    /// <summary>Sweep + the sticky-generation live accounting + the card reset, shared
+    /// by the inline STW collection and pause B of a concurrent cycle (SPEC-M6 v2).
+    /// Runs under STW with the zeroer gate held.</summary>
+    private void SweepAndAccount(bool young)
+    {
+        var swept = _regionAllocator.Sweep(youngOnly: young, _workerPool);
+
+        if (young)
+        {
+            _promotedSinceFull += swept;
+            _lastLiveBytes = _liveAtLastFull + _promotedSinceFull;
+        }
+        else
+        {
+            _liveAtLastFull = swept;
+            _promotedSinceFull = 0;
+            _lastLiveBytes = swept;
+        }
+
+        // Every traced old→young edge is now marked or dead; cards restart from clean
+        _regionAllocator.ClearCards();
+    }
+
+    /// <summary>Post-sweep budget/trim/trigger policy (SPEC-M2 §8.3), shared like
+    /// <see cref="SweepAndAccount"/>.</summary>
+    private void ApplyBudgetAndTrim(bool young)
+    {
+        // SPEC-M2 §8.3: the heap converges to ≈ 2× live. A configured gen0 size caps
+        // the young budget instead: young pauses scale with the nursery while total
+        // work per allocated byte does not, so DOTNET_GCgen0size trades throughput
+        // (~+12% wall on soh at live/4) for young pauses in proportion (73 → 25 ms p50)
+        _allocatedSinceGC = 0;
+        _budget = Region.ComputeBudget(_lastLiveBytes);
+
+        if (young && _youngBudgetCap > 0)
+        {
+            _budget = Math.Min(_budget, Math.Max(Region.MinGCBudget, _youngBudgetCap));
+        }
+
+        // Retain a budget's worth of committed pool slack: the next cycle carves
+        // exactly that much back out, so trimming lower is pure recommit churn
+        _regionAllocator.TrimPool(_budget);
+
+        if (!young)
+        {
+            // Post-trim is the honest measure of what this full pass achieved: if
+            // committed still exceeds the trigger line, re-firing would only repeat
+            // this collection's work, so the trigger stands down until the heap grows
+            var committed = _regionAllocator.CommittedRegionBytes;
+            _committedTriggerMuted = committed >= 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes);
+            _committedTriggerRearm = committed + _budget;
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
