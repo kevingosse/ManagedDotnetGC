@@ -81,6 +81,9 @@ unsafe partial class GCHeap
         // collectible unloading cannot race the very GC that must prove it dead.
         ParallelDrainMark();
 
+        var tWindowEnd = GcStats.Timestamp();
+        var windowMarked = GcStats.Enabled ? Volatile.Read(ref GcStats.MarkedCount) : 0;
+
         // ---- Pause B: remark + reclaim ----
         _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
         _regionAllocator.EnterGateForCollection();
@@ -98,7 +101,10 @@ unsafe partial class GCHeap
         // are normal, stock issues several per GC).
         BufferStrongRoots(scanRootsCallback, condemned, &scanContext);
         ParallelDrainMark();
+
+        var tCards = GcStats.Timestamp();
         ScanCards(includeFresh: true);
+        GcStats.CardScanTicks = GcStats.Timestamp() - tCards;
 
         // Conditionally-live wrappers, evaluated once on the completed strong closure
         ScanRefCountedHandles();
@@ -121,13 +127,20 @@ unsafe partial class GCHeap
 
         _fullCycleInFlight = false;
 
+        var tPauseBEnd = GcStats.Timestamp();
+
         _regionAllocator.ExitGateForCollection();
         _gcToClr.RestartEE(finishedGC: true);
 
         if (GcStats.Enabled)
         {
-            // Column mapping for cycle rows: fix_ms ≈ pause A tail (root capture),
-            // mark_ms spans the gap + trace + remark
+            // pause_us on cycle rows is whole-cycle wall; the honest split lives in
+            // the pause_a/window/pause_b columns
+            GcStats.CyclePauseATicks = tPauseAEnd - tStart;
+            GcStats.CycleWindowTicks = tWindowEnd - tPauseAEnd;
+            GcStats.CyclePauseBTicks = tPauseBEnd - tWindowEnd;
+            GcStats.CycleWindowMarked = windowMarked;
+
             GcStats.RecordCollection(gcNumber, "full-cycle",
                 tStart, tSuspended, tPauseAEnd, tMarked, tSwept, GcStats.Timestamp(),
                 Volatile.Read(ref GcStats.ZeroBytes), Volatile.Read(ref GcStats.ZeroTicks),

@@ -45,6 +45,14 @@ internal static class GcStats
     public static long CardScanTicks;
     public static long CardRegionsScanned;
 
+    // --- Concurrent-cycle scratch (SPEC-M6 v2), filled by CollectFullCycle; zero on
+    // inline collections. pause_us stays the whole-cycle wall for those rows; these
+    // columns are the honest split. ---
+    public static long CyclePauseATicks;
+    public static long CycleWindowTicks;
+    public static long CyclePauseBTicks;
+    public static long CycleWindowMarked; // objects marked concurrently (rest = remark)
+
     public static void Initialize()
     {
         var path = Environment.GetEnvironmentVariable("DOTNET_GCStatsFile");
@@ -57,7 +65,7 @@ internal static class GcStats
         try
         {
             _writer = new StreamWriter(path, append: false) { AutoFlush = true };
-            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n,hole_n,clean_n");
+            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n,hole_n,clean_n,pause_a_us,window_us,pause_b_us,window_marked_n");
             Enabled = true;
         }
         catch
@@ -82,6 +90,10 @@ internal static class GcStats
         MarkedBytes = 0;
         CardScanTicks = 0;
         CardRegionsScanned = 0;
+        CyclePauseATicks = 0;
+        CycleWindowTicks = 0;
+        CyclePauseBTicks = 0;
+        CycleWindowMarked = 0;
     }
 
     // zeroBytes/zeroTicks are the cumulative alloc-path totals (M4 zero-at-carve moved all
@@ -97,7 +109,7 @@ internal static class GcStats
         }
 
         var row = string.Create(CultureInfo.InvariantCulture,
-            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)}");
+            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)},{ToUs(CyclePauseATicks):F0},{ToUs(CycleWindowTicks):F0},{ToUs(CyclePauseBTicks):F0},{CycleWindowMarked}");
 
         _writer.WriteLine(row);
     }
