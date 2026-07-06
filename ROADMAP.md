@@ -53,11 +53,13 @@ Region-based, size-class segregated, **non-moving**, sticky-generation mark & sw
   it back to the free region pool wholesale, no per-object work. Typical nurseries die
   wholesale, so young collection cost ≈ copying-collector cost for the common case
   (Immix's insight, minus evacuation).
-- **Pauses**: STW-parallel first (M5), then concurrent marking via the COW-snapshot
-  design benched in [experiments/results/2026-07-05-snapshot-primitives.md]
-  (experiments/results/2026-07-05-snapshot-primitives.md) — steady-state page protection
-  gives an O(write-set) pause independent of heap size. That work is stashed, not dead;
-  it is this plan's endgame.
+- **Pauses**: STW-parallel first (M5), then concurrent marking (M6). The COW-snapshot
+  route benched in [experiments/results/2026-07-05-snapshot-primitives.md](experiments/results/2026-07-05-snapshot-primitives.md)
+  was killed twice by measurement — its two-view substrate cost 2.2× end-to-end, and
+  page protection turned out unsound on Windows because kernel-mediated writes fail
+  syscalls instead of faulting (experiments/KernelWriteProbe) — so M6 shipped as
+  BGC-style incremental update over the M4 card barrier with a card-based STW remark
+  (docs/spec-m6-concurrent-mark.md), reusing the M5 tracer wholesale.
 - **Container story** (the axis the GC team currently optimizes): aggressive decommit of
   free regions, cheap because region-granular.
 
@@ -71,7 +73,7 @@ Region-based, size-class segregated, **non-moving**, sticky-generation mark & sw
 | M3 | Benchmark harness + first honest comparison | GCPerfSim + custom scenarios (pinning server, LOH churn, cache churn, burst allocation) vs stock WKS/SVR/BGC; throughput, pause histogram, peak RSS, CPU. Published in experiments/results/ |
 | M4 ◐ | Sticky generations via card table | Young collections; win or tie GCPerfSim steady-state. **Core landed 2026-07-06** (sticky epochs, whole-heap card barrier, Reopened regions, zero-at-carve): soh 3.20× → 2.52× vs same-day stock, STW zeroing eliminated. Win-or-tie still open — blocked on survivor density (non-moving heaps can't pack scattered survivors; see results/2026-07-06-m4-sticky-generations.md) and the card/sweep region walks (card-offset tables, M5/M7) |
 | M5 ✅ | Parallel mark & sweep | Pause ∝ 1/cores. Sweep + card scan parallelized 2026-07-06 (GC-owned worker pool, CAS marking, EE calls confined to the GC thread); **full mark parallelized same day** (`344ce8b`: buffered roots, work-share queue, idle-quorum termination) plus a committed-trigger mute that killed a full-GC storm — soh total pause 0.98 → 0.55 s, **vs stock WKS 0.70–0.83× across the suite**. Remaining serial floor: EE-side `GcScanRoots` enumeration (no per-thread partitioning in the standalone API) |
-| M6 | Concurrent marking (COW snapshot) | O(write-set) pauses on multi-GB heaps |
+| M6 ◐ | Concurrent marking (incremental update; the COW-snapshot plan died twice on measurement — see docs/spec-m6-concurrent-mark.md §2) | Root pause at young-pause scale on multi-GB heaps. **Stages 0–2 landed 2026-07-06**: side mark bitmap (benched 0.90× of epochs), two-pause full cycles behind `DOTNET_GCConcurrentCycles`, mark closure concurrent on the M5 pool with card-based STW remark. soh full GCs: pause A 1–3 ms + pause B 32–41 ms (vs 58–90 ms STW), wall −4–9% on 3 of 4 scenarios. Open: histograms on all scenarios, default-on decision, fairness rerun; M6.5 = concurrent sweep (now the pause-B floor) |
 | M7 ◐ | Tuning war | Beat stock on target workloads 1–3; publish reproducible results. **Fairness matrix recorded 2026-07-06** (results/perf-history.md): beats WKS everywhere and default SVR-32 + SVR+BGC on 3 of 4 scenarios; the tuned SVR-h8 row (half our memory) still leads — except **pinheavy, won 0.92× after span zero-at-carve** (`9251e10`, which also took lohmix to 1.05× of default SVR and the ASP.NET soak +47% to 45.5 k req/s). At enforced memory parity we're 1.1× (pinheavy) to 2.0× (lohmix). Open: lohmix run-scan + zeroing cost, the memory exchange rate, young-pause p50 |
 
 Sequencing note: missing-features items 1.1/1.2/1.3/8.3 are deliberately pulled *out* of
