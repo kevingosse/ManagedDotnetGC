@@ -5,10 +5,10 @@ namespace ManagedDotnetGC;
 
 unsafe partial class GCHeap
 {
-    // DOTNET_GCConcurrentCycles (SPEC-M6 v2): full collections split into a root pause,
-    // a mark window, and a remark+reclaim pause, orchestrated by the triggering thread.
-    // Stage 1 keeps the window empty (the whole trace runs STW in pause B) to validate
-    // the two-suspension EE choreography; stage 2 moves the trace into the window.
+    // Concurrent full cycles (SPEC-M6 v2): full collections split into a root pause,
+    // a mark window (concurrent with mutators), and a remark+reclaim pause, orchestrated
+    // by the triggering thread. Default-on via stock DOTNET_gcConcurrent since stage 3;
+    // DOTNET_GCConcurrentCycles overrides either way for A/B runs.
     private bool _concurrentCycles;
 
     // True from pause A until the end of pause B (§6.3): budget-triggered collect
@@ -88,6 +88,8 @@ unsafe partial class GCHeap
         _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
         _regionAllocator.EnterGateForCollection();
 
+        GcStats.CycleSuspendBTicks = GcStats.Timestamp() - tWindowEnd;
+
         Write("Full cycle: pause B (remark + reclaim)");
 
         // Contexts handed out while the world ran get plugged like always
@@ -99,8 +101,14 @@ unsafe partial class GCHeap
         // No second BeforeGcScanRoots: the bracket notifications are once-per-GC (the
         // remark is our re-scan of the same logical root set; extra GcScanRoots calls
         // are normal, stock issues several per GC).
+        var tRescan = GcStats.Timestamp();
         BufferStrongRoots(scanRootsCallback, condemned, &scanContext);
+
+        var tDrain2 = GcStats.Timestamp();
+        GcStats.CycleRescanTicks = tDrain2 - tRescan;
+
         ParallelDrainMark();
+        GcStats.CycleDrain2Ticks = GcStats.Timestamp() - tDrain2;
 
         var tCards = GcStats.Timestamp();
         ScanCards(includeFresh: true);
@@ -118,7 +126,7 @@ unsafe partial class GCHeap
 
         var tSwept = GcStats.Timestamp();
 
-        ApplyBudgetAndTrim(young: false);
+        ApplyBudget(young: false);
 
         var gcNumber = _gcCount;
         Interlocked.Increment(ref _gcCount);
@@ -131,6 +139,10 @@ unsafe partial class GCHeap
 
         _regionAllocator.ExitGateForCollection();
         _gcToClr.RestartEE(finishedGC: true);
+
+        _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
+
+        TrimOutsidePause(young: false);
 
         if (GcStats.Enabled)
         {
@@ -146,8 +158,6 @@ unsafe partial class GCHeap
                 Volatile.Read(ref GcStats.ZeroBytes), Volatile.Read(ref GcStats.ZeroTicks),
                 _lastLiveBytes, _regionAllocator.CommittedRegionBytes);
         }
-
-        _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
 
         _regionZeroer?.Kick();
     }

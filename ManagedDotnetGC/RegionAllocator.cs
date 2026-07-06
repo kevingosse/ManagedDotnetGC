@@ -1232,25 +1232,44 @@ internal unsafe class RegionAllocator : IDisposable
     }
 
     /// <summary>
-    /// Shrinks the pool's committed slack to the given target by decommitting the oldest
-    /// (coldest) pool entries first (SPEC-M2 §7.4, retargeted by M4). The caller passes the
-    /// post-collection allocation budget: young collections recycle a whole budget's worth
-    /// of regions every cycle, and trimming below the next cycle's demand just converts the
-    /// slack into decommit/recommit churn.
+    /// One bounded batch of the pool trim: decommits the oldest (coldest) pool entries
+    /// first until committed slack reaches the target (SPEC-M2 §7.4, retargeted by M4).
+    /// The caller passes the post-collection allocation budget: young collections recycle
+    /// a whole budget's worth of regions every cycle, and trimming below the next cycle's
+    /// demand just converts the slack into decommit/recommit churn.
+    ///
+    /// Batched and called under the allocation lock with the world running (M6 stage 3:
+    /// the whole-pool trim measured ~46 ms inside pause B on the ASP.NET soak, and
+    /// decommitting free regions needs no stopped world — only the allocator's lock
+    /// discipline). Pops and zeroer checkouts between batches can shuffle entries past
+    /// the caller's cursor; that only under-trims, and the next collection's trim picks
+    /// up the remainder. When the pool is already at target the batch is a single
+    /// comparison.
     /// </summary>
-    public void TrimPool(long target)
+    /// <returns>true while entries above target remain (call again for the next batch)</returns>
+    public bool TrimPoolBatch(long target, int maxDecommits, ref int cursor)
     {
-        for (int i = 0; i < _poolCount && _pooledCommittedBytes > target; i++)
-        {
-            var entry = GetEntry(_pool[i]);
+        var done = 0;
 
-            if (entry->IsCommitted != RegionEntry.CommitNone && _memory.Decommit(RegionBase(_pool[i]), Region.Size))
+        for (; cursor < _poolCount && _pooledCommittedBytes > target; cursor++)
+        {
+            if (done == maxDecommits)
+            {
+                return true;
+            }
+
+            var entry = GetEntry(_pool[cursor]);
+
+            if (entry->IsCommitted != RegionEntry.CommitNone && _memory.Decommit(RegionBase(_pool[cursor]), Region.Size))
             {
                 entry->IsCommitted = RegionEntry.CommitNone;
                 _pooledCommittedBytes -= Region.Size;
                 _committedRegionBytes -= Region.Size;
+                done++;
             }
         }
+
+        return false;
     }
 
     /// <summary>Zeroes a recycled window or block extent before first use (M4

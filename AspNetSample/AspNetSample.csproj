@@ -6,9 +6,10 @@
     <Nullable>enable</Nullable>
     <PlatformTarget>x64</PlatformTarget>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <!-- Our GC has no server mode; keep the runtime from asking for one -->
+    <!-- Our GC has no server mode; keep the runtime from asking for one. Concurrent is
+         deliberately NOT pinned: since M6 stage 3 the GC honors stock gcConcurrent
+         (default-on), and the soak should exercise the shipping default. -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
-    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 

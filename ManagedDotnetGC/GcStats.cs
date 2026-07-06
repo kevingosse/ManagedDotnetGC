@@ -53,6 +53,17 @@ internal static class GcStats
     public static long CyclePauseBTicks;
     public static long CycleWindowMarked; // objects marked concurrently (rest = remark)
 
+    // --- Pause-B interior (added after the first default-on soak measured ~62 ms of
+    // pause B unaccounted: cards/sweep/MarkTail columns explained <5 ms of it) ---
+    public static long CycleSuspendBTicks; // the second SuspendEE
+    public static long CycleRescanTicks;   // BufferStrongRoots #2: root re-scan + handles + f-reachable
+    public static long CycleDrain2Ticks;   // remark ParallelDrainMark over the re-buffered roots
+
+    // Post-restart free-region decommit (TrimOutsidePause), every collection kind. That
+    // soak's verdict: trim was 46 of pause B's 66 ms — so it left the pause entirely;
+    // this column is world-running time on the triggering thread, not pause time.
+    public static long TrimTicks;
+
     public static void Initialize()
     {
         var path = Environment.GetEnvironmentVariable("DOTNET_GCStatsFile");
@@ -65,7 +76,7 @@ internal static class GcStats
         try
         {
             _writer = new StreamWriter(path, append: false) { AutoFlush = true };
-            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n,hole_n,clean_n,pause_a_us,window_us,pause_b_us,window_marked_n");
+            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n,hole_n,clean_n,pause_a_us,window_us,pause_b_us,window_marked_n,bsusp_us,rescan_us,drain2_us,trim_us");
             Enabled = true;
         }
         catch
@@ -94,6 +105,10 @@ internal static class GcStats
         CycleWindowTicks = 0;
         CyclePauseBTicks = 0;
         CycleWindowMarked = 0;
+        CycleSuspendBTicks = 0;
+        CycleRescanTicks = 0;
+        CycleDrain2Ticks = 0;
+        TrimTicks = 0;
     }
 
     // zeroBytes/zeroTicks are the cumulative alloc-path totals (M4 zero-at-carve moved all
@@ -109,7 +124,7 @@ internal static class GcStats
         }
 
         var row = string.Create(CultureInfo.InvariantCulture,
-            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)},{ToUs(CyclePauseATicks):F0},{ToUs(CycleWindowTicks):F0},{ToUs(CyclePauseBTicks):F0},{CycleWindowMarked}");
+            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)},{ToUs(CyclePauseATicks):F0},{ToUs(CycleWindowTicks):F0},{ToUs(CyclePauseBTicks):F0},{CycleWindowMarked},{ToUs(CycleSuspendBTicks):F0},{ToUs(CycleRescanTicks):F0},{ToUs(CycleDrain2Ticks):F0},{ToUs(TrimTicks):F0}");
 
         _writer.WriteLine(row);
     }

@@ -6,7 +6,8 @@
     <RootNamespace>gcperfsim_core</RootNamespace>
     <PlatformTarget>x64</PlatformTarget>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Concurrent not pinned since M6 stage 3 (the custom GC honors stock gcConcurrent,
+         default-on); bench-gcperfsim.ps1 sets DOTNET_gcConcurrent explicitly per row -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
-    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 </Project>

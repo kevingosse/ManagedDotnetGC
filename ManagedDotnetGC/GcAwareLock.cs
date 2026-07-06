@@ -7,7 +7,9 @@ namespace ManagedDotnetGC;
 /// in preemptive mode, so SuspendEE never deadlocks on a queued waiter. The switch back to
 /// cooperative mode happens after the acquire: a thread that wins the lock while a GC is in
 /// flight parks in DisablePreemptiveGC before it can touch any protected state, which is what
-/// lets the collector mutate that state without taking the lock itself (see SPEC-M2 §8.1).
+/// lets the collector mutate that state without taking the lock itself while the world is
+/// stopped (see SPEC-M2 §8.1). With the world running, the collector goes through the lock
+/// like any mutator — the post-restart pool trim does exactly that (M6 stage 3).
 /// Critical sections must do bounded work and never block; after any acquire, previously-read
 /// protected state must be treated as stale.
 /// </summary>

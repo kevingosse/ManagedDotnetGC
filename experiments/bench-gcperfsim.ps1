@@ -66,13 +66,16 @@ else {
 }
 
 $env:DOTNET_gcServer = if ($ServerGC -and -not $GcDll) { '1' } else { '0' }
-$env:DOTNET_gcConcurrent = if ($Concurrent -and -not $GcDll) { '1' } else { '0' }
+# Custom rows measure the collector's shipping default: since M6 stage 3 that honors
+# stock gcConcurrent, default-on — set explicitly because GCPerfSim's own runtimeconfig
+# pins System.GC.Concurrent=false. -Concurrent stays stock-only (BGC).
+$env:DOTNET_gcConcurrent = if ($GcDll -or $Concurrent) { '1' } else { '0' }
 $env:DOTNET_gcConservative = '0'
 
 if ($Concurrent -and -not $GcDll) { $gcName += '-bgc' }
 
 # Leftover knobs from a previous shell would silently skew results
-Remove-Item Env:DOTNET_GCgen0size, Env:DOTNET_GCStatsFile, Env:DOTNET_GCHeapHardLimit -ErrorAction SilentlyContinue
+Remove-Item Env:DOTNET_GCgen0size, Env:DOTNET_GCStatsFile, Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCConcurrentCycles -ErrorAction SilentlyContinue
 
 if ($HeapCount -gt 0) {
     $env:DOTNET_GCHeapCount = '{0:x}' -f $HeapCount   # runtime config ints parse as HEX

@@ -131,9 +131,21 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
-        // SPEC-M6 v2 staging knob: two-pause full cycles. A private name (not stock
-        // gcConcurrent, whose EE-side default reads as true) so the path stays opt-in
-        // until the stage-2 exit criteria hold.
+        // Concurrent full cycles (SPEC-M6 v2) honor the stock knob — default-on, since
+        // the EE reports gcConcurrent's default as true, matching stock BGC. Flipped
+        // per spec §6.1 after the stage-2/3 exits held (2026-07-06 histograms: pause A
+        // 1–4 ms and worst-case pause cut on all four scenarios, young pauses and
+        // throughput unchanged).
+        fixed (byte* privateKey = "gcConcurrent"u8)
+        fixed (byte* publicKey = "System.GC.Concurrent"u8)
+        {
+            if (_gcToClr.GetBooleanConfigValue(privateKey, publicKey, out var concurrent))
+            {
+                _concurrentCycles = concurrent;
+            }
+        }
+
+        // The staging knob survives as an explicit override (either direction) for A/B runs
         fixed (byte* privateKey = "GCConcurrentCycles"u8)
         fixed (byte* publicKey = "System.GC.ConcurrentCycles"u8)
         {
@@ -315,7 +327,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             // The background zeroer is not an EE thread, so SuspendEE does not park it:
             // holding its gate for the whole suspension is what lets the sweep push to
-            // the pool lock-free and TrimPool decommit without racing a checkout (M7)
+            // the pool lock-free without racing a checkout (M7). The pool trim runs
+            // after RestartEE under the allocation lock (M6 stage 3).
             _regionAllocator.EnterGateForCollection();
 
             var tSuspended = GcStats.Timestamp();
@@ -345,7 +358,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             var tSwept = GcStats.Timestamp();
 
-            ApplyBudgetAndTrim(young);
+            ApplyBudget(young);
 
             var gcNumber = _gcCount;
             Interlocked.Increment(ref _gcCount);
@@ -356,17 +369,22 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             _gcToClr.RestartEE(finishedGC: true);
 
+            var tEnd = GcStats.Timestamp();
+
+            _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
+
+            TrimOutsidePause(young);
+
             if (GcStats.Enabled)
             {
                 GcStats.RecordCollection(gcNumber, young ? "young" : "full",
-                    tStart, tSuspended, tFixed, tMarked, tSwept, GcStats.Timestamp(),
+                    tStart, tSuspended, tFixed, tMarked, tSwept, tEnd,
                     Volatile.Read(ref GcStats.ZeroBytes), Volatile.Read(ref GcStats.ZeroTicks),
                     _lastLiveBytes, _regionAllocator.CommittedRegionBytes);
             }
 
-            _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
-
-            // The sweep just refilled the pool with dirty regions
+            // The sweep just refilled the pool with dirty regions (and the trim just
+            // shrank them to the retained slack, so nothing zeroed here gets decommitted)
             _regionZeroer?.Kick();
         }
     }
@@ -623,7 +641,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     /// <summary>Post-sweep budget/trim/trigger policy (SPEC-M2 §8.3), shared like
     /// <see cref="SweepAndAccount"/>.</summary>
-    private void ApplyBudgetAndTrim(bool young)
+    private void ApplyBudget(bool young)
     {
         // SPEC-M2 §8.3: the heap converges to ≈ 2× live. A configured gen0 size caps
         // the young budget instead: young pauses scale with the nursery while total
@@ -636,16 +654,47 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         {
             _budget = Math.Min(_budget, Math.Max(Region.MinGCBudget, _youngBudgetCap));
         }
+    }
+
+    /// <summary>
+    /// The decommit half of budget application, run on the triggering thread after
+    /// RestartEE but still under <c>_gcLock</c> (M6 stage 3: the in-pause trim measured
+    /// ~46 ms of pause B on the ASP.NET soak — 70% of the pause — and free regions can
+    /// be decommitted while the world runs). Batches hold the allocation lock so carves
+    /// and the zeroer interleave; no Collect can start (we hold <c>_gcLock</c>), so the
+    /// zeroer's lock-free suspension escape never engages against us.
+    /// </summary>
+    private void TrimOutsidePause(bool young)
+    {
+        var tStart = GcStats.Timestamp();
 
         // Retain a budget's worth of committed pool slack: the next cycle carves
         // exactly that much back out, so trimming lower is pure recommit churn
-        _regionAllocator.TrimPool(_budget);
+        var cursor = 0;
+        bool more;
+
+        do
+        {
+            _allocLock.Acquire();
+
+            try
+            {
+                more = _regionAllocator.TrimPoolBatch(_budget, maxDecommits: 8, ref cursor);
+            }
+            finally
+            {
+                _allocLock.Release();
+            }
+        } while (more);
+
+        GcStats.TrimTicks = GcStats.Timestamp() - tStart;
 
         if (!young)
         {
             // Post-trim is the honest measure of what this full pass achieved: if
             // committed still exceeds the trigger line, re-firing would only repeat
-            // this collection's work, so the trigger stands down until the heap grows
+            // this collection's work, so the trigger stands down until the heap grows.
+            // Written under _gcLock, like every reader.
             var committed = _regionAllocator.CommittedRegionBytes;
             _committedTriggerMuted = committed >= 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes);
             _committedTriggerRearm = committed + _budget;

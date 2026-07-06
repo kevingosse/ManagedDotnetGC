@@ -7,7 +7,8 @@ param(
     [int]$Seconds = 3600,
     [int]$Workers = 32,
     [int]$Port = 5211,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$GcDll = ""   # soak a specific ManagedDotnetGC.dll (e.g. Release publish); default = Debug publish
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,7 +22,8 @@ if (-not $SkipBuild) {
 }
 
 $outDir = "$root\AspNetSample\bin\Release\net10.0\win-x64"
-Copy-Item "$root\ManagedDotnetGC\bin\Debug\net10.0\win-x64\publish\*" $outDir -Force
+if ($GcDll) { Copy-Item $GcDll $outDir -Force }
+else { Copy-Item "$root\ManagedDotnetGC\bin\Debug\net10.0\win-x64\publish\*" $outDir -Force }
 
 $env:DOTNET_GCName = 'ManagedDotnetGC.dll'
 $env:DOTNET_gcConservative = '0'
