@@ -32,10 +32,22 @@ public struct ObjectHeader
 public unsafe ref struct GCObject
 {
     /// <summary>
-    /// The epoch of the collection currently in progress. Only meaningful (and only read)
-    /// while the world is stopped; never 0, so freshly-zeroed objects are never "marked".
+    /// The side mark bitmap (SPEC-M6 §3): one bit per 8 heap bytes, GC-private memory
+    /// owned by the RegionAllocator (32 KB per region, committed alongside the frontier,
+    /// statics set by its constructor). Marking never writes heap pages — the
+    /// load-bearing property for M6: a marker stamping marks into protected heap pages
+    /// would fault once per live page and force O(live set) pre-image copies, while
+    /// bitmap writes touch neither. Callers must range-check addresses against the heap
+    /// before consulting marks (the bitmap only covers carved regions).
+    ///
+    /// Marks are sticky (SPEC-M4): young collections accumulate into the same bitmap, a
+    /// full collection starts by clearing it (RegionAllocator.ClearMarks — this replaces
+    /// the epoch advance, and there is no wrap case), and recycled regions clear their
+    /// slice at carve so bits from a previous life cannot resurrect dead objects between
+    /// fulls.
     /// </summary>
-    internal static uint CurrentEpoch = 1;
+    internal static ulong* MarkBitmap;
+    internal static nint MarkHeapBase;
 
     public MethodTable* RawMethodTable;
     public uint Length;
@@ -49,55 +61,42 @@ public unsafe ref struct GCObject
         }
     }
 
-    /// <summary>
-    /// The GC word (SPEC-M2 §5): the 4 free bytes at ref-8, the x64 padding half of the
-    /// pre-header word (the sync block index lives in the upper half, at ref-4).
-    /// Holds the epoch stamp of the last collection that proved this object live.
-    /// </summary>
-    public uint Epoch
-    {
-        get => *((uint*)Unsafe.AsPointer(ref this) - 2);
-        set => *((uint*)Unsafe.AsPointer(ref this) - 2) = value;
-    }
-
     public readonly MethodTable* MethodTable => RawMethodTable;
 
-    /// <summary>
-    /// The epoch following <paramref name="epoch"/>, skipping 0 on wrap (0 is what
-    /// freshly-zeroed memory reads, so it must always mean "never marked"). A wrap means
-    /// stamps from 2³² collections ago could alias the new epoch; the caller must clear
-    /// every stamp in the heap before using the returned value.
-    /// </summary>
-    internal static uint NextEpoch(uint epoch) => epoch + 1 == 0 ? 1 : epoch + 1;
+    private ulong* MarkWordPtr(out ulong mask)
+    {
+        var bit = ((nint)Unsafe.AsPointer(ref this) - MarkHeapBase) >> 3;
+        mask = 1ul << (int)(bit & 63);
+        return MarkBitmap + (bit >> 6);
+    }
 
-    public bool IsMarked() => Epoch == CurrentEpoch;
+    public bool IsMarked()
+    {
+        var word = MarkWordPtr(out var mask);
+        return (Volatile.Read(ref *word) & mask) != 0;
+    }
 
-    public void Mark() => Epoch = CurrentEpoch;
+    public void Mark()
+    {
+        var word = MarkWordPtr(out var mask);
+        Interlocked.Or(ref *word, mask);
+    }
 
     /// <summary>
     /// Claims the object for marking (M5): true exactly once per collection, whichever
-    /// thread wins the CAS on the epoch word. The stale value can be anything (older
-    /// epochs, zero), so the loop re-reads until it either observes the current epoch or
-    /// installs it.
+    /// thread wins the interlocked bit set. The read-first fast path keeps duplicate
+    /// pops (the common case on shared mark stacks) off the interlocked operation.
     /// </summary>
     public bool TryMark()
     {
-        ref var epoch = ref *((uint*)Unsafe.AsPointer(ref this) - 2);
+        var word = MarkWordPtr(out var mask);
 
-        while (true)
+        if ((Volatile.Read(ref *word) & mask) != 0)
         {
-            var current = Volatile.Read(ref epoch);
-
-            if (current == CurrentEpoch)
-            {
-                return false;
-            }
-
-            if (Interlocked.CompareExchange(ref epoch, CurrentEpoch, current) == current)
-            {
-                return true;
-            }
+            return false;
         }
+
+        return (Interlocked.Or(ref *word, mask) & mask) == 0;
     }
 
     public readonly uint ComputeSize()

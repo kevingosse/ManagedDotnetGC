@@ -65,58 +65,63 @@ Two findings from the reconciliation sharpen the "O(write set)" claim:
   allocation benchmark; with it the tax falls only on old-object mutation, which is the
   write set that is actually small.
 
-## 3. The memory substrate: one section per region, two views
+## 3. Mark state: side bitmap, private memory (decided by measurement)
 
-**Decision: keep epoch marking, and give the GC an always-writable alias view of the
-heap.** This is the "two-view aliasing variant" the original design flagged as required
-for in-heap mark state, promoted to the core mechanism.
+**Two-view aliasing was built first and killed by its own stage-0 parity gate**
+(2026-07-06, rows `m6s0-*` in results/perf-history.csv). Per-region 2 MB pagefile
+sections mapped twice — protected front view for mutators plus an always-writable GC
+alias, via `VirtualAlloc2` placeholders + `MapViewOfFile3` — ran **2.2–2.6× slower**
+than the private-memory baseline (soh median 2.205 → 4.849 s, pinheavy 2.189 → 5.774 s)
+with the **working set doubled** (peak 6.8 → 13.2 GB: every heap page resident through
+both mappings' PTEs). A control build with bulk zeroing routed back through the front
+view isolated the attribution: the WS inflation mostly disappeared (→ 8.6 GB) but wall
+stayed ~2× — **section-backed pages make the (re)commit-churn soft faults several times
+pricier than private demand-zero faults**, and this GC's recycle/trim churn lives on
+that fault path. Intrinsic to the substrate, not fixable by write routing; the WS
+doubling would also have poisoned the memory column of every future comparison.
+Reverted wholesale.
 
-Every committed region is backed by its own 2 MB pagefile-backed section
-(`CreateFileMapping(INVALID_HANDLE_VALUE, SEC_COMMIT)`), mapped twice via
-placeholder-reservation APIs (`VirtualAlloc2` + `MapViewOfFile3`, Windows 10 1803+):
+**Adopted: the heap stays plain private `VirtualAlloc` memory; mark state moves out of
+the heap into a side bitmap.**
 
-- **Front view** at the existing heap address (`heapBase + index << 21`): what the EE,
-  JIT code, and mutators see. This is the view that gets protected.
-- **Alias view** at `frontAddr + Δ` in a second 2 TB placeholder reservation: never
-  protected. Every GC-internal heap write goes through it.
+- 1 bit per 8 heap bytes → 32 KB per region, reserved flat (32 GB VA over the 2 TB
+  heap), committed alongside the frontier like the card-offset table (+1.6% committed).
+- `IsMarked`/`Mark`/`TryMark` keep their call sites and become bit tests / interlocked
+  bit sets; M4 sticky semantics are unchanged. A full collection clears the bitmap
+  wholesale at mark start (~1.5 ms per committed GB, in-pause — if stage-3 pause budgets
+  object, switch to ping-pong bitmaps: O(1) swap at pause A, background clear after).
+  A recycled region's 32 KB slice is cleared at carve, so a previous life's sticky bits
+  cannot resurrect dead objects between fulls (the exact analogue of zero-at-carve).
+- Epoch machinery (CurrentEpoch, NextEpoch, the wrap-clear walk) is deleted; the obj−8
+  padding word is freed for future use (grey links, size cache).
+- Mark consumers must range-check before consulting bits — the bitmap only covers the
+  heap, so the old "IsMarked first, range-check later" orderings in the mark loop and
+  the dependent-handle scan are inverted.
 
-Commit (`TryCommit`) becomes: split placeholders, create section, map both views.
-Decommit (`TrimPool`, `RecycleSpan`) becomes: unmap both views
-(`UnmapViewOfFile2(MEM_PRESERVE_PLACEHOLDER)`), close the section — charge released,
-placeholders intact for recommit. Multi-region spans map N sections at contiguous
-placeholder addresses, so front-view contiguity is preserved. Metadata (region table,
-pool, card table, card offsets) stays plain `VirtualAlloc` — it is never protected.
+**Parity gate result: passed with margin** — the bitmap runs 7–10% *faster* than the
+epoch baseline on all four scenarios (soh 1.991 vs 2.205, lohmix 1.906 vs 2.045, pin
+1.906 vs 2.124, pinheavy 1.967 vs 2.189; identical GC counts, WS within ~2%). Mark-state
+traffic on dense bitmap words beats scattered obj−8 stamps: the duplicate-pop check
+never touches the object, and sweep/card liveness tests read sequentially.
 
-Why the alias beats the alternative (side mark bitmap + explicit protect toggles):
+The failed experiment also exposed why the bitmap is **required regardless of
+substrate**: under an armed snapshot, every marker write into a protected heap page
+faults and must save that page's pre-image, making the pre-image slab O(live set) —
+a 16 GB live heap could take ~64 GB of pre-images from marking alone. With the side
+bitmap the marker performs *zero heap writes* — it reads the snapshot and writes
+GC-private memory — so pre-images stay bounded by the mutator write rate, which is the
+point of the whole design.
 
-1. **The entire M4/M5 mark machinery survives byte-identical.** Epoch stamps at obj−8,
-   `TryMark`'s CAS, sticky young liveness, the wrap-clear walk — all of it works during a
-   concurrent mark by routing the stamp write through the alias. A side bitmap forces a
-   parallel liveness representation onto young marking, the card scan, and the sweep,
-   plus ping-pong clear management and ~1.6% × 2 committed overhead.
-2. **It solves the zeroer, the sweep, and the marker with one invariant**: *the GC writes
-   through the back door; only mutator/EE-code writes hit the protected front view; a
-   fault therefore means exactly "mutator write", with zero false positives.* The zeroer
-   keeps its full bandwidth (no faults, no per-region unprotect choreography), sweep plug
-   writes cost nothing extra and don't inflate the next pause's re-protect set, and the
-   marker never faults on stamps.
-3. The handler stays trivial: it never has to distinguish GC-thread faults from mutator
-   faults, because GC threads never fault.
+**Remaining GC heap writers under protection** (stages 1+), with no alias to hide in:
 
-Writers routed through the alias (mechanical, greppable): `ClosePlug`, hole
-links/remainder plugs in `TryCarveFromHoles`, `FixAllocContext` plugs,
-`ZeroWindow`/`ZeroSpanCarve`/zeroer memsets, epoch stamps (`Mark`/`TryMark`), the
-`AdvanceEpoch` wrap-clear. Reads never need the alias (`PAGE_READONLY` reads are free).
-
-**Plan B** (if the placeholder/section machinery fights back — perf regression at stage
-0, API edge cases): side mark bitmap per region (16 KB per 2 MB region, committed with
-the frontier) for concurrent-mark state, pause-B transfer of survivor bits into epoch
-stamps during the sweep walk, explicit `VirtualProtect` toggles for zeroer/sweep bulk
-writes with precise dirty accounting. Strictly worse on every axis except substrate
-risk; keep the stage-0 exit criterion honest so we know which world we are in.
-
-Non-goals of the substrate change: large pages (never had them), Linux (front/alias =
-`mmap(MAP_SHARED)` of a memfd twice — a bonus, not a commitment).
+- **Bulk writers** — the zeroer's region memsets, the sweep's plug writes — explicitly
+  `VirtualProtect` the target region writable first (one call, ~0.6 µs) and record its
+  pages in the dirty set. Sound and cheap: those extents are dead and about to be
+  carved, i.e. unprotected-by-design anyway (§4.3).
+- **Scattered rare writers** — the finalizer-run header bit, hole-carve plug/link
+  writes on the mutator's allocation path between cycles — simply take the write
+  fault. First-fault-saves is sound no matter who faults (§4.1); the volumes are
+  trivial.
 
 ## 4. Protection domain and dirty-page bookkeeping
 
@@ -205,8 +210,8 @@ Under `SuspendEE` + `EnterGateForCollection`:
    true)` — flag semantics against a real EE are a stage-3 verification item (§9).
 2. `FixAllocContexts` (plug windows — writes precede arming, so plugs are simply part of
    the snapshot).
-3. `AdvanceEpoch` + `ResetLiveBytes` (as today for full collections). The wrap-clear
-   walk writes via the alias.
+3. `ClearMarks` + `ResetLiveBytes` (as today for full collections; the bitmap clear is
+   the in-pause memset §3 budgets, or the ping-pong swap once that lands).
 4. **Clear all cards.** Pre-pause-A old→young edges are subsumed by the full mark;
    cards dirtied *during* the window must survive for the next young collection, so the
    clear moves from end-of-collection to here (§6.6).
@@ -241,7 +246,9 @@ with two changes:
   and may be read from either view; *reference slots must come from the snapshot*.
   Objects straddling pages check per page. Mark throughput through translation will be
   slower than STW marking — irrelevant to pauses, bounded interest for window length.
-- **Writes (epoch CAS, LiveBytes already goes to the table) go through the alias.**
+- **Writes go to GC-private memory only** — mark bits to the side bitmap, LiveBytes to
+  the region table. The marker never writes a heap page, so it never faults and never
+  forces a pre-image (§3).
 
 The collectible-assembly edge (`GetLoaderAllocatorObjectForGC`) is deferred by workers
 as today; the coordinator takes deferred entries *during* the window. Whether that EE
@@ -265,7 +272,9 @@ tracing must read snapshot state):
    verbatim, just relocated to pause B.
 4. **Sweep** (parallel, existing code) with one new rule: **skip regions flagged
    `CarvedDuringMark`** — leave them `Fresh`, objects unmarked; they are this cycle's
-   floating garbage and the next collection's normal work. Sweep writes go via the alias.
+   floating garbage and the next collection's normal work. Sweep plug writes unprotect
+   their target region first (§3); the snapshot is disarmed before the sweep starts, so
+   none of those writes takes a pre-image.
 5. `TrimPool`, budget/trigger accounting, `_gcCount++`, `NotifyGcDone` — as today.
    **Do not clear cards** (window-era cards feed the next young collection).
 6. **Drop the snapshot**: walk the handler's published-page log, clear those pre-image
@@ -286,7 +295,7 @@ destroyed must leave its pre-deletion value discoverable.
 | Overwrite/free of a handle slot (unprotected native memory) | Pause-A buffered handle enumeration = snapshot of all slots (§6.2) |
 | Writes to excluded (pinned) pages | Pause-A eager capture of every object overlapping those pages (§6.5) |
 | Alloc-context churn | `FixAllocContexts` before arming; new contexts land in post-snapshot regions |
-| GC's own writes (plugs, zeroing, stamps) | Alias view — but they only touch dead-at-snapshot memory or non-reference words (§6.3) |
+| GC's own writes (plugs, zeroing) | Only touch dead-at-snapshot memory or non-reference words; bulk writers unprotect explicitly, rare ones fault with first-fault-saves (§3, §6.3). Marks live outside the heap entirely. |
 
 ### 6.1 Newly allocated objects (allocate-black)
 
@@ -298,9 +307,8 @@ because **hole carving is disabled during the window** (§6.4). Objects born in 
 unmarked-but-alive floating garbage until the next collection — the standard SATB bound
 (≤ one window of allocation + mid-window deaths).
 
-Stale-epoch hygiene: window/block/span carves zero the object extents they hand out
-(zero-at-carve, unchanged), so no stale stamp in recycled memory can alias
-`CurrentEpoch` within a skipped region.
+Stale-mark hygiene: recycled regions clear their bitmap slice at carve (§3), so no
+sticky bit from a previous life can make an object in a skipped region look marked.
 
 ### 6.2 Handles
 
@@ -315,8 +323,10 @@ handles are read at pause B against final marks, as today.
 
 Both write only memory that was *dead at snapshot time* (pool regions were `Free`;
 hole bodies were plug interiors — plugs are unreachable by definition and the marker
-never traces into them), and both write via the alias (no faults, no pre-images, no
-dirty-set pollution). The zeroer therefore **keeps running through the whole cycle**,
+never traces into them), and both unprotect their target region explicitly before
+writing (§3: one `VirtualProtect` call, pages recorded dirty — sound because those
+extents are about to be carved unprotected anyway, and no pre-image is needed for
+dead-at-snapshot memory). The zeroer therefore **keeps running through the whole cycle**,
 gate protocol unchanged: `EnterGateForCollection` at both pauses excludes it exactly as
 the single pause does today; its hole-region checkout cannot straddle a *pause* (gate),
 while straddling the mark window is harmless (the sweep it must not race sits inside
@@ -406,12 +416,15 @@ the current STW path. Stage gating (§8) keeps this the default until stage 3 la
 
 ## 8. Implementation stages (each ends suite-green: 56/56 + 72/72, soak clean)
 
-0. **Substrate**: per-region sections + two views in NativeAllocator/RegionAllocator;
-   all GC heap-writers routed through the alias (no protection anywhere yet).
-   *Exit: benchmark parity with df8920e within noise on all four scenarios + soak.*
-   This is the plan-B decision gate (§3).
-1. **Protection machinery, still fully STW**: VEH handler, dirty bitmap, steady-state
-   protection, carve-time unprotection, re-protector thread; full collections re-protect
+0. **Side mark bitmap** ✅ (2026-07-06): epoch marking replaced by the GC-private
+   bitmap (§3), carve-time slice clears, range-check-before-marks orderings. The
+   two-view-alias variant of this stage was built first and **failed its parity gate
+   2.2–2.6×** (rows `m6s0-substrate`/`m6s0-frontzero`); the bitmap variant **passed at
+   0.90–0.93× of baseline** (`m6s0-bitmap` vs `m6s0-base`) with GC counts and WS
+   unchanged. Suite 56/56, unit 70/70.
+1. **Protection machinery, still fully STW**: VEH handler, dirty-page bitmap,
+   steady-state protection, carve-time unprotection, unprotect-before-write for the
+   zeroer and sweep-plug paths, re-protector thread; full collections re-protect
    dirty∩live inside their (single) pause. No snapshot, no pre-images.
    *Exit: suite/soak green under permanent protection; measured mutator fault tax and
    pause re-protect cost recorded in experiments/results/.*

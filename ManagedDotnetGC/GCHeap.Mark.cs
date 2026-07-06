@@ -206,8 +206,9 @@ unsafe partial class GCHeap
 
                 // Anything outside the GC heap (frozen segments) counts as always-alive, and
                 // an out-of-range secondary must never count as "needs promotion" or the
-                // fixpoint spins forever (missing-features 3.4; stock interface.cpp:783)
-                var primaryAlive = primary->IsMarked() || !_nativeAllocator.IsInRange((nint)primary);
+                // fixpoint spins forever (missing-features 3.4; stock interface.cpp:783).
+                // Range check first: out-of-range addresses must not index the mark bitmap.
+                var primaryAlive = !_nativeAllocator.IsInRange((nint)primary) || primary->IsMarked();
                 var secondaryNeedsMark = _nativeAllocator.IsInRange((nint)secondary) && !secondary->IsMarked();
 
                 if (primaryAlive && secondaryNeedsMark)
@@ -372,14 +373,15 @@ unsafe partial class GCHeap
             var ptr = stack.Pop();
             var o = (GCObject*)ptr;
 
-            if (o->IsMarked())
+            // Reject anything that isn't inside a live region BEFORE consulting marks:
+            // the side bitmap only covers the heap range, so an out-of-range pointer
+            // (frozen-segment references land here too) would index it out of bounds
+            if (!_regionAllocator.TryGetIndex(ptr, out var regionIndex))
             {
                 continue;
             }
 
-            // Reject anything that isn't inside a live region (frozen-segment references
-            // land here too: they are outside the reservation and are deliberately skipped)
-            if (!_regionAllocator.TryGetIndex(ptr, out var regionIndex))
+            if (o->IsMarked())
             {
                 continue;
             }

@@ -87,21 +87,4 @@ public class RegionTests
         Region.ComputeBudget(10L * 1024 * 1024 * 1024).ShouldBe(10L * 1024 * 1024 * 1024);
     }
 
-    [Test]
-    public void NextEpoch_IncrementsAndSkipsZeroOnWrap()
-    {
-        GCObject.NextEpoch(1).ShouldBe(2u);
-        GCObject.NextEpoch(uint.MaxValue - 1).ShouldBe(uint.MaxValue);
-
-        // 0 is what freshly-zeroed memory reads, so the sequence must skip it on wrap
-        GCObject.NextEpoch(uint.MaxValue).ShouldBe(1u);
-    }
-
-    [Test]
-    public void NextEpoch_WrapIsDetectableByOrdering()
-    {
-        // AdvanceEpoch detects the wrap (and clears all stamps) via next < current
-        GCObject.NextEpoch(uint.MaxValue).ShouldBeLessThan(uint.MaxValue);
-        GCObject.NextEpoch(12345).ShouldBeGreaterThan(12345u);
-    }
 }

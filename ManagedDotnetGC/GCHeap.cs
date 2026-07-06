@@ -61,7 +61,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
-    private uint _currentEpoch = 1;
 
     private readonly NativeAllocator _nativeAllocator;
 
@@ -278,10 +277,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             if (!young)
             {
-                AdvanceEpoch();
-
-                // Young collections credit LiveBytes to old regions without any sweep ever
-                // consuming it; a full mark must re-accumulate from zero
+                // Full marks rebuild liveness from scratch: clear the sticky mark bitmap
+                // (SPEC-M6 §3 — this replaces the epoch advance) and the LiveBytes that
+                // young collections credited without any sweep ever consuming
+                _regionAllocator.ClearMarks();
                 _regionAllocator.ResetLiveBytes();
             }
 
@@ -596,27 +595,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         _regionAllocator.ZeroSpanCarve(spanBase, size);
 
         return (GCObject*)(spanBase + IntPtr.Size);
-    }
-
-    /// <summary>
-    /// Starts a new mark epoch (SPEC-M2 §5). Runs under STW. On uint wrap, stale stamps
-    /// from 2³² collections ago could alias the new epoch, so all stamps are cleared first.
-    /// </summary>
-    private void AdvanceEpoch()
-    {
-        var next = GCObject.NextEpoch(_currentEpoch);
-
-        if (next < _currentEpoch)
-        {
-            // Wrapped: clear every stale stamp so it cannot alias the restarted sequence
-            foreach (var ptr in WalkHeapObjects())
-            {
-                ((GCObject*)ptr)->Epoch = 0;
-            }
-        }
-
-        _currentEpoch = next;
-        GCObject.CurrentEpoch = next;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

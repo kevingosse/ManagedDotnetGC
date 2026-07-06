@@ -13,7 +13,6 @@ namespace ManagedDotnetGC.Tests;
 [TestFixture]
 public unsafe class RegionAllocatorTests
 {
-    private const uint TestEpoch = 40;
     private const int MinObjectSize = 3 * 8; // sync block slot + MT + one field
 
     private NativeAllocator _memory = null!;
@@ -37,7 +36,6 @@ public unsafe class RegionAllocatorTests
         _byteMT = MakeMethodTable(hasComponentSize: true);
         _allocator.SetFreeObjectMethodTable(_freeMT);
 
-        GCObject.CurrentEpoch = TestEpoch;
         _ctxPtr = 0;
         _ctxLimit = 0;
     }
@@ -83,8 +81,8 @@ public unsafe class RegionAllocatorTests
             FixContext();
             AssertAllBumpRegionsWalkable(live);
 
-            // Random survivors, stamped with a fresh epoch like a real mark phase
-            GCObject.CurrentEpoch = TestEpoch + (uint)round + 1;
+            // Random survivors, marked from a clean bitmap like a real full mark phase
+            _allocator.ClearMarks();
             var survivors = new Dictionary<nint, nint>();
 
             foreach (var (obj, size) in live)
@@ -362,7 +360,7 @@ public unsafe class RegionAllocatorTests
         // ...dies on the next one: all three regions return to the pool with their dead
         // contents (M4 zero-at-carve); a new span carve flags the stale members and the
         // caller zeroes the object extent outside the allocation lock
-        GCObject.CurrentEpoch++;
+        _allocator.ClearMarks();
         _allocator.Sweep();
 
         for (int i = 0; i < 3; i++)
@@ -797,7 +795,7 @@ public unsafe class RegionAllocatorTests
         ((nint)((GCObject*)oldObjects[1])->RawMethodTable).ShouldBe((nint)_byteMT); // floats
 
         _allocator.ResetLiveBytes();
-        GCObject.CurrentEpoch++;
+        _allocator.ClearMarks();
         MarkLive(oldObjects[0]);
         MarkLive(y1);
 
@@ -948,7 +946,7 @@ public unsafe class RegionAllocatorTests
     private void MarkLive(nint address)
     {
         var obj = (GCObject*)address;
-        obj->Epoch = GCObject.CurrentEpoch;
+        obj->Mark();
 
         _allocator.TryGetIndex(address, out var index).ShouldBeTrue();
         _allocator.GetEntry(index)->LiveBytes += (int)Align((nint)obj->ComputeSize());

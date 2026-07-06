@@ -220,6 +220,27 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   req / 0 err / 44.2 k req/s / WS ~1.8 GB. GCStats: zero_us/zero_mb are cumulative
   alloc-path totals now; hole_n/clean_n columns added.
 
+- **M6 stage 0 — side mark bitmap; two-view substrate measured and rejected.** The
+  concurrent-marking design (docs/spec-m6-concurrent-mark.md) needs marking to stop
+  writing heap pages. First attempt was the DESIGN.md "two-view aliasing" variant:
+  every region a 2 MB pagefile section mapped twice (protected front + GC-writable
+  alias, VirtualAlloc2 placeholders + MapViewOfFile3), all GC heap writes via the
+  alias. **Failed its parity gate 2.2–2.6×** (`m6s0-base` vs `m6s0-substrate`: soh
+  2.205 → 4.849, pinheavy 2.189 → 5.774) with **WS doubled** (peak 6.8 → 13.2 GB —
+  every page resident through both mappings). The `m6s0-frontzero` control (bulk
+  zeroing via the front view, marks/plugs still aliased) killed the WS inflation
+  (→ 8.6 GB) but wall stayed ~2×: **section-page soft faults are several times
+  pricier than private demand-zero faults**, and recycle/trim churn lives on that
+  path — intrinsic, reverted. Replaced epochs with a **side mark bitmap** instead
+  (1 bit / 8 heap bytes, 32 KB/region committed with the frontier, cleared wholesale
+  at full-mark start and per-region at carve): `m6s0-bitmap` came in **0.90–0.93× of
+  the epoch baseline** (soh 1.99 / lohmix 1.91 / pin 1.91 / pinheavy 1.97), identical
+  GC counts, WS within ~2% (+1.6% committed for the bitmap). Dense bitmap words beat
+  scattered obj−8 stamps: dup-checks never touch the object, sweep/card liveness
+  reads are sequential. Bonus: epoch wrap machinery deleted, obj−8 freed. Note for
+  cross-sitting comparisons: this sitting's stock-free baseline (`m6s0-base`, code =
+  `df8920e`) ran ~2.2 s vs the morning sitting's 1.74 s — compare within sittings.
+
 ## How to add a step
 
 ```powershell

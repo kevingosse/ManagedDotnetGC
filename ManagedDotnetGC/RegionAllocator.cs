@@ -58,6 +58,11 @@ internal unsafe class RegionAllocator : IDisposable
     // Committed bytes currently sitting in the free pool (drives the retention trim)
     private long _pooledCommittedBytes;
 
+    // Side mark bitmap (SPEC-M6 §3): 1 bit per 8 heap bytes → 32 KB per region,
+    // committed alongside the frontier. See GCObject.MarkBitmap for the contract.
+    private readonly ulong* _markBitmap;
+    private nint _markBitmapCommittedEnd;
+
     public RegionAllocator(NativeAllocator memory)
     {
         _memory = memory;
@@ -70,7 +75,10 @@ internal unsafe class RegionAllocator : IDisposable
         _cardOffsets = (ushort*)NativeAllocator.OsReserve((nint)Region.Count << 11);
         _cardOffsetsCommittedEnd = (nint)_cardOffsets;
 
-        if (_table == null || _pool == null || _cardOffsets == null
+        _markBitmap = (ulong*)NativeAllocator.OsReserve((nint)Region.Count << 15);
+        _markBitmapCommittedEnd = (nint)_markBitmap;
+
+        if (_table == null || _pool == null || _cardOffsets == null || _markBitmap == null
             || !NativeAllocator.OsCommit((nint)_pool, (nint)Region.Count * sizeof(int)))
         {
             // Initialization-time failure: the process cannot run without these
@@ -78,6 +86,11 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         _classHeads.AsSpan().Fill(-1);
+
+        // Mark operations live on GCObject but the storage is ours: one heap per process
+        // in production; the unit tests create allocators sequentially
+        GCObject.MarkBitmap = _markBitmap;
+        GCObject.MarkHeapBase = memory.LowestAddress;
     }
 
     /// <summary>Releases the metadata reservations. Production never disposes (the GC
@@ -87,6 +100,7 @@ internal unsafe class RegionAllocator : IDisposable
         NativeAllocator.OsRelease((nint)_table);
         NativeAllocator.OsRelease((nint)_pool);
         NativeAllocator.OsRelease((nint)_cardOffsets);
+        NativeAllocator.OsRelease((nint)_markBitmap);
     }
 
     public void SetFreeObjectMethodTable(MethodTable* methodTable) => _freeObjectMethodTable = methodTable;
@@ -311,13 +325,12 @@ internal unsafe class RegionAllocator : IDisposable
 
                     if (length < extent)
                     {
-                        // Re-plug the remainder; its stale bytes stay (zero-at-carve). The
-                        // epoch word is cleared so a stale stamp cannot alias CurrentEpoch.
+                        // Re-plug the remainder; its stale bytes stay (zero-at-carve), and
+                        // its mark bits are clear by construction (hole extents are dead)
                         var remainderStart = window + length;
                         var remainder = (GCObject*)(remainderStart + IntPtr.Size);
                         remainder->RawMethodTable = _freeObjectMethodTable;
                         remainder->Length = (uint)(extent - length - 3 * IntPtr.Size);
-                        remainder->Epoch = 0;
 
                         if (extent - length >= _minLinkedHole)
                         {
@@ -465,7 +478,13 @@ internal unsafe class RegionAllocator : IDisposable
 
             GetEntry(start)->SpanIsDirty = dirty ? (byte)1 : (byte)0;
         }
-        else if (!TryTakeFreeRun(count, out start))
+        else if (TryTakeFreeRun(count, out start))
+        {
+            // Only the start region can hold the span object's mark bit; extension
+            // slices are never consulted (no object starts there)
+            ClearRegionMarks(start);
+        }
+        else
         {
             if (_frontier + count > Region.Count || !EnsureTableCommitted(_frontier + count))
             {
@@ -621,6 +640,11 @@ internal unsafe class RegionAllocator : IDisposable
                 entry->IsCommitted = RegionEntry.CommitDirty;
                 _committedRegionBytes += Region.Size;
             }
+
+            // Sticky marks from the region's previous life would resurrect dead objects
+            // (only full collections clear the bitmap); recycled regions restart clean.
+            // Frontier regions below skip this: their bitmap slice is freshly committed.
+            ClearRegionMarks(index);
 
             return true;
         }
@@ -845,6 +869,34 @@ internal unsafe class RegionAllocator : IDisposable
     }
 
     /// <summary>
+    /// Clears every mark bit below the frontier. Full collections start here (this
+    /// replaces the M4 epoch advance, with no wrap case): sticky young marks accumulate
+    /// in the bitmap until the next full mark rebuilds liveness from scratch. Runs under
+    /// STW; ~1.5 ms per committed GB, the price of the side-bitmap representation.
+    /// </summary>
+    public void ClearMarks()
+    {
+        var remaining = (nint)_frontier << 15;
+        var cursor = (nint)_markBitmap;
+
+        while (remaining > 0)
+        {
+            var chunk = (int)Math.Min(remaining, int.MaxValue & ~7);
+            new Span<byte>((void*)cursor, chunk).Clear();
+            cursor += chunk;
+            remaining -= chunk;
+        }
+    }
+
+    /// <summary>Clears one region's 32 KB bitmap slice at carve: sticky marks from the
+    /// region's previous life would otherwise resurrect dead objects (the bitmap is only
+    /// cleared wholesale by full collections).</summary>
+    private void ClearRegionMarks(int index)
+    {
+        new Span<byte>((byte*)_markBitmap + ((nint)index << 15), 1 << 15).Clear();
+    }
+
+    /// <summary>
     /// Zeroes every region's mark-time accumulator. Young collections credit LiveBytes to
     /// old regions (hole-carved young objects) without a sweep ever consuming it, so every
     /// full mark must start from a clean slate.
@@ -929,9 +981,8 @@ internal unsafe class RegionAllocator : IDisposable
     /// Writes the free-object plug over a dead extent [start, end) and links it as a
     /// carveable hole when big enough (SPEC-M2 §7.1). Zero-at-carve (M4): the extent's
     /// stale contents stay in place — whoever carves a window out of the hole zeroes
-    /// exactly the bytes handed out, outside the pause. Only the plug's epoch word must
-    /// be cleared: a stale stamp there could alias the current epoch and make the plug
-    /// look live to a sweep walk or card scan.
+    /// exactly the bytes handed out, outside the pause. The extent's mark bits are clear
+    /// by construction: everything under it just swept as dead.
     /// </summary>
     private void ClosePlug(RegionEntry* entry, int regionIndex, nint start, nint end)
     {
@@ -940,7 +991,6 @@ internal unsafe class RegionAllocator : IDisposable
         var plug = (GCObject*)(start + IntPtr.Size);
         plug->RawMethodTable = _freeObjectMethodTable;
         plug->Length = (uint)(extent - 3 * IntPtr.Size);
-        plug->Epoch = 0;
 
         // The plug's card-offset interval runs to the ref after its extent (M4)
         WriteCardOffsets(regionIndex, start + IntPtr.Size, end + IntPtr.Size);
@@ -1321,6 +1371,11 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         if (!EnsureCommitted(ref _cardOffsetsCommittedEnd, (nint)_cardOffsets + ((nint)requiredEntries << 11)))
+        {
+            return false;
+        }
+
+        if (!EnsureCommitted(ref _markBitmapCommittedEnd, (nint)_markBitmap + ((nint)requiredEntries << 15)))
         {
             return false;
         }
