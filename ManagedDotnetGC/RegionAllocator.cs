@@ -58,6 +58,13 @@ internal unsafe class RegionAllocator : IDisposable
     // Committed bytes currently sitting in the free pool (drives the retention trim)
     private long _pooledCommittedBytes;
 
+    // Carveable linked-hole bytes across all bump regions: rebuilt by every sweep,
+    // drawn down by hole carves. With the pool this is the space the next allocation
+    // runway can use without committing fresh regions — the full-collection starvation
+    // trigger reads it (M7 memory exchange rate). Size-class free blocks are not counted:
+    // they only serve their own class, and the churn tiers here are bump and span.
+    private long _linkedHoleBytes;
+
     // Side mark bitmap (SPEC-M6 §3): 1 bit per 8 heap bytes → 32 KB per region,
     // committed alongside the frontier. See GCObject.MarkBitmap for the contract.
     private readonly ulong* _markBitmap;
@@ -158,6 +165,11 @@ internal unsafe class RegionAllocator : IDisposable
     private long _committedRegionBytes;
 
     public long CommittedRegionBytes => Volatile.Read(ref _committedRegionBytes);
+
+    /// <summary>Bytes the next allocation runway can be served from without growing the
+    /// committed heap: retained pool regions plus carveable linked holes. Approximate by
+    /// design (read with the world running for the full-trigger heuristic).</summary>
+    public long FreeCapacityBytes => Volatile.Read(ref _pooledCommittedBytes) + Volatile.Read(ref _linkedHoleBytes);
 
     public nint RegionBase(int index) => HeapBase + ((nint)index << Region.Shift);
 
@@ -322,6 +334,7 @@ internal unsafe class RegionAllocator : IDisposable
                     }
 
                     entry->HoleBytes -= (int)extent;
+                    _linkedHoleBytes -= extent;
 
                     if (length < extent)
                     {
@@ -337,6 +350,7 @@ internal unsafe class RegionAllocator : IDisposable
                             *(nint*)(remainderStart + 3 * IntPtr.Size) = entry->FirstHole;
                             entry->FirstHole = remainderStart + IntPtr.Size;
                             entry->HoleBytes += (int)(extent - length);
+                            _linkedHoleBytes += extent - length;
                         }
                         // else: a sub-window remainder floats until the next full collection
 
@@ -680,11 +694,15 @@ internal unsafe class RegionAllocator : IDisposable
     public long Sweep(bool youngOnly = false, GcWorkerPool? pool = null)
     {
         // Memory pressure: within an eighth of the hard limit, stop stranding sub-window
-        // holes — link everything carveable so the heap can run dense instead of dying
-        _minLinkedHole = UnderMemoryPressure ? PressureMinLinkedHole : Region.MinLinkedHole;
+        // holes — link everything carveable so the heap can run dense instead of dying.
+        // Full sweeps always link deep (see Region.FullMinLinkedHole).
+        _minLinkedHole = UnderMemoryPressure ? PressureMinLinkedHole
+            : youngOnly ? Region.MinLinkedHole
+            : Region.FullMinLinkedHole;
 
         // Hole lists and class lists are rebuilt from scratch on every sweep
         _recycledHead = -1;
+        _linkedHoleBytes = 0;
         _classHeads.AsSpan().Fill(-1);
 
         var frontier = _frontier;
@@ -742,6 +760,7 @@ internal unsafe class RegionAllocator : IDisposable
         public fixed int ClassHeads[Region.ClassCount];
         public fixed int ClassTails[Region.ClassCount];
         public long Live;
+        public long LinkedHoleBytes;
     }
 
     private static SweepLists NewSweepLists()
@@ -783,6 +802,8 @@ internal unsafe class RegionAllocator : IDisposable
 
     private void SpliceSweepLists(ref SweepLists lists)
     {
+        _linkedHoleBytes += lists.LinkedHoleBytes;
+
         if (lists.RecycledHead >= 0)
         {
             GetEntry(lists.RecycledTail)->NextRecycled = _recycledHead;
@@ -816,6 +837,7 @@ internal unsafe class RegionAllocator : IDisposable
                         if (entry->FirstHole != 0)
                         {
                             LinkRecycled(ref lists, i);
+                            lists.LinkedHoleBytes += entry->HoleBytes;
                         }
                         break;
 
@@ -971,6 +993,7 @@ internal unsafe class RegionAllocator : IDisposable
         if (entry->FirstHole != 0)
         {
             LinkRecycled(ref lists, index);
+            lists.LinkedHoleBytes += entry->HoleBytes;
         }
 
         entry->LiveBytes = 0;
@@ -1246,6 +1269,58 @@ internal unsafe class RegionAllocator : IDisposable
     /// up the remainder. When the pool is already at target the batch is a single
     /// comparison.
     /// </summary>
+    /// <summary>Diagnostics snapshot for the per-collection stats row (M7 memory work):
+    /// where every committed region byte sits. Read with the world running — approximate
+    /// by design, like the committed counter on the same row.</summary>
+    public struct RegionCensus
+    {
+        public int BumpFresh, BumpReopened, BumpOld; // in-use bump regions by sticky age
+        public long LinkedHoleBytes;                 // carveable (≥ floor) hole bytes
+        public long BumpTailBytes;                   // never-carved space above each cursor
+        public int ClassRegions;
+        public long ClassFreeBytes;                  // free blocks in size-class regions
+        public int SpanRegions;                      // includes extensions
+        public long PooledCommittedBytes;
+    }
+
+    public RegionCensus TakeCensus()
+    {
+        var census = new RegionCensus { PooledCommittedBytes = Volatile.Read(ref _pooledCommittedBytes) };
+
+        for (int i = 0; i < _frontier; i++)
+        {
+            var entry = GetEntry(i);
+
+            switch (entry->Kind)
+            {
+                case RegionKind.Bump:
+                    switch (entry->Age)
+                    {
+                        case RegionAge.Fresh: census.BumpFresh++; break;
+                        case RegionAge.Reopened: census.BumpReopened++; break;
+                        default: census.BumpOld++; break;
+                    }
+
+                    census.LinkedHoleBytes += entry->HoleBytes;
+                    census.BumpTailBytes += RegionBase(i) + Region.Size - Region.GuardBytes - entry->Cursor;
+                    break;
+
+                case RegionKind.SizeClass:
+                    census.ClassRegions++;
+                    var freeBlocks = BlockCount(entry->SizeClass)
+                        - BitOperations.PopCount(entry->AllocatedBlocks & FullMask(entry->SizeClass));
+                    census.ClassFreeBytes += (long)freeBlocks * Region.ClassSizes[entry->SizeClass];
+                    break;
+
+                case RegionKind.SpanStart:
+                    census.SpanRegions += entry->SpanCount;
+                    break;
+            }
+        }
+
+        return census;
+    }
+
     /// <returns>true while entries above target remain (call again for the next batch)</returns>
     public bool TrimPoolBatch(long target, int maxDecommits, ref int cursor)
     {

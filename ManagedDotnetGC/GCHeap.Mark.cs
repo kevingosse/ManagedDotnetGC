@@ -261,6 +261,13 @@ unsafe partial class GCHeap
             }
         }
 
+        if (_skipMarkedRootBuffering && root->IsMarked())
+        {
+            // Remark buffer-time mark skip (SPEC-M6 §9): marked here means fully traced
+            // by the window drain; window-era stores are the card remark's job
+            return;
+        }
+
         _markStack.Push((nint)root);
 
         if (!_bufferMarkRoots)

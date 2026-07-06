@@ -102,7 +102,7 @@ unsafe partial class GCHeap
         // remark is our re-scan of the same logical root set; extra GcScanRoots calls
         // are normal, stock issues several per GC).
         var tRescan = GcStats.Timestamp();
-        BufferStrongRoots(scanRootsCallback, condemned, &scanContext);
+        BufferStrongRoots(scanRootsCallback, condemned, &scanContext, skipMarked: true);
 
         var tDrain2 = GcStats.Timestamp();
         GcStats.CycleRescanTicks = tDrain2 - tRescan;
@@ -156,7 +156,8 @@ unsafe partial class GCHeap
             GcStats.RecordCollection(gcNumber, "full-cycle",
                 tStart, tSuspended, tPauseAEnd, tMarked, tSwept, GcStats.Timestamp(),
                 Volatile.Read(ref GcStats.ZeroBytes), Volatile.Read(ref GcStats.ZeroTicks),
-                _lastLiveBytes, _regionAllocator.CommittedRegionBytes);
+                _lastLiveBytes, _regionAllocator.CommittedRegionBytes,
+                _regionAllocator.TakeCensus(), _budget);
         }
 
         _regionZeroer?.Kick();
@@ -167,15 +168,24 @@ unsafe partial class GCHeap
     /// handles, the f-reachable queues — onto <see cref="_markStack"/> without
     /// draining (M5's buffering mechanism). Runs under STW; the buffer is GC-private,
     /// so it safely spans the resume between pause A and the trace.
+    ///
+    /// <paramref name="skipMarked"/> is the remark's buffer-time mark skip (SPEC-M6 §9):
+    /// ~97% of re-buffered roots are already marked, and marked-at-remark means fully
+    /// traced — the window drain terminated on a global idle quorum, and refs stored
+    /// during the window are the card remark's job either way. Skipping them here saves
+    /// the push/deal/pop/lookup round-trip that measured 13.5 ms of pause B. Pause A
+    /// never skips: its dumb-push speed is the design goal, and nothing is marked yet.
     /// </summary>
-    private void BufferStrongRoots(delegate* unmanaged<GCObject**, ScanContext*, uint, void> scanRootsCallback, int condemned, ScanContext* scanContext)
+    private void BufferStrongRoots(delegate* unmanaged<GCObject**, ScanContext*, uint, void> scanRootsCallback, int condemned, ScanContext* scanContext, bool skipMarked = false)
     {
         _bufferMarkRoots = true;
+        _skipMarkedRootBuffering = skipMarked;
 
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, condemned, 2, scanContext);
         MarkFReachableQueues();
         ScanHandles();
 
         _bufferMarkRoots = false;
+        _skipMarkedRootBuffering = false;
     }
 }

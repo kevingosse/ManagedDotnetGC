@@ -35,13 +35,27 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private long _liveAtLastFull;
     private long _promotedSinceFull;
 
-    // The committed>8×live full trigger mutes itself when a full collection proves unable
-    // to get committed back under the line (scattered survivors pin regions open — a
-    // structural state on a non-moving heap, not reclaimable garbage). Left armed it fires
-    // on every subsequent collection: a permanent full-GC storm. It re-arms once committed
-    // grows a budget past what that impotent full could reach.
-    private bool _committedTriggerMuted;
-    private long _committedTriggerRearm;
+    // The starvation full trigger (M7 memory exchange rate). The census run measured why
+    // uncapped committed reached 13× live on soh: no bump region is ever wholly dead
+    // (smeared survivors), so between full collections the heap only reuses what young
+    // sweeps relink — and refilled holes fragment below the linking floor after roughly
+    // one survivor generation, leaving young supply ~200 MB/cycle short of the budget.
+    // Only a full sweep re-coalesces those strands (the census full recovered 2.2 GB of
+    // holes without freeing one region). So: once committed outgrows a multiple of live,
+    // run a full whenever the recovered free capacity cannot absorb the next runway —
+    // collect strands back instead of committing fresh regions. Set post-trim (the honest
+    // post-collection capacity), consumed by the next trigger decision.
+    private bool _fullForStarvation;
+
+    // A full that could not restock free capacity (hostile scatter, genuinely growing
+    // live set) must not re-fire on every collection: stand down until the heap has
+    // grown a budget past what that full could reach.
+    private bool _starvationMuted;
+    private long _starvationRearm;
+
+    // DOTNET_GCFullRatio: committed/live percent gate on the starvation trigger, default
+    // 250. Below the gate, growing the heap is cheaper than extra full collections.
+    private long _fullRatioPercent = 250;
 
     // DOTNET_GCgen0size: latency knob capping the young allocation budget, 0 = uncapped
     private long _youngBudgetCap;
@@ -58,6 +72,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     // Set while a buffered (parallel) full mark enumerates roots: ScanRoots accumulates
     // instead of draining inline. Only touched on the GC thread during suspension.
     private bool _bufferMarkRoots;
+
+    // Set only during the remark's root re-scan (SPEC-M6 §9): already-marked roots are
+    // dropped at buffer time instead of paying the drain round-trip to discover them.
+    private bool _skipMarkedRootBuffering;
 
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
@@ -115,6 +133,18 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             {
                 Write($"Young budget cap: {gen0Size}");
                 _youngBudgetCap = gen0Size;
+            }
+        }
+
+        // DOTNET_GCFullRatio: starvation-trigger gate as a percent of the live estimate
+        // (memory/throughput exchange knob; config ints parse as hex — 250 = 0xFA)
+        fixed (byte* privateKey = "GCFullRatio"u8)
+        fixed (byte* publicKey = "System.GC.FullRatio"u8)
+        {
+            if (_gcToClr.GetIntConfigValue(privateKey, publicKey, out var ratio) && ratio > 0)
+            {
+                Write($"Full-trigger ratio: {ratio}%");
+                _fullRatioPercent = ratio;
             }
         }
 
@@ -269,26 +299,23 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         if (force || Volatile.Read(ref _gcCount) == gcCountSnapshot)
         {
-            // Young until (a) promotion has ~doubled the live estimate, or (b) the
-            // committed heap outgrew 8× live — floating old garbage and sub-floor holes
-            // are invisible to young collections, so only a full pass can shrink them.
-            // The multiple is deliberately loose: a non-moving heap cannot pack scattered
-            // survivors, so on hostile scatter committed legitimately sits at several
-            // times live and a tight bound just degenerates every collection to full.
-            // When even a full pass can't get back under the line the trigger mutes
-            // (see _committedTriggerMuted) until the heap has actually grown since.
-            if (_committedTriggerMuted
-                && _regionAllocator.CommittedRegionBytes >= _committedTriggerRearm)
-            {
-                _committedTriggerMuted = false;
-            }
-
+            // Young until (a) promotion has ~doubled the live estimate — floating old
+            // garbage is invisible to young collections — or (b) the last collection left
+            // the allocator starved (see _fullForStarvation): the next runway would grow
+            // the committed heap when a full sweep could restock it from strands instead.
             var young = !requireFull
                 && !_regionAllocator.UnderMemoryPressure
                 && _promotedSinceFull < Math.Max(Region.MinGCBudget, _liveAtLastFull)
-                && (_committedTriggerMuted
-                    || _regionAllocator.CommittedRegionBytes
-                        < 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes));
+                && !_fullForStarvation;
+
+            if (GcStats.Enabled)
+            {
+                GcStats.FullReason = young ? ""
+                    : requireFull ? "forced"
+                    : _regionAllocator.UnderMemoryPressure ? "pressure"
+                    : _promotedSinceFull >= Math.Max(Region.MinGCBudget, _liveAtLastFull) ? "promoted"
+                    : "starved";
+            }
 
             // EE notifications get condemned = 0 for young collections (like a stock gen0:
             // skips the full-only EE work) and 2 for full ones, so JIT code-heap cleanup and
@@ -380,7 +407,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 GcStats.RecordCollection(gcNumber, young ? "young" : "full",
                     tStart, tSuspended, tFixed, tMarked, tSwept, tEnd,
                     Volatile.Read(ref GcStats.ZeroBytes), Volatile.Read(ref GcStats.ZeroTicks),
-                    _lastLiveBytes, _regionAllocator.CommittedRegionBytes);
+                    _lastLiveBytes, _regionAllocator.CommittedRegionBytes,
+                    _regionAllocator.TakeCensus(), _budget);
             }
 
             // The sweep just refilled the pool with dirty regions (and the trim just
@@ -689,16 +717,34 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         GcStats.TrimTicks = GcStats.Timestamp() - tStart;
 
+        // The starvation trigger reads post-trim state: the pool now holds exactly the
+        // retained slack, so free capacity is what the next runway can genuinely use.
+        // Written under _gcLock, like every reader.
+        var committed = _regionAllocator.CommittedRegionBytes;
+        var freeCapacity = _regionAllocator.FreeCapacityBytes;
+
+        // Two budgets of headroom: one for the runway that will trigger the next
+        // collection, one for what mutators allocate through a concurrent cycle's window
+        // (the v4 census measured ~a window of fresh commits per full — the entire
+        // remaining ratchet — when fulls fired with holes already exhausted).
+        var demand = 2 * _budget;
+
         if (!young)
         {
-            // Post-trim is the honest measure of what this full pass achieved: if
-            // committed still exceeds the trigger line, re-firing would only repeat
-            // this collection's work, so the trigger stands down until the heap grows.
-            // Written under _gcLock, like every reader.
-            var committed = _regionAllocator.CommittedRegionBytes;
-            _committedTriggerMuted = committed >= 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes);
-            _committedTriggerRearm = committed + _budget;
+            // Post-trim is the honest measure of what this full pass achieved: if it
+            // could not restock the working headroom, re-firing would only repeat this
+            // collection's work — stand down until the heap grows a budget past here.
+            _starvationMuted = freeCapacity < demand;
+            _starvationRearm = committed + _budget;
         }
+        else if (_starvationMuted && committed >= _starvationRearm)
+        {
+            _starvationMuted = false;
+        }
+
+        _fullForStarvation = !_starvationMuted
+            && freeCapacity < demand
+            && committed >= _fullRatioPercent * Math.Max(Region.MinGCBudget, _lastLiveBytes) / 100;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

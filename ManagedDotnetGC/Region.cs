@@ -19,6 +19,15 @@ internal static class Region
     // window (not a full one) because survivor gaps cluster tightly around their mean —
     // a floor above the typical gap strands nearly all of the reclaimable bytes.
     public const nint MinLinkedHole = WindowSize / 2;
+
+    // Full sweeps link much deeper (M7 memory exchange rate): the heap grows until the
+    // mean survivor gap clears the linking floor, so equilibrium committed ≈ survivor
+    // count × (floor + object size) — the census measured soh converging on 4.5 GB at a
+    // 16 KB full floor and ~16 GB extrapolated at 64 KB. The floor is the memory dial.
+    // Fulls are the recovery engine (young sweeps keep the fat floor for the hot path);
+    // 4 KB matches the hard-limit pressure floor, which the capped rows already proved
+    // livable for the handout cadence.
+    public const nint FullMinLinkedHole = 4 * 1024;
     public const nint GuardBytes = 16;                          // reserved tail of every bump region
 
     public const long MinGCBudget = 64L * 1024 * 1024;
