@@ -152,7 +152,7 @@ internal sealed class GcRegionZeroer
         // No locks held: the region is out of the pool, so carves cannot hand it out and
         // TrimPool cannot decommit it from under the memset (a checked-out pool region is
         // invisible to sweeps, so unlike the hole path this may straddle a collection)
-        RegionAllocator.ZeroWindow(regionBase, Region.Size);
+        _regionAllocator.ZeroCarve(regionBase, Region.Size);
 
         lock (_regionAllocator.ZeroerGate)
         {

@@ -138,6 +138,11 @@ internal unsafe class RegionAllocator : IDisposable
 
     public nint HeapBase => _memory.LowestAddress;
 
+    /// <summary>Maps a front heap address to the GC's always-writable alias view
+    /// (SPEC-M6 §3). Every heap write made by GC code goes through it; addresses handed
+    /// to the EE, stored in lists, or read from are always front addresses.</summary>
+    public nint Alias(nint addr) => addr + _memory.AliasOffset;
+
     public int CarvedCount => _frontier;
 
     // Field-backed so parallel sweep workers can adjust it with interlocked adds
@@ -297,14 +302,14 @@ internal unsafe class RegionAllocator : IDisposable
                         length = extent;
                     }
 
-                    // Unlink the hole
+                    // Unlink the hole (the link lives in heap memory: write via alias)
                     if (previousHoleRef == 0)
                     {
                         entry->FirstHole = next;
                     }
                     else
                     {
-                        *(nint*)(previousHoleRef + 2 * IntPtr.Size) = next;
+                        *(nint*)Alias(previousHoleRef + 2 * IntPtr.Size) = next;
                     }
 
                     entry->HoleBytes -= (int)extent;
@@ -313,15 +318,16 @@ internal unsafe class RegionAllocator : IDisposable
                     {
                         // Re-plug the remainder; its stale bytes stay (zero-at-carve). The
                         // epoch word is cleared so a stale stamp cannot alias CurrentEpoch.
+                        // Plug and link writes go via the alias; list values stay front.
                         var remainderStart = window + length;
-                        var remainder = (GCObject*)(remainderStart + IntPtr.Size);
+                        var remainder = (GCObject*)Alias(remainderStart + IntPtr.Size);
                         remainder->RawMethodTable = _freeObjectMethodTable;
                         remainder->Length = (uint)(extent - length - 3 * IntPtr.Size);
                         remainder->Epoch = 0;
 
                         if (extent - length >= _minLinkedHole)
                         {
-                            *(nint*)(remainderStart + 3 * IntPtr.Size) = entry->FirstHole;
+                            *(nint*)Alias(remainderStart + 3 * IntPtr.Size) = entry->FirstHole;
                             entry->FirstHole = remainderStart + IntPtr.Size;
                             entry->HoleBytes += (int)(extent - length);
                         }
@@ -340,7 +346,7 @@ internal unsafe class RegionAllocator : IDisposable
                     {
                         // Pre-zeroed hole body (M7): only the plug's preheader, header and
                         // link bytes at the window start are stale
-                        new Span<byte>((void*)window, 4 * IntPtr.Size).Clear();
+                        new Span<byte>((void*)Alias(window), 4 * IntPtr.Size).Clear();
                         needsZero = false;
                     }
 
@@ -937,7 +943,8 @@ internal unsafe class RegionAllocator : IDisposable
     {
         var extent = end - start;
 
-        var plug = (GCObject*)(start + IntPtr.Size);
+        // Plug and link writes are GC heap writes: via the alias (SPEC-M6 §3)
+        var plug = (GCObject*)Alias(start + IntPtr.Size);
         plug->RawMethodTable = _freeObjectMethodTable;
         plug->Length = (uint)(extent - 3 * IntPtr.Size);
         plug->Epoch = 0;
@@ -948,7 +955,7 @@ internal unsafe class RegionAllocator : IDisposable
         if (extent >= _minLinkedHole)
         {
             // The link lives in the plug's dead body, at ref + 16 (SPEC-M2 §4.4)
-            *(nint*)(start + 3 * IntPtr.Size) = entry->FirstHole;
+            *(nint*)Alias(start + 3 * IntPtr.Size) = entry->FirstHole;
             entry->FirstHole = start + IntPtr.Size;
             entry->HoleBytes += (int)extent;
         }
@@ -1166,7 +1173,7 @@ internal unsafe class RegionAllocator : IDisposable
         for (var holeRef = GetEntry(index)->FirstHole; holeRef != 0; holeRef = *(nint*)(holeRef + 2 * IntPtr.Size))
         {
             // Hole extent is [ref - 8, ref + 16 + Length); the body starts after the link
-            ZeroMemory(holeRef + 3 * IntPtr.Size, (nint)((GCObject*)holeRef)->Length - IntPtr.Size);
+            ZeroMemory(Alias(holeRef + 3 * IntPtr.Size), (nint)((GCObject*)holeRef)->Length - IntPtr.Size);
         }
     }
 
@@ -1203,10 +1210,15 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    /// <summary>Zeroes a recycled window or block extent before first use (M4
-    /// zero-at-carve). Called by the allocation path after releasing the allocation lock:
-    /// the memory is private to the requesting thread by then, and concurrent carves zero
-    /// in parallel.</summary>
+    /// <summary>Zeroes a recycled window, block or pool-region extent before first use
+    /// (M4 zero-at-carve), writing through the alias view (SPEC-M6 §3). Called after
+    /// releasing the allocation lock: the memory is private to the requesting thread by
+    /// then, and concurrent carves zero in parallel.</summary>
+    public void ZeroCarve(nint address, nint length) => ZeroMemory(Alias(address), length);
+
+    /// <summary>Raw front-view memset, kept for the unit tests (production zeroing goes
+    /// through <see cref="ZeroCarve"/> — the front view is protected from M6 stage 1
+    /// on, but tests never protect).</summary>
     public static void ZeroWindow(nint window, nint length) => ZeroMemory(window, length);
 
     /// <summary>
@@ -1239,7 +1251,7 @@ internal unsafe class RegionAllocator : IDisposable
 
             if (zeroEnd > regionBase)
             {
-                ZeroMemory(regionBase, zeroEnd - regionBase);
+                ZeroMemory(Alias(regionBase), zeroEnd - regionBase);
             }
         }
     }
