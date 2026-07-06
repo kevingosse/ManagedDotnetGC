@@ -32,6 +32,11 @@ ratios are the archive's currency.
 | M4 + card-offset tables (card scan by dirty runs) | `5ab6a54` | 4.46 (2.23×) | 4.55 (2.04×) | 4.86 (2.45×)* |
 | stock WKS re-reference (2026-07-06 evening) | — | 2.22 | — | 2.13 |
 | M5 slice: parallel sweep (8 participants) | `266284a` | 2.89 (**1.30×**) | 3.21 (~1.44×†) | 3.00 (1.41×) |
+| stock WKS re-reference (2026-07-06 night) | — | 2.36 | 2.54 | 2.37 |
+| **M5 slice 2: parallel card scan** | `8e45e7f` | 2.29 (**0.97×**) | 2.56 (**1.01×**) | 2.28 (**0.96×**) |
+
+`pinheavy` night sitting: stock 2.78, ours **1.94 (0.70×)**. First beat-stock across the
+suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 13 ms.
 
 `pinheavy` (same sitting): stock 2.92 s / **4.53 GB peak WS, 4.32 GB final heap**; M4
 4.92 s (1.69×) / 8.5 GB peak, **1.39 GB final**. Wall vs memory: see
@@ -81,6 +86,15 @@ ratios are the archive's currency.
   heap vs stock's 4.3 GB.** Young pauses are now ~70% card scan (0.96 s): parallel card
   scan (per-worker mark stacks + CAS marking, collectible edges deferred to the GC
   thread) is the queued next step, projected to put soh near ~1.2×.
+- **Parallel card scan: the beat-stock line.** Cards 0.96 s → 0.18 s; young pauses
+  p50 13 ms / max 17 ms on soh. Honesty box: (a) stock here is single-threaded WKS
+  non-concurrent — our GC uses up to 8 phase threads; a Server-GC comparison is owed
+  before any public "faster than .NET's GC" claim (M7); (b) we spend more memory
+  (soh peak WS ~6.5 GB vs stock ~1.7 GB — the 8×-live trigger; `pinheavy` reverses it:
+  stock 4.5 GB *permanent* vs our recyclable floats); (c) machine slowed through the
+  day (stock 2.00 → 2.36), so only same-sitting ratios are valid — and same-sitting
+  says soh 0.97×, pin 0.96×, pinheavy 0.70×, lohmix 1.01×. Remaining pause pool: the
+  serial full-GC mark (~66 ms at 500 MB live) — parallel root mark is the rest of M5.
 
 ## How to add a step
 

@@ -70,7 +70,7 @@ Region-based, size-class segregated, **non-moving**, sticky-generation mark & sw
 | M2 ✅ | **Region heap core** (replaces SegmentManager) | Allocation triggering (1.1), memory reuse (1.2), OOM-as-null (1.3), preemptive-mode dance (8.3) implemented *on the new allocator*; suite fully green; ASP.NET sample under 20k req/s load: 0 errors, flat footprint (soak-aspnet.cmd) |
 | M3 | Benchmark harness + first honest comparison | GCPerfSim + custom scenarios (pinning server, LOH churn, cache churn, burst allocation) vs stock WKS/SVR/BGC; throughput, pause histogram, peak RSS, CPU. Published in experiments/results/ |
 | M4 ◐ | Sticky generations via card table | Young collections; win or tie GCPerfSim steady-state. **Core landed 2026-07-06** (sticky epochs, whole-heap card barrier, Reopened regions, zero-at-carve): soh 3.20× → 2.52× vs same-day stock, STW zeroing eliminated. Win-or-tie still open — blocked on survivor density (non-moving heaps can't pack scattered survivors; see results/2026-07-06-m4-sticky-generations.md) and the card/sweep region walks (card-offset tables, M5/M7) |
-| M5 | Parallel mark & sweep | Pause ∝ 1/cores |
+| M5 ◐ | Parallel mark & sweep | Pause ∝ 1/cores. **Sweep + card scan parallelized 2026-07-06** (GC-owned worker pool, CAS marking, EE calls confined to the GC thread): young pauses p50 13 ms; same-sitting GCPerfSim vs stock WKS — soh 0.97×, pin 0.96×, pinheavy 0.70×, lohmix 1.01×, i.e. **wins or ties the whole canonical suite** (vs 3.2× at M2). Still serial: the full-GC root mark (~66 ms @ 500 MB live). Stock-SVR comparison owed at M7 |
 | M6 | Concurrent marking (COW snapshot) | O(write-set) pauses on multi-GB heaps |
 | M7 | Tuning war | Beat stock on target workloads 1–3; publish reproducible results |
 
