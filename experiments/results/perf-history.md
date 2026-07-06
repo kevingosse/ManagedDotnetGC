@@ -241,6 +241,26 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   cross-sitting comparisons: this sitting's stock-free baseline (`m6s0-base`, code =
   `df8920e`) ran ~2.2 s vs the morning sitting's 1.74 s — compare within sittings.
 
+- **The kernel-write wall: VEH page protection is unsound for general .NET apps**
+  (experiments/KernelWriteProbe, same day). While planning M6 stage 1, the remaining
+  snapshot design hit a correctness question: what happens when the *kernel* writes a
+  protected heap page on behalf of a syscall (sync `ReadFile` into a `fixed`-pinned
+  `byte[]`, socket receives, buffered-I/O completion copies)? Measured: sync ReadFile
+  into a `PAGE_READONLY` page **fails with `ERROR_NOACCESS` (998) and the VEH never
+  fires** — the same handler that successfully fixes up native user-mode writes (and
+  `GetComputerNameW`, a user-mode writer, which faults and completes fine). Kernel
+  writers give the GC no interception point; the app just sees failed I/O. Since
+  alloc-context buffers share pages with arbitrary objects, no allocation-side
+  segregation covers sync I/O into small `byte[]`s — page protection over general
+  heap pages is disqualified at any tuning (Boehm documents the same limitation; his
+  fix, syscall wrappers, is unavailable to a standalone GC). **M6 pivoted to
+  incremental-update concurrent marking** (spec-m6 v2): concurrent trace over the
+  live heap from pause-A-buffered roots, mutations tracked by the existing M4 card
+  barrier, STW remark (root re-scan + all-ages card scan) in pause B. No protection,
+  no VEH, no pre-images, no mutator tax; remark cost bounded by window-era dirty
+  cards. The 07-05 COW/PSS benchmarks stand as the measurement that killed the
+  alternative; PSS survives as diagnostics.
+
 ## How to add a step
 
 ```powershell
