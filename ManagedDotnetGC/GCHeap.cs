@@ -507,7 +507,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             // Zero-at-carve (M4), outside the lock: the window is private to this thread,
             // no GC can run while it is in cooperative mode, and concurrent handouts zero
             // in parallel instead of convoying on the allocation lock
-            _regionAllocator.ZeroCarve(window, length);
+            RegionAllocator.ZeroWindow(window, length);
         }
 
         if (GcStats.Enabled)
@@ -555,7 +555,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             // Zero-at-carve (M4), outside the lock: only the object's extent — the block's
             // tail beyond it is never read (every reader gates on the allocated bitmap and
             // walks per-block, not contiguously)
-            _regionAllocator.ZeroCarve(block, IntPtr.Size + Align(size));
+            RegionAllocator.ZeroWindow(block, IntPtr.Size + Align(size));
         }
 
         return (GCObject*)(block + IntPtr.Size);
@@ -609,10 +609,9 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         if (next < _currentEpoch)
         {
             // Wrapped: clear every stale stamp so it cannot alias the restarted sequence
-            // (a GC heap write: via the alias, SPEC-M6 §3)
             foreach (var ptr in WalkHeapObjects())
             {
-                ((GCObject*)_regionAllocator.Alias(ptr))->Epoch = 0;
+                ((GCObject*)ptr)->Epoch = 0;
             }
         }
 
@@ -656,8 +655,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private void AllocateFreeObject(nint address, uint length)
     {
-        // A GC heap write (window plugs, finalization-OOM plugs): via the alias
-        var freeObject = (GCObject*)_regionAllocator.Alias(address);
+        var freeObject = (GCObject*)address;
         freeObject->RawMethodTable = _freeObjectMethodTable;
         freeObject->Length = length;
     }

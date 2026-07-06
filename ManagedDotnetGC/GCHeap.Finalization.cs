@@ -34,9 +34,8 @@ unsafe partial class GCHeap
             {
                 // Clear the bit while skipping (stock finalizerthread.cpp:253-259): the object
                 // is out of the queue now, so a later ReRegisterForFinalize must see a clear
-                // bit and enqueue for real instead of early-returning (missing-features 5.1).
-                // Header writes are GC heap writes: via the alias (SPEC-M6 §3).
-                obj->AliasHeader->HasFinalizerRun = false;
+                // bit and enqueue for real instead of early-returning (missing-features 5.1)
+                obj->Header->HasFinalizerRun = false;
                 obj = null;
             }
         }
@@ -47,7 +46,7 @@ unsafe partial class GCHeap
     public void SetFinalizationRun(GCObject* obj)
     {
         Write($"Setting finalization run for object at {(nint)obj:X}");
-        obj->AliasHeader->HasFinalizerRun = true;
+        obj->Header->HasFinalizerRun = true;
     }
 
     public bool RegisterForFinalization(int gen, GCObject* obj)
@@ -55,7 +54,7 @@ unsafe partial class GCHeap
         Write($"Registering object at {(nint)obj:X} for finalization");
         if (obj->Header->HasFinalizerRun)
         {
-            obj->AliasHeader->HasFinalizerRun = false;
+            obj->Header->HasFinalizerRun = false;
             return true;
         }
 
@@ -97,7 +96,7 @@ unsafe partial class GCHeap
                 {
                     // Suppressed + dead: dropped outright with the bit cleared, never
                     // resurrected (stock finalization.cpp:367-377; missing-features 5.1)
-                    obj->AliasHeader->HasFinalizerRun = false;
+                    obj->Header->HasFinalizerRun = false;
                 }
                 else if (!_gcToClr.EagerFinalized(obj))
                 {

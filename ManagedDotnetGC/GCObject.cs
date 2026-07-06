@@ -37,15 +37,6 @@ public unsafe ref struct GCObject
     /// </summary>
     internal static uint CurrentEpoch = 1;
 
-    /// <summary>
-    /// Delta from a front heap address to the GC's always-writable alias view (SPEC-M6
-    /// §3). Every heap write made by GC code — epoch stamps here, plugs and zeroing in
-    /// the allocator — goes through the alias so GC threads never fault once M6 protects
-    /// the front view. Set by the NativeAllocator that owns the heap (one per process in
-    /// production; tests that exercise marking create allocators sequentially).
-    /// </summary>
-    internal static nint WriteAliasOffset;
-
     public MethodTable* RawMethodTable;
     public uint Length;
 
@@ -79,20 +70,9 @@ public unsafe ref struct GCObject
     /// </summary>
     internal static uint NextEpoch(uint epoch) => epoch + 1 == 0 ? 1 : epoch + 1;
 
-    /// <summary>The header reached through the write alias: GC-code header writes (the
-    /// finalizer-run bit) must go through it, like every GC heap write (SPEC-M6 §3).
-    /// Reads stay on the front view (<see cref="Header"/>).</summary>
-    public ObjectHeader* AliasHeader
-        => (ObjectHeader*)((nint)Unsafe.AsPointer(ref this) + WriteAliasOffset - sizeof(uint));
-
     public bool IsMarked() => Epoch == CurrentEpoch;
 
-    public void Mark() => *AliasEpochPtr() = CurrentEpoch;
-
-    /// <summary>The epoch word through the write alias: mark stamps are GC writes and
-    /// must never fault on the protected front view (SPEC-M6 §3, §5.3).</summary>
-    private uint* AliasEpochPtr()
-        => (uint*)((nint)Unsafe.AsPointer(ref this) + WriteAliasOffset) - 2;
+    public void Mark() => Epoch = CurrentEpoch;
 
     /// <summary>
     /// Claims the object for marking (M5): true exactly once per collection, whichever
@@ -102,7 +82,7 @@ public unsafe ref struct GCObject
     /// </summary>
     public bool TryMark()
     {
-        ref var epoch = ref *AliasEpochPtr();
+        ref var epoch = ref *((uint*)Unsafe.AsPointer(ref this) - 2);
 
         while (true)
         {
