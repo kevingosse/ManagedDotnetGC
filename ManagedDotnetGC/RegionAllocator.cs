@@ -415,13 +415,28 @@ internal unsafe class RegionAllocator : IDisposable
     /// <summary>
     /// Allocates a span of contiguous regions for a single large object (SPEC-M2 §4.3):
     /// first a contiguous run of pooled free regions, else the frontier (contiguous by
-    /// construction).
+    /// construction). Recycled members come back with stale contents and their
+    /// <see cref="RegionEntry.SpanIsDirty"/> set — the caller zeroes the object extent
+    /// via <see cref="ZeroSpanCarve"/> *after releasing the allocation lock* (M4
+    /// zero-at-carve, extended to spans).
     /// </summary>
     public bool TryAllocSpan(int count, out nint spanBase)
     {
         spanBase = 0;
+        int start;
 
-        if (!TryTakeFreeRun(count, out var start))
+        if (count == 1)
+        {
+            // The common case (spans ≤ 2 MB): any one free region works, so take the
+            // pool's LIFO top instead of scanning the table for a run
+            if (!TryCarveRegion(out start, out var dirty))
+            {
+                return false;
+            }
+
+            GetEntry(start)->SpanIsDirty = dirty ? (byte)1 : (byte)0;
+        }
+        else if (!TryTakeFreeRun(count, out start))
         {
             if (_frontier + count > Region.Count || !EnsureTableCommitted(_frontier + count))
             {
@@ -440,7 +455,9 @@ internal unsafe class RegionAllocator : IDisposable
 
             for (int i = 0; i < count; i++)
             {
-                GetEntry(start + i)->IsCommitted = 1;
+                var entry = GetEntry(start + i);
+                entry->IsCommitted = 1;
+                entry->SpanIsDirty = 0; // freshly committed: OS-zeroed
             }
         }
 
@@ -497,8 +514,9 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         // Commit any decommitted member first: a failure here leaves the pool intact.
-        // Members that stayed committed hold stale recycled contents (M4 zero-at-carve)
-        // and are cleaned here — a span's object memory is handed out in full.
+        // Members that stayed committed hold stale recycled contents; they are only
+        // flagged here — the caller zeroes the object extent after releasing the
+        // allocation lock (M4 zero-at-carve, extended to spans).
         for (int i = 0; i < count; i++)
         {
             var entry = GetEntry(start + i);
@@ -513,10 +531,11 @@ internal unsafe class RegionAllocator : IDisposable
                 entry->IsCommitted = 1;
                 _committedRegionBytes += Region.Size;
                 _pooledCommittedBytes += Region.Size;
+                entry->SpanIsDirty = 0; // freshly committed: OS-zeroed
             }
             else
             {
-                ZeroMemory(RegionBase(start + i), Region.Size);
+                entry->SpanIsDirty = 1;
             }
         }
 
@@ -1009,6 +1028,41 @@ internal unsafe class RegionAllocator : IDisposable
     /// the allocation path after releasing the allocation lock: the window is private to
     /// the requesting thread by then, and concurrent windows zero in parallel.</summary>
     public static void ZeroWindow(nint window, nint length) => ZeroMemory(window, length);
+
+    /// <summary>
+    /// Zeroes the stale members of a just-carved span, called by the allocating thread
+    /// after releasing the allocation lock — the span is private to that thread until the
+    /// EE publishes the object, and the EE cannot suspend it before then (same envelope
+    /// as window zero-at-carve). Only the object's extent is zeroed: the tail of the last
+    /// region is never handed out, and freshly committed members are OS-zeroed already.
+    /// </summary>
+    public void ZeroSpanCarve(nint spanBase, nint objectSize)
+    {
+        TryGetIndex(spanBase, out var start);
+
+        var count = GetEntry(start)->SpanCount;
+        var end = spanBase + IntPtr.Size + Align(objectSize);
+
+        for (int i = 0; i < count; i++)
+        {
+            var entry = GetEntry(start + i);
+
+            if (entry->SpanIsDirty == 0)
+            {
+                continue;
+            }
+
+            entry->SpanIsDirty = 0;
+
+            var regionBase = RegionBase(start + i);
+            var zeroEnd = Math.Min(regionBase + Region.Size, end);
+
+            if (zeroEnd > regionBase)
+            {
+                ZeroMemory(regionBase, zeroEnd - regionBase);
+            }
+        }
+    }
 
     /// <summary>
     /// Records, for every card whose start falls inside [objStart, intervalEnd), the

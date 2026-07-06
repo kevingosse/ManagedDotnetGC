@@ -103,6 +103,9 @@ internal struct RegionEntry
     [FieldOffset(1)] public byte SizeClass;        // SizeClass only
     [FieldOffset(1)] public byte BumpIsDirty;      // Bump only: 1 = recycled without zeroing,
                                                    // windows must be zeroed at carve (M4)
+    [FieldOffset(1)] public byte SpanIsDirty;      // SpanStart/SpanExtension only: 1 = carved
+                                                   // with stale contents; the object extent is
+                                                   // zeroed outside the alloc lock (M4)
     [FieldOffset(2)] public byte IsCommitted;      // Free only: 0 after decommit
     [FieldOffset(3)] public RegionAge Age;         // sticky-generation age (SPEC-M4)
     [FieldOffset(4)] public int LiveBytes;         // rebuilt by every mark phase, consumed by sweep

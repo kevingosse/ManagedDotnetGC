@@ -538,12 +538,13 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         // The caller's context is left untouched: it may still serve small allocations
         var regionCount = Region.SpanRegionCount(size);
+        nint spanBase;
 
         _allocLock.Acquire();
 
         try
         {
-            if (!_regionAllocator.TryAllocSpan(regionCount, out var spanBase))
+            if (!_regionAllocator.TryAllocSpan(regionCount, out spanBase))
             {
                 return null;
             }
@@ -557,13 +558,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             acontext.alloc_bytes_uoh += allocated;
             _allocatedSinceGC += allocated;
             _totalAllocatedBytes += allocated;
-
-            return (GCObject*)(spanBase + IntPtr.Size);
         }
         finally
         {
             _allocLock.Release();
         }
+
+        // Recycled members hold stale contents; zeroing happens out here so concurrent
+        // span carves clean in parallel instead of serializing the allocation lock
+        _regionAllocator.ZeroSpanCarve(spanBase, size);
+
+        return (GCObject*)(spanBase + IntPtr.Size);
     }
 
     /// <summary>

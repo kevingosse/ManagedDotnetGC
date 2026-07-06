@@ -354,7 +354,8 @@ public unsafe class RegionAllocatorTests
         ((GCObject*)(spanBase + IntPtr.Size))->ComputeSize().ShouldBe((uint)objectSize);
 
         // ...dies on the next one: all three regions return to the pool with their dead
-        // contents (M4 zero-at-carve), and a new span cleans them at allocation
+        // contents (M4 zero-at-carve); a new span carve flags the stale members and the
+        // caller zeroes the object extent outside the allocation lock
         GCObject.CurrentEpoch++;
         _allocator.Sweep();
 
@@ -365,7 +366,21 @@ public unsafe class RegionAllocatorTests
 
         _allocator.TryAllocSpan(3, out var reused).ShouldBeTrue();
         reused.ShouldBe(spanBase);
-        AssertZero(reused, 3 * Region.Size);
+
+        for (int i = 0; i < 3; i++)
+        {
+            _allocator.GetEntry(index + i)->SpanIsDirty.ShouldBe((byte)1);
+        }
+
+        // The contract zeroes the object extent (pre-header + object); the tail of the
+        // last region is never handed out
+        _allocator.ZeroSpanCarve(reused, objectSize);
+        AssertZero(reused, IntPtr.Size + objectSize);
+
+        for (int i = 0; i < 3; i++)
+        {
+            _allocator.GetEntry(index + i)->SpanIsDirty.ShouldBe((byte)0);
+        }
     }
 
     [Test]
