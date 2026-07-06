@@ -82,6 +82,18 @@ Read honestly:
 - Caveat for yesterday's pinning narrative: WKS's 4.1 GB permanent pinheavy fragmentation
   does not carry to SVR, which holds 2.4–2.6 GB avg. The structural-win story vs SVR rests
   on the capped/OOM behavior, not steady-state footprint — re-verify at M7.
+- **Pinning-relevance caveat (Kevin, 2026-07-06)**: `pinheavy` models *classic* pinning
+  (`GCHandle.Pinned`/`fixed` on ordinary heap objects). Since .NET 5 the Pinned Object
+  Heap exists precisely to drain that pattern — modern code (Kestrel buffer pools, newer
+  socket paths) allocates long-lived pinned buffers via `GC.AllocateArray(pinned: true)`,
+  which doesn't fragment the ephemeral heap at all. Classic pinning is still everywhere
+  in interop and older libraries, but our strongest scenario models a *shrinking*
+  population, and the write-up must weight it accordingly. Two sides to publish: (a) a
+  POH scenario (`-pohar` — the vendored GCPerfSim supports it; our non-moving heap needs
+  no code change since every allocation trivially satisfies "won't move") to measure the
+  modern-pinning matchup fairly; (b) the architectural point that POH is a *workaround
+  the stock GC needed* — API + developer migration — for a problem a non-moving design
+  dissolves: we give classic pinning POH-like behavior with no code changes.
 
 `pinheavy` night sitting: stock 2.78, ours **1.94 (0.70×)**. First beat-stock across the
 suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 13 ms.
