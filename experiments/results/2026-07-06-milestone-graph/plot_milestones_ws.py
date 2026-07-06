@@ -17,6 +17,10 @@ milestones = [
     ("memory diet\n+ tuning", 2.436),
     ("concurrent\nsweep", 2.490),
     ("faster\nallocation", 2.445),
+    # Second sitting of 2026-07-06 (late evening): median peaks 1985/2549/2001/4219 MB.
+    # Same-sitting h8 anchor re-ran at 2.530 GB geomean, so the point stays below the
+    # tuned config on the memory axis too (lohmix's bimodal peak is the open item).
+    ("sharded\nsupply", 2.497),
 ]
 
 # (label, line y, explicit label y). DATAS discovery 2026-07-06: bare gcServer=1 is
@@ -25,7 +29,9 @@ milestones = [
 # the same hand-picked label_y slots still keep everything clear (verified by re-render).
 stock_refs = [
     ("Server GC (32 heaps)", 6.129, 5.60, "#6b6a63"),
-    ("Server GC (8 heaps)", 2.515, 3.10, "#3a3a37"),
+    # label lifted 3.10 → 3.85 when the 8th stage landed: the new last point's own
+    # value label sits at the same height the 3.10 slot used
+    ("Server GC (8 heaps)", 2.515, 3.85, "#3a3a37"),
     ("Server GC (DATAS)", 1.680, 1.05, "#55544e"),
     ("Workstation GC", 1.582, 0.55, "#9a988f"),
 ]

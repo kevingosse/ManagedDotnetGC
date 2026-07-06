@@ -20,6 +20,12 @@ MILESTONES = [
     ("M7 tuning",       "backfill-m7-r2", "7689ab1", "custom"),
     ("M6.5 sweep-assist","m65s2-final-r2", "765f680", "custom"),
     ("faster allocation (M7 mutator war)", "m7-stash2", "e65fa79", "custom"),
+    # Late-evening second sitting of 2026-07-06 (eighth session). Cross-sitting drift
+    # CHECKED via re-run anchors (label m7-shards-anchor): stock WKS geomean 2.399 →
+    # 2.465, SVR-h8 1.405 → 1.445 — the machine ran +2.7–2.9% SLOWER, so charting this
+    # point raw against the earlier sitting's reference lines is conservative (the
+    # same-sitting ratio vs h8 is 0.849).
+    ("sharded supply (M7)", "m7-shards", "98517ee", "custom"),
 ]
 
 # Stock anchors also re-measured tonight in the same sitting (label m7-stash2-anchor),
@@ -129,6 +135,12 @@ def main():
                   "(added 2026-07-06), but today's backfill ran it anyway against the old GC build using "
                   "the current `bench-gcperfsim.ps1`/GCPerfSim — it completed normally, so no scenario "
                   "is actually missing in the final chart.")
+    lines.append("- **sharded supply (M7)** (`98517ee`) is a *second sitting* late the same evening. "
+                  "Cross-sitting drift was measured, not assumed: the stock anchors were re-run in that "
+                  "sitting (label `m7-shards-anchor`) and came back +2.7–2.9% slower (WKS geomean "
+                  "2.399 → 2.465, SVR-h8 1.405 → 1.445), so charting the point raw against the earlier "
+                  "sitting's reference lines is conservative. Same-sitting ratio vs tuned SVR-h8: "
+                  "**0.849** (per-scenario 0.95/0.82/0.96/0.69 — the first full-matrix win).")
 
     with open(f"{OUT_DIR}\\summary.md", "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

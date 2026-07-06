@@ -16,6 +16,9 @@ milestones = [
     ("memory diet\n+ tuning", 1.851),
     ("concurrent\nsweep", 1.816),
     ("faster\nallocation", 1.418),
+    # Second sitting of 2026-07-06 (late evening); anchors re-run, +2.7-2.9% slower
+    # machine, so the point is conservative vs the earlier sitting's reference lines
+    ("sharded\nsupply", 1.227),
 ]
 
 # (label, line y, explicit label y — slots picked to clear every dashed line and each

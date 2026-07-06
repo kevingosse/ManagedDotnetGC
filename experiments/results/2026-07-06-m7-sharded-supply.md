@@ -1,4 +1,4 @@
-# M7 sharded supply: reservoir + private shard lists (2026-07-06, eighth session, ran past midnight)
+# M7 sharded supply: reservoir + private shard lists (2026-07-06, eighth session, late evening)
 
 Session goal (next-session list #1): the structural lever on the remaining soh/pin gap —
 split the allocation supply across per-thread shards so handouts stop convoying on the

@@ -9,13 +9,17 @@ OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-grap
 # labels alongside tonight's new M7 "mutator war" stage (label m7-stash2) so every
 # point on the chart shares one sitting; see experiments/results/2026-07-06-milestone-graph/summary.md) ----
 milestones = [
-    ("M2 baseline", 8.054),
-    ("M4 sticky gens", 5.350),
+    ("M2\nbaseline", 8.054),
+    ("M4\nsticky gens", 5.350),
     ("M5 parallel", 2.029),
     ("M6 concurrent", 1.928),
     ("M7 tuning", 1.851),
     ("M6.5\nsweep-assist", 1.816),
     ("faster\nallocation", 1.418),
+    # Second sitting of 2026-07-06 (late evening). Drift-checked via re-run anchors:
+    # WKS/h8 ran +2.7-2.9% SLOWER than the earlier sitting, so this point is
+    # conservative against the reference lines below (same-sitting ratio vs h8: 0.849).
+    ("sharded\nsupply", 1.227),
 ]
 
 stock_refs = [
