@@ -197,8 +197,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
-        // Concurrent full-cycle sweep (M6.5): staging knob, default-off until the
-        // stage exits hold (suite/stress/bench/soak)
+        // Concurrent full-cycle sweep (M6.5): default-on since stage 2 (mutator
+        // sweep-assist); =0 forces the in-pause sweep for A/B runs
         fixed (byte* privateKey = "GCConcurrentSweep"u8)
         fixed (byte* publicKey = "System.GC.ConcurrentSweep"u8)
         {

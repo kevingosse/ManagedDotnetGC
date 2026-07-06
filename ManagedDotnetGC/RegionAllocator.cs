@@ -47,14 +47,6 @@ internal unsafe class RegionAllocator : IDisposable
     private nint _cardTableStorage;
     private nint _cardTableCommittedEnd;
 
-    // Card-offset table (M4): one ushort per card = 8-byte words from the card's start
-    // back to the nearest object start at or before it, 0xFFFF = saturated (≥ 512 KB,
-    // only large coalesced plugs). Rebuilt for bump regions by every sweep walk and
-    // refreshed at window carves, so the card scan can jump into a dirty region instead
-    // of walking it from the base. 2 KB per region, committed alongside the frontier.
-    private readonly ushort* _cardOffsets;
-    private nint _cardOffsetsCommittedEnd;
-
     // Committed bytes currently sitting in the free pool (drives the retention trim)
     private long _pooledCommittedBytes;
 
@@ -70,6 +62,19 @@ internal unsafe class RegionAllocator : IDisposable
     private readonly ulong* _markBitmap;
     private nint _markBitmapCommittedEnd;
 
+    // The armed concurrent-sweep plan (M6.5 stage 2): set under STW at pause B, consumed
+    // after RestartEE by the worker pool (SweepConcurrentFull) and by allocating threads
+    // whose supply runs dry mid-sweep (TrySweepAssist). The assist is what makes the
+    // ungated sweep safe on smear heaps: the window's overshoot drains the plan instead
+    // of fresh-committing regions, which is the ratchet that forced the M6.5 pool gate.
+    private int[]? _sweepPlan;
+    private int _sweepPlanCount;
+    private int _sweepCursor;
+    private volatile bool _sweepInFlight;
+
+    // Assist scratch: only touched under the allocation lock
+    private readonly List<int> _assistFreed = new();
+
     public RegionAllocator(NativeAllocator memory)
     {
         _memory = memory;
@@ -79,13 +84,10 @@ internal unsafe class RegionAllocator : IDisposable
 
         _pool = (int*)NativeAllocator.OsReserve((nint)Region.Count * sizeof(int));
 
-        _cardOffsets = (ushort*)NativeAllocator.OsReserve((nint)Region.Count << 11);
-        _cardOffsetsCommittedEnd = (nint)_cardOffsets;
-
         _markBitmap = (ulong*)NativeAllocator.OsReserve((nint)Region.Count << 15);
         _markBitmapCommittedEnd = (nint)_markBitmap;
 
-        if (_table == null || _pool == null || _cardOffsets == null || _markBitmap == null
+        if (_table == null || _pool == null || _markBitmap == null
             || !NativeAllocator.OsCommit((nint)_pool, (nint)Region.Count * sizeof(int)))
         {
             // Initialization-time failure: the process cannot run without these
@@ -106,7 +108,6 @@ internal unsafe class RegionAllocator : IDisposable
     {
         NativeAllocator.OsRelease((nint)_table);
         NativeAllocator.OsRelease((nint)_pool);
-        NativeAllocator.OsRelease((nint)_cardOffsets);
         NativeAllocator.OsRelease((nint)_markBitmap);
     }
 
@@ -243,18 +244,35 @@ internal unsafe class RegionAllocator : IDisposable
                         GcStats.CleanWindowCount++;
                     }
 
-                    // Card offsets for the new window resolve to its first object (M4):
-                    // beyond the last sweep's extent the table would otherwise be stale.
-                    // The interval runs to the next window's first ref so consecutive
-                    // stamps tile without a pre-header gap.
-                    WriteCardOffsets(_activeBump, window + IntPtr.Size, window + length + IntPtr.Size);
-
                     return true;
                 }
 
                 // Abandon the tail: it is below every walk bound, so it needs no plug; it
                 // is reclaimed when the region dies (SPEC-M2 §4.1)
                 _activeBump = -1;
+            }
+
+            // Dry supply during a concurrent sweep: drain the plan instead of
+            // fresh-committing, then retry holes first — on smear heaps the assist
+            // publishes holes, not pool regions
+            if (_poolCount == 0 && TrySweepAssist())
+            {
+                if (TryCarveFromHoles(needed, out window, out length, out needsZero))
+                {
+                    if (GcStats.Enabled)
+                    {
+                        GcStats.HoleWindowCount++;
+
+                        if (!needsZero)
+                        {
+                            GcStats.CleanWindowCount++;
+                        }
+                    }
+
+                    return true;
+                }
+
+                continue;
             }
 
             if (!TryCarveRegion(out var index, out var dirty))
@@ -358,15 +376,7 @@ internal unsafe class RegionAllocator : IDisposable
                             _linkedHoleBytes += extent - length;
                         }
                         // else: a sub-window remainder floats until the next full collection
-
-                        // The remainder keeps its own card-offset interval
-                        WriteCardOffsets(regionIndex, remainderStart + IntPtr.Size, holeRef + extent);
                     }
-
-                    // The window's card offsets resolve to its first object (M4): tighter
-                    // than the stale entries pointing at the consumed hole's plug. The
-                    // interval runs one ref past the window so stamps tile gap-free.
-                    WriteCardOffsets(regionIndex, window + IntPtr.Size, window + length + IntPtr.Size);
 
                     if ((entry->BumpFlags & RegionEntry.HolesZeroedFlag) != 0)
                     {
@@ -414,6 +424,13 @@ internal unsafe class RegionAllocator : IDisposable
     public bool TryAllocBlock(int sizeClass, out nint block, out bool needsZero)
     {
         var head = _classHeads[sizeClass];
+
+        // Dry class list during a concurrent sweep: the plan may hold partially-free
+        // regions of this class — drain it before carving a fresh region
+        while (head < 0 && _poolCount == 0 && TrySweepAssist())
+        {
+            head = _classHeads[sizeClass];
+        }
 
         if (head < 0)
         {
@@ -489,7 +506,13 @@ internal unsafe class RegionAllocator : IDisposable
         if (count == 1)
         {
             // The common case (spans ≤ 2 MB): any one free region works, so take the
-            // pool's LIFO top instead of scanning the table for a run
+            // pool's LIFO top instead of scanning the table for a run. A dry pool
+            // during a concurrent sweep drains the plan first (dead spans it frees
+            // land in the pool) instead of committing past the frontier.
+            while (_poolCount == 0 && TrySweepAssist())
+            {
+            }
+
             if (!TryCarveRegion(out start, out var dirty))
             {
                 return false;
@@ -497,7 +520,7 @@ internal unsafe class RegionAllocator : IDisposable
 
             GetEntry(start)->SpanIsDirty = dirty ? (byte)1 : (byte)0;
         }
-        else if (TryTakeFreeRun(count, out start))
+        else if (TryTakeFreeRunWithAssist(count, out start))
         {
             // Only the start region can hold the span object's mark bit; extension
             // slices are never consulted (no object starts there)
@@ -551,6 +574,24 @@ internal unsafe class RegionAllocator : IDisposable
     /// removes the run from the pool. Every Free region is in the pool, so a run of Free
     /// table entries is a run of pool members.
     /// </summary>
+    private bool TryTakeFreeRunWithAssist(int count, out int start)
+    {
+        while (true)
+        {
+            if (TryTakeFreeRun(count, out start))
+            {
+                return true;
+            }
+
+            // Multi-region spans: drain the sweep plan hunting for a contiguous free
+            // run before committing fresh regions past the frontier
+            if (!TrySweepAssist())
+            {
+                return false;
+            }
+        }
+    }
+
     private bool TryTakeFreeRun(int count, out int start)
     {
         start = -1;
@@ -780,13 +821,73 @@ internal unsafe class RegionAllocator : IDisposable
     /// <see cref="SweepConcurrentFull"/> has published so far. Abandoning the active
     /// bump region wastes at most its virgin tail until the region recycles.
     /// </summary>
-    public void BeginConcurrentSweep()
+    public void BeginConcurrentSweep(int[] plan, int planCount)
     {
         _minLinkedHole = UnderMemoryPressure ? PressureMinLinkedHole : Region.FullMinLinkedHole;
         _recycledHead = -1;
         _linkedHoleBytes = 0;
         _classHeads.AsSpan().Fill(-1);
         _activeBump = -1;
+
+        // Arm the assist before the world restarts: the first post-restart carve can
+        // hit a dry supply before the worker pool has published anything
+        _sweepPlan = plan;
+        _sweepPlanCount = planCount;
+        _sweepCursor = 0;
+        _sweepInFlight = true;
+    }
+
+    /// <summary>
+    /// Mutator sweep-assist (M6.5 stage 2): called from the carve slow paths — alloc
+    /// lock held — when supply runs dry while a concurrent sweep is in flight. Claims
+    /// one plan chunk, sweeps it right here and publishes inline (the caller already
+    /// holds the publication lock), so allocation demand drains the plan instead of
+    /// fresh-committing. Returns true when a chunk was swept — the caller retries its
+    /// supply — and false once the plan is exhausted. Safe against cycle turnover: a
+    /// claim runs entirely inside one allocation call, and the next cycle's plan is
+    /// rebuilt under a suspension that waits for every such call to drain.
+    /// </summary>
+    public bool TrySweepAssist()
+    {
+        if (!_sweepInFlight)
+        {
+            return false;
+        }
+
+        var plan = _sweepPlan;
+        var planCount = _sweepPlanCount;
+
+        if (plan is null)
+        {
+            return false;
+        }
+
+        // Much smaller than the worker chunk: this runs under the allocation lock on
+        // an application thread, and two smear regions' holes (~2-4 MB) already serve
+        // dozens of carves — the assist exists to bridge to the workers' publications,
+        // not to compete with them for the plan
+        const int Chunk = 2;
+
+        var start = Interlocked.Add(ref _sweepCursor, Chunk) - Chunk;
+
+        if (start >= planCount)
+        {
+            return false;
+        }
+
+        var lists = NewSweepLists();
+        _assistFreed.Clear();
+
+        SweepRange(start, Math.Min(start + Chunk, planCount), youngOnly: false, ref lists, _assistFreed, plan);
+
+        SpliceSweepLists(ref lists);
+
+        foreach (var index in _assistFreed)
+        {
+            MakeFree(index);
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -840,10 +941,11 @@ internal unsafe class RegionAllocator : IDisposable
     /// lock). The return value is Σ LiveBytes over swept regions, for parity checks —
     /// budgets already consumed <see cref="SumLiveBytes"/> at pause B.
     /// </summary>
-    public long SweepConcurrentFull(int[] plan, int planCount, GcAwareLock publishLock, GcWorkerPool? pool)
+    public long SweepConcurrentFull(GcAwareLock publishLock, GcWorkerPool? pool)
     {
+        var plan = _sweepPlan!;
+        var planCount = _sweepPlanCount;
         long liveTotal = 0;
-        var cursor = 0;
 
         void Worker()
         {
@@ -854,7 +956,9 @@ internal unsafe class RegionAllocator : IDisposable
 
             while (true)
             {
-                var start = Interlocked.Add(ref cursor, Chunk) - Chunk;
+                // The cursor is shared with TrySweepAssist: allocating threads whose
+                // supply ran dry claim chunks through the same counter
+                var start = Interlocked.Add(ref _sweepCursor, Chunk) - Chunk;
 
                 if (start >= planCount)
                 {
@@ -897,6 +1001,11 @@ internal unsafe class RegionAllocator : IDisposable
         {
             pool.Run(Worker);
         }
+
+        // Stops new assist claims; a claim already made completes inside its owner's
+        // current allocation call (it publishes under the alloc lock either way)
+        _sweepInFlight = false;
+        _sweepPlan = null;
 
         return liveTotal;
     }
@@ -1118,38 +1227,58 @@ internal unsafe class RegionAllocator : IDisposable
         // The rebuilt holes cover freshly dead objects: their bodies are dirty again
         entry->BumpFlags &= unchecked((byte)~RegionEntry.HolesZeroedFlag);
 
-        var ptr = RegionBase(index) + IntPtr.Size;
+        var regionBase = RegionBase(index);
         var end = entry->Cursor;
-        nint deadStart = 0;
 
-        while (ptr < end)
+        // Walk survivors straight off the mark bitmap: set bits are exactly the marked
+        // object starts and dead extents are the gaps between them, so the ComputeSize
+        // hop through every corpse — the dominant sweep cost at smear density, where a
+        // region holds ~20 survivors among ~1000 dead — never happens. Free plugs are
+        // never marked, so they coalesce into the gaps for free, exactly like the old
+        // object walk. Safe on the concurrent path for the same reason the old walk
+        // was: marks are final and planned regions are unreachable to allocation.
+        var bitmap = GCObject.MarkBitmap;
+        var heapBase = GCObject.MarkHeapBase;
+
+        var w = (long)(regionBase - heapBase) >> 9;
+        var endBit = (long)(end - heapBase) >> 3;
+
+        // Pre-header slot of the first unswept byte; a dead run's extent starts at the
+        // slot before its first object ref (SPEC-M2 §3)
+        var deadStart = regionBase;
+
+        for (; w << 6 < endBit; w++)
         {
-            var obj = (GCObject*)ptr;
-            var next = Align(ptr + (nint)obj->ComputeSize());
+            var word = bitmap[w];
 
-            if (obj->IsMarked())
+            while (word != 0)
             {
-                if (deadStart != 0)
+                var bit = BitOperations.TrailingZeroCount(word);
+                word &= word - 1;
+
+                var bitIndex = (w << 6) + bit;
+
+                if (bitIndex >= endBit)
                 {
-                    // The extent ends at the live object's pre-header slot (SPEC-M2 §3)
-                    ClosePlug(entry, index, deadStart, ptr - IntPtr.Size);
-                    deadStart = 0;
+                    break;
                 }
 
-                // The survivor's card-offset interval ends where the next object ref
-                // starts, so live and plug intervals tile the region without gaps
-                WriteCardOffsets(index, ptr, next);
-            }
-            else if (deadStart == 0)
-            {
-                // Free plugs are never marked, so they coalesce into the extent for free
-                deadStart = ptr - IntPtr.Size;
-            }
+                var ptr = heapBase + (nint)(bitIndex << 3);
+                var next = Align(ptr + (nint)((GCObject*)ptr)->ComputeSize());
 
-            ptr = next;
+                if (ptr - IntPtr.Size > deadStart)
+                {
+                    // The extent ends at the live object's pre-header slot
+                    ClosePlug(entry, index, deadStart, ptr - IntPtr.Size);
+                }
+
+                deadStart = next - IntPtr.Size;
+            }
         }
 
-        if (deadStart != 0)
+        // Tail: when the last survivor ends at the cursor, only its successor's
+        // never-materialized pre-header slot remains — not a dead extent
+        if (end - deadStart > IntPtr.Size)
         {
             ClosePlug(entry, index, deadStart, end);
         }
@@ -1178,9 +1307,6 @@ internal unsafe class RegionAllocator : IDisposable
         var plug = (GCObject*)(start + IntPtr.Size);
         plug->RawMethodTable = _freeObjectMethodTable;
         plug->Length = (uint)(extent - 3 * IntPtr.Size);
-
-        // The plug's card-offset interval runs to the ref after its extent (M4)
-        WriteCardOffsets(regionIndex, start + IntPtr.Size, end + IntPtr.Size);
 
         if (extent >= _minLinkedHole)
         {
@@ -1562,54 +1688,6 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    /// <summary>
-    /// Records, for every card whose start falls inside [objStart, intervalEnd), the
-    /// distance back to objStart (the card-offset table, M4). Intervals written by a sweep
-    /// tile the region seamlessly — each live object's interval ends at the next object
-    /// ref, each plug's at the ref after its extent — so every card of the swept range
-    /// gets a current entry.
-    /// </summary>
-    private void WriteCardOffsets(int regionIndex, nint objStart, nint intervalEnd)
-    {
-        var offsets = _cardOffsets + ((nint)regionIndex << 10);
-        var regionBase = RegionBase(regionIndex);
-
-        // First card boundary at or after objStart
-        var b = (objStart - regionBase + 2047) & ~(nint)2047;
-
-        for (; regionBase + b < intervalEnd; b += 1 << 11)
-        {
-            var back = (regionBase + b - objStart) >> 3;
-            offsets[b >> 11] = back < 0xFFFF ? (ushort)back : (ushort)0xFFFF;
-        }
-    }
-
-    /// <summary>
-    /// Maps an address inside a card-scanned bump region to an object start at or before
-    /// it, via the card-offset table (M4). The result is always a valid walk boundary:
-    /// exact after a sweep, conservatively earlier (a window's first object) for memory
-    /// carved since — walking forward from it always lands on real object headers.
-    /// </summary>
-    public nint FindBumpObjectAtOrBefore(int regionIndex, nint addr)
-    {
-        var offsets = _cardOffsets + ((nint)regionIndex << 10);
-        var regionBase = RegionBase(regionIndex);
-        var card = (int)((addr - regionBase) >> 11);
-
-        // 0xFFFF = the covering object starts ≥ 512 KB − 2 KB before this card (a large
-        // coalesced plug): hop back and retry; a few hops cross the whole region
-        while (card > 0 && offsets[card] == 0xFFFF)
-        {
-            card = Math.Max(0, card - 255);
-        }
-
-        var objStart = regionBase + ((nint)card << 11) - ((nint)offsets[card] << 3);
-
-        // The first object of a region sits at base + 8; card 0 (whose start precedes it)
-        // is never written and resolves here via the clamp
-        return Math.Max(objStart, regionBase + IntPtr.Size);
-    }
-
     private static void ZeroMemory(nint start, nint length)
     {
         var tStart = GcStats.Timestamp();
@@ -1634,11 +1712,6 @@ internal unsafe class RegionAllocator : IDisposable
     private bool EnsureTableCommitted(int requiredEntries)
     {
         if (!EnsureCardTableCommitted(requiredEntries))
-        {
-            return false;
-        }
-
-        if (!EnsureCommitted(ref _cardOffsetsCommittedEnd, (nint)_cardOffsets + ((nint)requiredEntries << 11)))
         {
             return false;
         }

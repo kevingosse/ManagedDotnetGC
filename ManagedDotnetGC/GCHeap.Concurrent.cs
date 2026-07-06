@@ -36,10 +36,11 @@ unsafe partial class GCHeap
     private int[]? _regionPlan;
     private int _regionPlanCount;
 
-    // M6.5: full-cycle sweep runs after RestartEE on the pool, publishing supply
-    // per chunk under the alloc lock. Staging knob: DOTNET_GCConcurrentSweep,
-    // default-off until the stage exits hold (suite/stress/bench/soak green).
-    private bool _concurrentSweep;
+    // M6.5: full-cycle sweep runs after RestartEE on the pool, publishing supply per
+    // chunk under the alloc lock; carves that run dry mid-sweep assist (stage 2).
+    // Default-on since the assist closed the smear-heap ratchet that gated stage 1;
+    // DOTNET_GCConcurrentSweep=0 forces the in-pause sweep for A/B runs.
+    private bool _concurrentSweep = true;
 
     private const int PreDrainMaxPasses = 4;
     private const int PreDrainRepeatThreshold = 64; // cards; ~128 KB of re-dirtied heap
@@ -188,15 +189,12 @@ unsafe partial class GCHeap
 
         MarkTail(condemned, &scanContext);
 
-        // The window gate (M6.5): young collections stay blocked while a concurrent
-        // walk runs (this thread holds _gcLock) with allocation flowing through, so
-        // the overshoot is allocation-rate × walk time — and on smear-heavy heaps it
-        // ratchets permanently (regions with survivors never pool, never decommit;
-        // measured +1.1 GB at equilibrium on soh). Only heaps whose pool can float
-        // the window go concurrent; the rest run the unchanged in-pause sweep. The
-        // gate reads the pool alone: linked holes are about to be invalidated.
-        var sweepConcurrent = _concurrentSweep && _workerPool is not null
-            && _regionAllocator.PooledCommittedBytes >= Math.Max(Region.MinGCBudget, _budget / 4);
+        // Ungated since M6.5 stage 2: the pool-float gate existed because the sweep
+        // window's overshoot fresh-committed on smear heaps (+1.1 GB ratchet on soh).
+        // Mutator sweep-assist closes that hole — a carve that runs dry mid-sweep
+        // drains the plan itself instead of committing — so every full cycle sweeps
+        // off-pause when a worker pool exists.
+        var sweepConcurrent = _concurrentSweep && _workerPool is not null;
 
         if (sweepConcurrent)
         {
@@ -213,7 +211,7 @@ unsafe partial class GCHeap
 
             _regionAllocator.ClearCards();
             BuildRegionPlan();
-            _regionAllocator.BeginConcurrentSweep();
+            _regionAllocator.BeginConcurrentSweep(_regionPlan!, _regionPlanCount);
 
             // O(1)-per-region recycling stays in the pause: the dead nursery is the
             // next runway's supply, and deferring it to the walk measured +1.1 GB of
@@ -255,7 +253,7 @@ unsafe partial class GCHeap
             Write("Full cycle: concurrent sweep");
 
             var tSweep = GcStats.Timestamp();
-            _regionAllocator.SweepConcurrentFull(_regionPlan!, _regionPlanCount, _allocLock, _workerPool);
+            _regionAllocator.SweepConcurrentFull(_allocLock, _workerPool);
             GcStats.CycleConcurrentSweepTicks = GcStats.Timestamp() - tSweep;
 
             _regionAllocator.ExitGateForCollection();

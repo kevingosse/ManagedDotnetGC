@@ -113,6 +113,91 @@ public unsafe ref struct GCObject
         return methodTable->BaseSize + Length * methodTable->ComponentSize;
     }
 
+    /// <summary>
+    /// Range-clamped flavor of <see cref="EnumerateObjectReferences"/> for card scans:
+    /// pushes only references held in slots whose address lies in [rangeStart, rangeEnd).
+    /// Sound for remembered-set scans because the barrier dirties the card of the slot
+    /// address on every reference store — a slot under a clean card cannot hold a
+    /// reference the scan is looking for (anything stored there was already visible to
+    /// the collection that last cleared the card). This is what keeps a large dirtied
+    /// array from re-walking every element for one dirty card.
+    /// </summary>
+    internal static void EnumerateObjectReferencesInRange(GCObject* obj, MarkStack callback, nint rangeStart, nint rangeEnd)
+    {
+        if (!obj->MethodTable->ContainsGCPointers)
+        {
+            return;
+        }
+
+        var mt = (nint*)obj->MethodTable;
+        var objectSize = obj->ComputeSize();
+
+        var seriesCount = mt[-1];
+
+        if (seriesCount > 0)
+        {
+            var series = (GCDescSeries*)(mt - 1);
+
+            for (int i = 1; i <= seriesCount; i++)
+            {
+                var (seriesSize, seriesOffset) = series[-i];
+                seriesSize += (int)objectSize;
+
+                var ptr = (nint*)((nint)obj + seriesOffset);
+
+                // Slots sit at ptr + 8j; both bounds round up so the clamp is exact for
+                // any 8-aligned range (negative deltas shift toward -inf, Max covers)
+                var first = Math.Max(0, (long)(rangeStart - (nint)ptr + IntPtr.Size - 1) >> 3);
+                var last = Math.Min((long)(seriesSize / IntPtr.Size), (long)(rangeEnd - (nint)ptr + IntPtr.Size - 1) >> 3);
+
+                for (var j = first; j < last; j++)
+                {
+                    var target = ptr[j];
+
+                    if (target != 0)
+                    {
+                        callback.Push(target);
+                    }
+                }
+            }
+        }
+        else
+        {
+            // Value-type series (struct arrays with refs) are rare and their items
+            // small: a per-slot compare beats stride arithmetic here
+            var offset = mt[-2];
+            var valSeries = (ValSerieItem*)(mt - 2) - 1;
+
+            var ptr = (nint*)((nint)obj + offset);
+            var length = obj->Length;
+
+            for (int item = 0; item < length; item++)
+            {
+                for (int i = 0; i > seriesCount; i--)
+                {
+                    var valSerieItem = valSeries + i;
+
+                    for (int j = 0; j < valSerieItem->Nptrs; j++)
+                    {
+                        if ((nint)ptr >= rangeStart && (nint)ptr < rangeEnd)
+                        {
+                            var target = *ptr;
+
+                            if (target != 0)
+                            {
+                                callback.Push(target);
+                            }
+                        }
+
+                        ptr++;
+                    }
+
+                    ptr = (nint*)((nint)ptr + valSerieItem->Skip);
+                }
+            }
+        }
+    }
+
     internal static void EnumerateObjectReferences(GCObject* obj, MarkStack callback)
     {
         if (!obj->MethodTable->ContainsGCPointers)

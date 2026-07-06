@@ -104,23 +104,30 @@ unsafe partial class GCHeap
             switch (entry->Kind)
             {
                 case RegionKind.Bump:
+                    // The lookback bound is the WINDOW size, not BumpMaxSize: alloc
+                    // contexts span whole windows and the EE's inline fast path places
+                    // any object that fits below alloc_limit — bump regions legally
+                    // hold ref-bearing objects far above the 32 KB routing threshold
+                    // (a 32 KB bound shipped for ~an hour and let Kestrel's large
+                    // object[]s smuggle old→young refs past the head search)
                     if (RegionHasDirtyCard(cardBase, i, 1))
                     {
-                        ScanBumpRegionCards(cardBase, i, entry, stack, deferredCollectible);
+                        ScanRegionCardRuns(cardBase, i, entry->Cursor, Region.WindowSize, stack, deferredCollectible);
                     }
                     break;
 
                 case RegionKind.SizeClass:
                     if (RegionHasDirtyCard(cardBase, i, 1))
                     {
-                        ScanSizeClassRegionCards(cardBase, i, entry, stack, deferredCollectible);
+                        ScanRegionCardRuns(cardBase, i, _regionAllocator.RegionBase(i) + Region.Size,
+                            Region.ClassSizes[entry->SizeClass], stack, deferredCollectible);
                     }
                     break;
 
                 case RegionKind.SpanStart:
                     if (RegionHasDirtyCard(cardBase, i, entry->SpanCount))
                     {
-                        ScanSpanCards(cardBase, i, stack, deferredCollectible);
+                        ScanSpanCards(cardBase, i, entry, stack, deferredCollectible);
                     }
                     break;
 
@@ -147,36 +154,22 @@ unsafe partial class GCHeap
         return false;
     }
 
-    private bool RangeHasDirtyCard(nint cardBase, nint start, nint end)
-    {
-        var heapBase = _regionAllocator.HeapBase;
-        var first = (start - heapBase) >> 11;
-        var last = (end - 1 - heapBase) >> 11;
-
-        for (var card = first; card <= last; card++)
-        {
-            if (*(byte*)(cardBase + card) != 0)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     /// <summary>
-    /// Scans one dirty old bump region by dirty-card runs: the card-offset table maps each
-    /// run's first card to a nearby object start, so only the dirty neighborhoods get
-    /// walked — a sparsely mutated region costs a few object hops instead of a 2 MB walk.
-    /// An object spanning two runs can be enumerated twice; the mark-stack pop side
-    /// deduplicates via the CAS claim, so that is waste, not a bug.
+    /// Scans one dirty bump or size-class region by dirty-card runs, enumerating marked
+    /// objects straight off the mark bitmap (the pre-drain's walk, SPEC-M6 §9): set bits
+    /// are exactly marked object starts, so the dead neighborhoods the old card-offset
+    /// hop walked object-by-object — the dominant scan cost at smear density — are never
+    /// touched. Enumeration is clamped to the run: slots under clean cards cannot hold a
+    /// reference the scan needs (the barrier dirties the slot's card on every ref store),
+    /// which keeps one dirty card on a large array from re-walking every element.
+    /// An object spanning two runs is enumerated once per run over disjoint slot ranges.
+    /// <paramref name="limit"/> is the region's walkable end (bump cursor / region end).
     /// </summary>
-    private void ScanBumpRegionCards(nint cardBase, int index, RegionEntry* entry, MarkStack stack, List<nint>? deferredCollectible)
+    private void ScanRegionCardRuns(nint cardBase, int index, nint limit, nint maxObjectBytes, MarkStack stack, List<nint>? deferredCollectible)
     {
         var regionBase = _regionAllocator.RegionBase(index);
-        var end = entry->Cursor;
         var cards = (byte*)(cardBase + ((nint)index << (Region.Shift - 11)));
-        var cardCount = (int)Math.Min(Region.Size >> 11, ((end - regionBase) + 2047) >> 11);
+        var cardCount = (int)Math.Min(Region.Size >> 11, ((limit - regionBase) + 2047) >> 11);
 
         for (int c = 0; c < cardCount;)
         {
@@ -194,25 +187,9 @@ unsafe partial class GCHeap
             }
 
             var runStart = regionBase + ((nint)c << 11);
-            var runLimit = Math.Min(regionBase + ((nint)runEnd << 11), end);
+            var runLimit = Math.Min(regionBase + ((nint)runEnd << 11), limit);
 
-            var ptr = _regionAllocator.FindBumpObjectAtOrBefore(index, runStart);
-
-            while (ptr < runLimit)
-            {
-                var obj = (GCObject*)ptr;
-                var size = (nint)obj->ComputeSize();
-
-                // Free plugs and dead-or-untraced-young objects are never card sources;
-                // marked objects only matter where a card under them is dirty
-                if (ptr + size > runStart
-                    && obj->IsMarked() && RangeHasDirtyCard(cardBase, ptr, ptr + size))
-                {
-                    GCObject.EnumerateObjectReferences(obj, stack);
-                }
-
-                ptr = Align(ptr + size);
-            }
+            ScanMarkedRangeClamped(regionBase, runStart, runLimit, maxObjectBytes, stack);
 
             c = runEnd;
         }
@@ -220,39 +197,96 @@ unsafe partial class GCHeap
         FinishRegionCardScan(stack, deferredCollectible);
     }
 
-    private void ScanSizeClassRegionCards(nint cardBase, int index, RegionEntry* entry, MarkStack stack, List<nint>? deferredCollectible)
+    /// <summary>
+    /// Enumerates the references of every marked object overlapping [start, end), from
+    /// the mark bitmap alone, clamped to the range. STW sibling of the pre-drain's
+    /// <see cref="ScanMarkedRange"/>; the bitmap read races nothing here, and bits set
+    /// mid-scan by parallel card workers marking young objects only add enumerations
+    /// whose tracer covers them anyway (waste, not a bug — same argument as the CAS
+    /// dedup on the pop side).
+    /// </summary>
+    private static void ScanMarkedRangeClamped(nint regionBase, nint start, nint end, nint maxObjectBytes, MarkStack stack)
     {
-        var regionBase = _regionAllocator.RegionBase(index);
-        var classSize = Region.ClassSizes[entry->SizeClass];
-        var bitmap = entry->AllocatedBlocks;
+        var bitmap = GCObject.MarkBitmap;
+        var heapBase = GCObject.MarkHeapBase;
 
-        while (bitmap != 0)
+        // Head: a marked object starting before the run can overlap into it. The
+        // backward search is bounded by the largest object the region kind can hold —
+        // on smear heaps survivors sit ~100 KB apart, and without the bound the search
+        // walks all of it once per run.
+        var firstBit = (long)(start - heapBase) >> 3;
+        var lowBit = Math.Max((long)(regionBase - heapBase) >> 3, firstBit - (maxObjectBytes >> 3));
+        var prev = FindLastSetBitBefore(bitmap, lowBit, firstBit);
+
+        if (prev >= 0)
         {
-            var bit = BitOperations.TrailingZeroCount(bitmap);
-            bitmap &= bitmap - 1;
+            var obj = (GCObject*)(heapBase + (nint)(prev << 3));
 
-            var obj = (GCObject*)(regionBase + (nint)bit * classSize + IntPtr.Size);
-            var size = (nint)obj->ComputeSize();
-
-            if (obj->IsMarked() && RangeHasDirtyCard(cardBase, (nint)obj, (nint)obj + size))
+            if ((nint)obj + (nint)obj->ComputeSize() > start)
             {
-                GCObject.EnumerateObjectReferences(obj, stack);
+                GCObject.EnumerateObjectReferencesInRange(obj, stack, start, end);
             }
         }
 
-        FinishRegionCardScan(stack, deferredCollectible);
+        // Body: every set bit in [start, end) is a marked object start
+        var w = firstBit >> 6;
+        var endBit = (long)(end - heapBase) >> 3;
+
+        for (; w << 6 < endBit; w++)
+        {
+            var word = bitmap[w];
+
+            while (word != 0)
+            {
+                var bit = BitOperations.TrailingZeroCount(word);
+                word &= word - 1;
+
+                var bitIndex = (w << 6) + bit;
+
+                if (bitIndex >= endBit)
+                {
+                    return;
+                }
+
+                var obj = (GCObject*)(heapBase + (nint)(bitIndex << 3));
+                GCObject.EnumerateObjectReferencesInRange(obj, stack, start, end);
+            }
+        }
     }
 
-    private void ScanSpanCards(nint cardBase, int index, MarkStack stack, List<nint>? deferredCollectible)
+    private void ScanSpanCards(nint cardBase, int index, RegionEntry* entry, MarkStack stack, List<nint>? deferredCollectible)
     {
-        // One object per span; a single dirty card re-enumerates the whole object (a large
-        // ref array pays full enumeration — card-sliced scanning is a known follow-up)
-        var obj = (GCObject*)(_regionAllocator.RegionBase(index) + IntPtr.Size);
-        var size = (nint)obj->ComputeSize();
+        // One object per span, so no bitmap search: each dirty run enumerates its slice
+        // of the object (the clamp is what keeps a huge dirtied ref array from paying
+        // full enumeration for a single dirty card)
+        var spanBase = _regionAllocator.RegionBase(index);
+        var obj = (GCObject*)(spanBase + IntPtr.Size);
 
-        if (obj->IsMarked() && RangeHasDirtyCard(cardBase, (nint)obj, (nint)obj + size))
+        if (obj->IsMarked())
         {
-            GCObject.EnumerateObjectReferences(obj, stack);
+            var cards = (byte*)(cardBase + ((nint)index << (Region.Shift - 11)));
+            var cardCount = entry->SpanCount << (Region.Shift - 11);
+
+            for (int c = 0; c < cardCount;)
+            {
+                if (cards[c] == 0)
+                {
+                    c++;
+                    continue;
+                }
+
+                var runEnd = c + 1;
+
+                while (runEnd < cardCount && cards[runEnd] != 0)
+                {
+                    runEnd++;
+                }
+
+                GCObject.EnumerateObjectReferencesInRange(obj, stack,
+                    spanBase + ((nint)c << 11), spanBase + ((nint)runEnd << 11));
+
+                c = runEnd;
+            }
         }
 
         FinishRegionCardScan(stack, deferredCollectible);
