@@ -53,7 +53,7 @@ Why the walk is safe with the world running:
 - Young collections cannot run (the cycle holds `_gcLock`); budget-triggered
   collects keep returning immediately (`_fullCycleInFlight`, spec-m6 §6.3).
 
-## 2. The window gate — why this is not unconditional
+## 2. The window gate — why stage 1 was not unconditional (superseded by §2b)
 
 The sweep window suspends young collections while allocate-through lets allocation
 flow, so the cycle overshoots by allocation-rate × walk-time. On heaps where the
@@ -77,6 +77,36 @@ The unconditional version stays interesting for a future stage: the principled f
 is mutator sweep-assist (allocation slow path helps drain the sweep plan instead of
 fresh-committing) or young collections running against a partially-swept heap.
 Both are real re-architectures; the gate ships value without them.
+
+## 2b. Stage 2 (2026-07-06, same day): mutator sweep-assist — the gate is gone
+
+The assist landed hours after stage 1
+(results/2026-07-06-m65s2-bitmap-walks-and-assist.md). `BeginConcurrentSweep(plan,
+planCount)` now *arms* the plan under STW — fields on the RegionAllocator, cursor
+shared between the worker pool and allocating threads — because the first
+post-restart carve can run dry before the workers publish anything. Any carve slow
+path that would otherwise fresh-commit (bump window, class block, span single or
+run) first calls `TrySweepAssist`: claim a 2-region chunk through the shared cursor,
+sweep it inline (the caller already holds the publication lock), retry supply.
+Overshoot drains the plan instead of committing, which is exactly the ratchet the §2
+gate existed to contain — soh committed equilibrium measured *equal* to knob-off
+(2.12 vs 2.24 GB) with the gate deleted.
+
+Assist chunk size is a real knob: at 8 regions the mutators competed with the
+workers for the plan (+273 ms cumulative alloc-path time on soh); at 2 they only
+bridge to the workers' publications (+126 ms) and serve dozens of carves per chunk.
+
+Safety recap: a claim runs entirely inside one allocation call under the alloc lock
+in cooperative mode, so a starting suspension waits it out — the next cycle's plan
+cannot be rebuilt while any claim is in flight, and the zeroer's lock-free escape
+(`CollectorWaitingForGate`) only fires once the world is fully suspended, which
+implies no assist is mid-chunk. `SweepConcurrentFull` disarms on completion; claims
+raced past the flag find the cursor exhausted and fall through to the frontier.
+
+**Default flipped on** with stage 2 (`DOTNET_GCConcurrentSweep=0` now *forces the
+in-pause sweep*): soak evidence 51.1 k req/s (+8.5% over knob-off), all pauses < 7 ms,
+WS 1.86 vs 1.49 GB knob-off — the exchange-rate call §3 deferred, resolved in favor
+of throughput with the knob as the opt-out.
 
 ## 3. Measured (2026-07-06, results/2026-07-06-m65-concurrent-sweep.md)
 

@@ -329,6 +329,31 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   fulls in-pause, knob-off behavior exact. Also killed `GcAwareLock`'s early
   Sleep(1) (third quantum site — sweep publishers hit it against allocators).
 
+- **M6.5 stage 2 — bitmap walks + mutator sweep-assist; csweep default-on**
+  (2026-07-06, results/2026-07-06-m65s2-bitmap-walks-and-assist.md). Session goal:
+  beat Server GC. Attribution said the whole SVR-h8 gap was pause, and pause was 56%
+  sweep + 37% cards — both corpse-hopping walks. (1) STW card scan rewritten on the
+  mark bitmap (the pre-drain's walk) with **enumeration clamped to dirty runs**
+  (closes M4's "large array pays full enumeration"); (2) sweep walk rewritten on the
+  bitmap (survivors = set bits, holes = gaps), which killed the card-offset table
+  and its maintenance in every carve; (3) **mutator sweep-assist**: carves that run
+  dry mid-sweep drain the armed plan (2-region chunks through the workers' cursor)
+  instead of fresh-committing — the M6.5 gate is deleted, csweep is **default-on**,
+  soh committed equal to knob-off (no ratchet). soh census: young pause 11.1 → 5.0 ms
+  avg, full pause B 14.9 → 2.5 ms avg, total STW 542 → ~185 ms. `svrgap` (stock
+  anchors) / `m65s2-final` rows: **1.440/1.393/1.461/1.461 = 0.65-0.70× WKS,
+  0.81-0.88× default SVR (all four beaten), 1.17/1.04/1.15/0.94× SVR-h8** — pinheavy
+  now beats the tuned config at equal (2.1 GB) footprint. Soak record: **51.1 k
+  req/s, 0 err, every pause < 7 ms** (young p50 3.3/max 6.6; full B p50 1.9/max
+  5.7), WS 1.86 GB (knob-off restores 1.49). **Incident**: the first scan bound the
+  head search at BumpMaxSize (32 KB) — but alloc contexts are 128 KB windows and the
+  EE inline fast path fills them with anything, so Kestrel's big object[]s smuggled
+  old→young refs past it: soak died in 15 s (marked object, zeroed MT), GCPerfSim
+  (≤ 4 KB objects) blind. Bound = WindowSize; GcStress grew a young-heavy mode
+  (committed to experiments/) and the rule is recorded: card/bitmap-geometry changes
+  hit the soak before the bench. Rows `m7-bitmapwalks`/`m65s2-assist*` predate the
+  fix (~0-3% optimistic).
+
 ```powershell
 # after any perf-relevant commit (GC dll = Release publish):
 dotnet publish .\ManagedDotnetGC /p:SelfContained=true -r win-x64 -c Release
