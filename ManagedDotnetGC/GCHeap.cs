@@ -29,6 +29,12 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private long _lastLiveBytes;
     private long _budget = Region.MinGCBudget;
 
+    // Sticky-generation accounting (SPEC-M4): live bytes measured by the last full
+    // collection, and survivor bytes promoted by young collections since then. Their sum
+    // estimates total live (old deaths are invisible until the next full collection).
+    private long _liveAtLastFull;
+    private long _promotedSinceFull;
+
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
     private uint _currentEpoch = 1;
@@ -79,14 +85,19 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
 
         // The Initialize contract wants real heap bounds and a non-null card table — debug
-        // runtimes assert on them (missing-features 7.1). ephemeral_low = -1 makes the JIT
-        // write barriers exit before their card write, but the EE's bulk-copy helper
-        // (InlinedSetCardsAfterBulkCopyHelper, gchelpers.inl) checks only the heap bounds and
-        // then dirties BOTH tables unconditionally — so both must be writable for committed
+        // runtimes assert on them (missing-features 7.1), and the EE's bulk-copy helper
+        // (InlinedSetCardsAfterBulkCopyHelper, gchelpers.inl) dirties BOTH tables
+        // unconditionally for in-bounds destinations — so both must be writable for committed
         // heap ranges. Cards (1 byte / 2 KB → 1 GB worst case) are reserved in full and
         // committed lazily alongside the region frontier; card bundles (1 byte / 2 MB → 1 MB
         // total) are committed eagerly. The biased pointers make table[addr >> shift] land
         // inside the storage for in-heap addresses.
+        //
+        // The ephemeral range is the whole heap (SPEC-M4): the stock barrier dirties the
+        // destination's card whenever the stored reference falls inside it, which turns the
+        // card table into the old→young remembered set for sticky young collections without
+        // touching a line of barrier code. Refs to frozen segments above the heap dirty
+        // cards too (the PreGrow barrier has no upper-bounds check) — spurious but harmless.
         var heapLow = _nativeAllocator.LowestAddress;
         var heapHigh = _nativeAllocator.HighestAddress;
         var cardTableStorage = NativeAllocator.OsReserve((heapHigh - heapLow) >> 11);
@@ -108,7 +119,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             card_bundle_table = (uint*)(bundleTableStorage - (heapLow >> 21)),
             lowest_address = heapLow,
             highest_address = heapHigh,
-            ephemeral_low = -1
+            ephemeral_low = heapLow,
+            ephemeral_high = heapHigh
         };
 
         StompWriteBarrier(parameters);
@@ -123,8 +135,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         Write($"GarbageCollect({generation}, {low_memory_p}, {mode})");
 
         // Explicit collections always collect (the caller is entitled to a collection that
-        // starts after its call), so the snapshot is ignored via force
-        Collect(_gcCount, force: true);
+        // starts after its call), so the snapshot is ignored via force. They are also always
+        // full: callers of GC.Collect expect dead old objects to be reclaimed and finalized,
+        // whatever generation they pass (we report GetMaxGeneration = 0).
+        Collect(_gcCount, force: true, requireFull: true);
 
         return HResult.S_OK;
     }
@@ -135,8 +149,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     /// When not forced, the collection is skipped if another thread completed one since the
     /// caller read <paramref name="gcCountSnapshot"/> — that is what stops racing allocators
     /// from running back-to-back collections.
+    ///
+    /// Sticky-generation policy (SPEC-M4): budget-triggered collections run young — same
+    /// epoch, so objects marked by any earlier collection stay live for free; only young
+    /// objects need discovering (roots + dirty cards) and only young regions are swept.
+    /// Dead old objects float until the next full collection, so a full one runs once the
+    /// bytes promoted since the last full match the live set it measured (heap ≈ doubled).
     /// </summary>
-    private void Collect(uint gcCountSnapshot, bool force = false)
+    private void Collect(uint gcCountSnapshot, bool force = false, bool requireFull = false)
     {
         // Switch before acquiring so the lock's own restore leaves us preemptive: calling
         // SuspendEE from cooperative mode would self-deadlock
@@ -146,6 +166,22 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         if (force || Volatile.Read(ref _gcCount) == gcCountSnapshot)
         {
+            // Young until (a) promotion has ~doubled the live estimate, or (b) the
+            // committed heap outgrew 8× live — floating old garbage and sub-floor holes
+            // are invisible to young collections, so only a full pass can shrink them.
+            // The multiple is deliberately loose: a non-moving heap cannot pack scattered
+            // survivors, so on hostile scatter committed legitimately sits at several
+            // times live and a tight bound just degenerates every collection to full.
+            var young = !requireFull
+                && _promotedSinceFull < Math.Max(Region.MinGCBudget, _liveAtLastFull)
+                && _regionAllocator.CommittedRegionBytes
+                    < 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes);
+
+            // EE notifications get condemned = 0 for young collections (like a stock gen0:
+            // skips the full-only EE work) and 2 for full ones, so JIT code-heap cleanup and
+            // ComWrappers reference tracking engage (missing-features 2.1)
+            var condemned = young ? 0 : 2;
+
             GcStats.BeginCollection();
             var tStart = GcStats.Timestamp();
 
@@ -153,44 +189,66 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             var tSuspended = GcStats.Timestamp();
 
-            // EE bracket notifications (missing-features 2.1): condemned = 2 so the full-GC
-            // paths engage (JIT code-heap cleanup, ComWrappers reference tracking)
-            NotifyGcStartWork(2, 2);
+            NotifyGcStartWork(condemned, 2);
 
-            AdvanceEpoch();
+            if (!young)
+            {
+                AdvanceEpoch();
+
+                // Young collections credit LiveBytes to old regions without any sweep ever
+                // consuming it; a full mark must re-accumulate from zero
+                _regionAllocator.ResetLiveBytes();
+            }
 
             FixAllocContexts();
 
             var tFixed = GcStats.Timestamp();
 
             Write("Mark phase");
-            MarkPhase();
+            MarkPhase(young);
 
             var tMarked = GcStats.Timestamp();
             var zeroBytesBefore = GcStats.ZeroBytes;
             var zeroTicksBefore = GcStats.ZeroTicks;
 
             Write("Sweep phase");
-            SweepPhase();
+            var swept = _regionAllocator.Sweep(youngOnly: young);
+
+            if (young)
+            {
+                _promotedSinceFull += swept;
+                _lastLiveBytes = _liveAtLastFull + _promotedSinceFull;
+            }
+            else
+            {
+                _liveAtLastFull = swept;
+                _promotedSinceFull = 0;
+                _lastLiveBytes = swept;
+            }
+
+            // Every traced old→young edge is now marked or dead; cards restart from clean
+            _regionAllocator.ClearCards();
 
             var tSwept = GcStats.Timestamp();
-
-            // DumpHeap();
 
             // SPEC-M2 §8.3: the heap converges to ≈ 2× live
             _allocatedSinceGC = 0;
             _budget = Region.ComputeBudget(_lastLiveBytes);
 
+            // Retain a budget's worth of committed pool slack: the next cycle carves
+            // exactly that much back out, so trimming lower is pure recommit churn
+            _regionAllocator.TrimPool(_budget);
+
             var gcNumber = _gcCount;
             Interlocked.Increment(ref _gcCount);
 
-            NotifyGcDone(2);
+            NotifyGcDone(condemned);
 
             _gcToClr.RestartEE(finishedGC: true);
 
             if (GcStats.Enabled)
             {
-                GcStats.RecordCollection(gcNumber, "full",
+                GcStats.RecordCollection(gcNumber, young ? "young" : "full",
                     tStart, tSuspended, tFixed, tMarked, tSwept, GcStats.Timestamp(),
                     GcStats.ZeroBytes - zeroBytesBefore, GcStats.ZeroTicks - zeroTicksBefore,
                     _lastLiveBytes, _regionAllocator.CommittedRegionBytes);
@@ -298,8 +356,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 return null;
             }
 
+            // The last stand before OOM must be a full collection: a young one cannot
+            // reclaim dead old objects, and budget-triggered collections are usually young
             collectedForOom = true;
-            Collect(snapshot);
+            Collect(snapshot, force: true, requireFull: true);
         }
     }
 
@@ -310,40 +370,48 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         // Plug the context's remainder to keep the heap walkable before replacing it
         FixAllocContext(ref acontext);
 
+        nint window, length;
+        bool needsZero;
+
         _allocLock.Acquire();
 
         try
         {
-            if (!_regionAllocator.TryGetWindow(size, out var window, out var length))
+            if (!_regionAllocator.TryGetWindow(size, out window, out length, out needsZero))
             {
                 return null;
             }
 
             // SPEC-M2 §3: first object ref at window + 8; the -16 pairs with the plug
             // formula in FixAllocContext to keep the region walkable end-to-end
-            var result = window + IntPtr.Size;
-
-            acontext.alloc_ptr = Align(result + size);
+            acontext.alloc_ptr = Align(window + IntPtr.Size + size);
             acontext.alloc_limit = window + length - 2 * IntPtr.Size;
             acontext.alloc_bytes += length;
 
             _allocatedSinceGC += length;
             _totalAllocatedBytes += length;
-
-            return (GCObject*)result;
         }
         finally
         {
-            if (GcStats.Enabled)
-            {
-                // The full handout cost an app thread feels: plugging + lock wait + carving.
-                // Ticks accumulate while still holding the alloc lock, so plain adds are safe.
-                GcStats.WindowCount++;
-                GcStats.WindowTicks += GcStats.Timestamp() - tStart;
-            }
-
             _allocLock.Release();
         }
+
+        if (needsZero)
+        {
+            // Zero-at-carve (M4), outside the lock: the window is private to this thread,
+            // no GC can run while it is in cooperative mode, and concurrent handouts zero
+            // in parallel instead of convoying on the allocation lock
+            RegionAllocator.ZeroWindow(window, length);
+        }
+
+        if (GcStats.Enabled)
+        {
+            // The full handout cost an app thread feels: plugging, lock wait, carving, zeroing
+            Interlocked.Increment(ref GcStats.WindowCount);
+            Interlocked.Add(ref GcStats.WindowTicks, GcStats.Timestamp() - tStart);
+        }
+
+        return (GCObject*)(window + IntPtr.Size);
     }
 
     private GCObject* AllocBlock(ref gc_alloc_context acontext, nint size)

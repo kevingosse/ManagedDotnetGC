@@ -25,6 +25,8 @@ ratios are the archive's currency.
 | M2 core (region heap: triggering, reuse, OOM) | `407cf59` | 8.99 (3.19×) | 8.34 (2.75×) | 8.63 (2.62×) |
 | M1 part 1: nine gates (stubs, SuppressFinalize, f-reachable roots, frozen deps, types 10/11, accounting) | `88ae0ef` | 8.75 (3.11×) | 8.04 (2.65×) | 8.70 (2.64×) |
 | M1 complete (EE brackets, card/bundle tables, collectible mark edge, ref-counted scan) | `3c25f87` | 9.01 (3.20×) | 8.42 (2.77×) | 8.97 (2.72×) |
+| stock WKS reference (2026-07-06) | — | 2.00 | 2.23 | 1.98 |
+| M4 sticky generations (young GCs via cards, Reopened regions, 64 KB hole floor, zero-at-carve) | *(this commit)* | 5.04 (2.52×) | 4.96 (2.23×) | 5.01 (2.53×) |
 
 ## Step notes
 
@@ -42,6 +44,18 @@ ratios are the archive's currency.
   iterations can't fully separate +3% from noise, but the sign was consistent in every
   scenario. Candidate for M7 micro-tuning (e.g. hoisting the collectible test behind a
   "any collectible types seen" flag); not worth attention before M4.
+- **M4 sticky generations: 3.20× → 2.52× on soh (2.77× → 2.23× lohmix, 2.72× → 2.53× pin),
+  and STW zeroing eliminated.** Five design iterations in one day, each profiler-driven —
+  the full story (nursery smearing by hole-first carving, the Reopened age state, the
+  CLT-concentrated survivor gaps that defeated a 128 KB hole floor, the doubling-trigger
+  ladder, the alloc-lock zeroing convoy) is in
+  [2026-07-06-m4-sticky-generations.md](2026-07-06-m4-sticky-generations.md). Note both
+  absolute walls dropped vs 07-05 (stock 2.82 → 2.00) — machine-state drift; ratios are
+  the comparison. Cost: peak committed ~6.5 GB on soh (uniform-random survivor scatter is
+  near-adversarial for a non-moving heap; the write barrier now pays a card write per ref
+  store). The remaining gap is walk-bound: card-scan and sweep walks of
+  allocation-touched regions — card-offset tables and survivor packing are the M5/M7
+  levers.
 
 ## How to add a step
 

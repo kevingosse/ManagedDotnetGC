@@ -88,14 +88,6 @@ public class RegionTests
     }
 
     [Test]
-    public void PoolRetentionTarget_IsQuarterOfLiveFlooredAtMinBudget()
-    {
-        Region.PoolRetentionTarget(0).ShouldBe(Region.MinGCBudget);
-        Region.PoolRetentionTarget(4 * Region.MinGCBudget).ShouldBe(Region.MinGCBudget);
-        Region.PoolRetentionTarget(8 * Region.MinGCBudget).ShouldBe(2 * Region.MinGCBudget);
-    }
-
-    [Test]
     public void NextEpoch_IncrementsAndSkipsZeroOnWrap()
     {
         GCObject.NextEpoch(1).ShouldBe(2u);

@@ -77,6 +77,28 @@ internal unsafe class RegionAllocator : IDisposable
         _cardTableCommittedEnd = storage;
     }
 
+    /// <summary>Unbiased card storage base: byte k covers heap bytes [k &lt;&lt; 11, (k+1) &lt;&lt; 11).
+    /// Region i's cards are the 1 KB at storage + (i &lt;&lt; 10). Zero when tests run without one.</summary>
+    public nint CardTableStorage => _cardTableStorage;
+
+    /// <summary>
+    /// Clears every committed card byte. Runs under STW at the end of a collection: all
+    /// old→young references as of the suspension were just traced (young collections) or
+    /// made irrelevant by a full mark, and mutators cannot dirty cards until RestartEE.
+    /// </summary>
+    public void ClearCards()
+    {
+        if (_cardTableStorage != 0)
+        {
+            var length = _cardTableCommittedEnd - _cardTableStorage;
+
+            if (length > 0)
+            {
+                new Span<byte>((void*)_cardTableStorage, (int)length).Clear();
+            }
+        }
+    }
+
     public void SetHardLimit(long limit) => _hardLimit = limit;
 
     private bool CanCommit(nint bytes) => _hardLimit == 0 || CommittedRegionBytes + bytes <= _hardLimit;
@@ -111,14 +133,18 @@ internal unsafe class RegionAllocator : IDisposable
 
     /// <summary>
     /// Hands out a bump window of at least Align(size) + 24 bytes (SPEC-M2 §3-§4.1).
+    /// When <paramref name="needsZero"/> is true the window holds recycled garbage and the
+    /// caller must zero it before use — after releasing the allocation lock, since the
+    /// window is private to the caller from this point (M4 zero-at-carve).
     /// </summary>
-    public bool TryGetWindow(nint size, out nint window, out nint length)
+    public bool TryGetWindow(nint size, out nint window, out nint length, out bool needsZero)
     {
         var needed = Align(size) + 3 * IntPtr.Size;
 
         // Hole-first policy (SPEC-M2 §4.1): reuse swept holes before touching fresh memory
         if (TryCarveFromHoles(needed, out window, out length))
         {
+            needsZero = true;
             return true;
         }
 
@@ -132,26 +158,38 @@ internal unsafe class RegionAllocator : IDisposable
 
                 if (available >= needed)
                 {
+                    if (entry->Age == RegionAge.Old)
+                    {
+                        // The active region was promoted by a sweep mid-carve: it now mixes
+                        // sticky-marked survivors with the young objects about to land here
+                        entry->Age = RegionAge.Reopened;
+                    }
+
                     length = Math.Min(Math.Max(Region.WindowSize, needed), available);
                     window = entry->Cursor;
                     entry->Cursor += length;
+                    needsZero = entry->BumpIsDirty != 0;
+
                     return true;
                 }
 
-                // Abandon the tail: it is virgin zero and below no walk bound, so it needs
-                // no plug; it is reclaimed when the region dies (SPEC-M2 §4.1)
+                // Abandon the tail: it is below every walk bound, so it needs no plug; it
+                // is reclaimed when the region dies (SPEC-M2 §4.1)
                 _activeBump = -1;
             }
 
-            if (!TryCarveRegion(out var index))
+            if (!TryCarveRegion(out var index, out var dirty))
             {
                 window = 0;
                 length = 0;
+                needsZero = false;
                 return false;
             }
 
             var fresh = GetEntry(index);
             fresh->Kind = RegionKind.Bump;
+            fresh->BumpIsDirty = dirty ? (byte)1 : (byte)0;
+            fresh->Age = RegionAge.Fresh;
             fresh->LiveBytes = 0;
             fresh->Cursor = RegionBase(index);
             fresh->FirstHole = 0;
@@ -189,6 +227,14 @@ internal unsafe class RegionAllocator : IDisposable
 
                 if (extent >= needed)
                 {
+                    if (entry->Age == RegionAge.Old)
+                    {
+                        // Young objects are about to land among old survivors: the region
+                        // must be card-scanned (old sources) AND swept (young dead) — see
+                        // RegionAge.Reopened
+                        entry->Age = RegionAge.Reopened;
+                    }
+
                     window = holeRef - IntPtr.Size;
 
                     length = Math.Min(Math.Max(Region.WindowSize, needed), extent);
@@ -211,22 +257,25 @@ internal unsafe class RegionAllocator : IDisposable
 
                     entry->HoleBytes -= (int)extent;
 
-                    // Erase the plug header and link word; the rest of the hole body is
-                    // already zero, so the window hands out zeroed memory
-                    ZeroMemory(window, 4 * IntPtr.Size);
-
                     if (length < extent)
                     {
-                        // Re-plug the remainder and link it back (its bytes are still zero)
+                        // Re-plug the remainder; its stale bytes stay (zero-at-carve). The
+                        // epoch word is cleared so a stale stamp cannot alias CurrentEpoch.
                         var remainderStart = window + length;
                         var remainder = (GCObject*)(remainderStart + IntPtr.Size);
                         remainder->RawMethodTable = _freeObjectMethodTable;
                         remainder->Length = (uint)(extent - length - 3 * IntPtr.Size);
+                        remainder->Epoch = 0;
 
-                        *(nint*)(remainderStart + 3 * IntPtr.Size) = entry->FirstHole;
-                        entry->FirstHole = remainderStart + IntPtr.Size;
-                        entry->HoleBytes += (int)(extent - length);
+                        if (extent - length >= Region.MinLinkedHole)
+                        {
+                            *(nint*)(remainderStart + 3 * IntPtr.Size) = entry->FirstHole;
+                            entry->FirstHole = remainderStart + IntPtr.Size;
+                            entry->HoleBytes += (int)(extent - length);
+                        }
+                        // else: a sub-window remainder floats until the next full collection
                     }
+
 
                     if (entry->FirstHole == 0)
                     {
@@ -267,14 +316,22 @@ internal unsafe class RegionAllocator : IDisposable
 
         if (head < 0)
         {
-            if (!TryCarveRegion(out var index))
+            if (!TryCarveRegion(out var index, out var dirty))
             {
                 block = 0;
                 return false;
             }
 
+            if (dirty)
+            {
+                // The block tier keeps "free blocks are zero" (sweep re-zeroes dead
+                // blocks), so a recycled region must be cleaned once up front
+                ZeroMemory(RegionBase(index), Region.Size);
+            }
+
             var fresh = GetEntry(index);
             fresh->Kind = RegionKind.SizeClass;
+            fresh->Age = RegionAge.Fresh;
             fresh->SizeClass = (byte)sizeClass;
             fresh->LiveBytes = 0;
             fresh->AllocatedBlocks = 0;
@@ -285,6 +342,13 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         var entry = GetEntry(head);
+
+        if (entry->Age == RegionAge.Old)
+        {
+            // A young block is joining sticky-marked old blocks (see RegionAge.Reopened)
+            entry->Age = RegionAge.Reopened;
+        }
+
         var fullMask = FullMask(sizeClass);
 
         // The head of a class list always has a free block: full regions are unlinked
@@ -342,6 +406,7 @@ internal unsafe class RegionAllocator : IDisposable
 
         var startEntry = GetEntry(start);
         startEntry->Kind = RegionKind.SpanStart;
+        startEntry->Age = RegionAge.Fresh;
         startEntry->LiveBytes = 0;
         startEntry->SpanCount = count;
 
@@ -391,7 +456,9 @@ internal unsafe class RegionAllocator : IDisposable
             return false;
         }
 
-        // Commit any decommitted member first: a failure here leaves the pool intact
+        // Commit any decommitted member first: a failure here leaves the pool intact.
+        // Members that stayed committed hold stale recycled contents (M4 zero-at-carve)
+        // and are cleaned here — a span's object memory is handed out in full.
         for (int i = 0; i < count; i++)
         {
             var entry = GetEntry(start + i);
@@ -406,6 +473,10 @@ internal unsafe class RegionAllocator : IDisposable
                 entry->IsCommitted = 1;
                 CommittedRegionBytes += Region.Size;
                 _pooledCommittedBytes += Region.Size;
+            }
+            else
+            {
+                ZeroMemory(RegionBase(start + i), Region.Size);
             }
         }
 
@@ -430,8 +501,10 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private bool TryCarveRegion(out int index)
+    private bool TryCarveRegion(out int index, out bool dirty)
     {
+        dirty = false;
+
         if (_poolCount > 0)
         {
             index = _pool[--_poolCount];
@@ -439,6 +512,8 @@ internal unsafe class RegionAllocator : IDisposable
 
             if (entry->IsCommitted != 0)
             {
+                // Recycled content is stale: sweeps no longer zero (M4 zero-at-carve)
+                dirty = true;
                 _pooledCommittedBytes -= Region.Size;
             }
             else
@@ -473,10 +548,18 @@ internal unsafe class RegionAllocator : IDisposable
     }
 
     /// <summary>
-    /// Sweeps every carved region (SPEC-M2 §7). Runs under STW after marking and takes no
-    /// locks (see GcAwareLock for why that is safe). Returns total live bytes.
+    /// Sweeps carved regions (SPEC-M2 §7). Runs under STW after marking and takes no
+    /// locks (see GcAwareLock for why that is safe). Returns total live bytes swept.
+    ///
+    /// In young mode (M4 sticky generations) object-level work — the walk, the zeroing,
+    /// the recycling — happens only in Fresh and Reopened regions; their survivors are
+    /// promoted (Age = Old). The walk is age-blind: sticky marks keep old survivors in
+    /// Reopened regions IsMarked, so they sweep as live without re-marking. Old regions
+    /// keep their objects untouched and only get their hole/class lists relinked. The
+    /// returned total is therefore the young survivor (promoted) byte count, not whole-heap
+    /// live: old objects are skipped by the mark (already marked) and never re-counted.
     /// </summary>
-    public long Sweep()
+    public long Sweep(bool youngOnly = false)
     {
         long liveTotal = 0;
 
@@ -488,12 +571,41 @@ internal unsafe class RegionAllocator : IDisposable
         {
             var entry = GetEntry(i);
 
+            if (youngOnly && entry->Age == RegionAge.Old)
+            {
+                // Old region: metadata-only relink, never touch object memory. LiveBytes is
+                // left stale — it is only meaningful to a full sweep, and every full mark
+                // starts from ResetLiveBytes.
+                switch (entry->Kind)
+                {
+                    case RegionKind.Bump:
+                        if (entry->FirstHole != 0)
+                        {
+                            entry->NextRecycled = _recycledHead;
+                            _recycledHead = i;
+                        }
+                        break;
+
+                    case RegionKind.SizeClass:
+                        if ((entry->AllocatedBlocks & FullMask(entry->SizeClass)) != FullMask(entry->SizeClass))
+                        {
+                            entry->NextInClassList = _classHeads[entry->SizeClass];
+                            _classHeads[entry->SizeClass] = i;
+                        }
+                        break;
+                }
+
+                continue;
+            }
+
             switch (entry->Kind)
             {
                 case RegionKind.Bump:
-                    if (entry->LiveBytes == 0)
+                    if (entry->LiveBytes == 0 && (!youngOnly || entry->Age == RegionAge.Fresh))
                     {
-                        // The wholesale-recycle path: no per-object work (SPEC-M2 §7.1)
+                        // The wholesale-recycle path: no per-object work (SPEC-M2 §7.1).
+                        // Gated to Fresh in young mode: a Reopened region's LiveBytes only
+                        // counts this cycle's marks, not its sticky-marked old survivors.
                         RecycleBumpRegion(i);
                     }
                     else
@@ -517,24 +629,32 @@ internal unsafe class RegionAllocator : IDisposable
                     {
                         liveTotal += entry->LiveBytes;
                         entry->LiveBytes = 0;
+                        entry->Age = RegionAge.Old;
                     }
                     break;
             }
         }
 
-        TrimPool(liveTotal);
-
         return liveTotal;
+    }
+
+    /// <summary>
+    /// Zeroes every region's mark-time accumulator. Young collections credit LiveBytes to
+    /// old regions (hole-carved young objects) without a sweep ever consuming it, so every
+    /// full mark must start from a clean slate.
+    /// </summary>
+    public void ResetLiveBytes()
+    {
+        for (int i = 0; i < _frontier; i++)
+        {
+            GetEntry(i)->LiveBytes = 0;
+        }
     }
 
     private void RecycleBumpRegion(int index)
     {
-        var entry = GetEntry(index);
-        var regionBase = RegionBase(index);
-
-        // Only [base, Cursor) was ever written; the tail is still virgin zero
-        ZeroMemory(regionBase, entry->Cursor - regionBase);
-
+        // Zero-at-carve (M4): the region returns to the pool with its dead contents in
+        // place; the next carve zeroes the windows it hands out
         if (_activeBump == index)
         {
             _activeBump = -1;
@@ -590,21 +710,25 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         entry->LiveBytes = 0;
+        entry->Age = RegionAge.Old;
     }
 
     /// <summary>
-    /// Zeroes a dead extent [start, end), writes the free-object plug over it, and links it
-    /// as a carveable hole when big enough (SPEC-M2 §7.1).
+    /// Writes the free-object plug over a dead extent [start, end) and links it as a
+    /// carveable hole when big enough (SPEC-M2 §7.1). Zero-at-carve (M4): the extent's
+    /// stale contents stay in place — whoever carves a window out of the hole zeroes
+    /// exactly the bytes handed out, outside the pause. Only the plug's epoch word must
+    /// be cleared: a stale stamp there could alias the current epoch and make the plug
+    /// look live to a sweep walk or card scan.
     /// </summary>
     private void ClosePlug(RegionEntry* entry, nint start, nint end)
     {
         var extent = end - start;
 
-        ZeroMemory(start, extent);
-
         var plug = (GCObject*)(start + IntPtr.Size);
         plug->RawMethodTable = _freeObjectMethodTable;
         plug->Length = (uint)(extent - 3 * IntPtr.Size);
+        plug->Epoch = 0;
 
         if (extent >= Region.MinLinkedHole)
         {
@@ -641,6 +765,7 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         entry->LiveBytes = 0;
+        entry->Age = RegionAge.Old;
 
         var fullMask = FullMask(sizeClass);
 
@@ -666,7 +791,8 @@ internal unsafe class RegionAllocator : IDisposable
         var spanBase = RegionBase(index);
         var spanBytes = (nint)count << Region.Shift;
 
-        // Big spans: decommit — the OS re-zeroes lazily and we skip a giant memset
+        // Big spans: decommit — the OS re-zeroes lazily. Small spans stay committed with
+        // their dead contents; the next carve zeroes what it hands out (M4 zero-at-carve).
         if (count >= 4 && _memory.Decommit(spanBase, spanBytes))
         {
             CommittedRegionBytes -= spanBytes;
@@ -675,10 +801,6 @@ internal unsafe class RegionAllocator : IDisposable
             {
                 GetEntry(index + i)->IsCommitted = 0;
             }
-        }
-        else
-        {
-            ZeroMemory(spanBase, spanBytes);
         }
 
         for (int i = 0; i < count; i++)
@@ -702,13 +824,14 @@ internal unsafe class RegionAllocator : IDisposable
     }
 
     /// <summary>
-    /// Shrinks the pool's committed slack to max(64 MB, live/4) by decommitting the oldest
-    /// (coldest) pool entries first (SPEC-M2 §7.4).
+    /// Shrinks the pool's committed slack to the given target by decommitting the oldest
+    /// (coldest) pool entries first (SPEC-M2 §7.4, retargeted by M4). The caller passes the
+    /// post-collection allocation budget: young collections recycle a whole budget's worth
+    /// of regions every cycle, and trimming below the next cycle's demand just converts the
+    /// slack into decommit/recommit churn.
     /// </summary>
-    private void TrimPool(long liveBytes)
+    public void TrimPool(long target)
     {
-        var target = Region.PoolRetentionTarget(liveBytes);
-
         for (int i = 0; i < _poolCount && _pooledCommittedBytes > target; i++)
         {
             var entry = GetEntry(_pool[i]);
@@ -721,6 +844,11 @@ internal unsafe class RegionAllocator : IDisposable
             }
         }
     }
+
+    /// <summary>Zeroes a recycled window before first use (M4 zero-at-carve). Called by
+    /// the allocation path after releasing the allocation lock: the window is private to
+    /// the requesting thread by then, and concurrent windows zero in parallel.</summary>
+    public static void ZeroWindow(nint window, nint length) => ZeroMemory(window, length);
 
     private static void ZeroMemory(nint start, nint length)
     {

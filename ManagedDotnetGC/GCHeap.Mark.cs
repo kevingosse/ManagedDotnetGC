@@ -5,44 +5,55 @@ namespace ManagedDotnetGC;
 
 unsafe partial class GCHeap
 {
-    private void MarkPhase()
+    private void MarkPhase(bool young)
     {
         // TODO: Check what need to be set on ScanContext
         ScanContext scanContext = default;
         scanContext.promotion = true;
         scanContext._unused1 = GCHandle.ToIntPtr(_handle);
 
-        NotifyBeforeGcScanRoots(2, isBgc: false, isConcurrent: false);
+        var condemned = young ? 0 : 2;
+
+        NotifyBeforeGcScanRoots(condemned, isBgc: false, isConcurrent: false);
 
         var t0 = GcStats.Timestamp();
 
         Write("Scan roots");
         var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
-        _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
+        _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, condemned, 2, &scanContext);
 
         var t1 = GcStats.Timestamp();
+
+        if (young)
+        {
+            // The remembered set: references from sticky-marked old objects into the young
+            // generation are only reachable through dirty cards (SPEC-M4)
+            ScanCards();
+        }
+
+        var t2 = GcStats.Timestamp();
 
         // Objects queued for the finalizer thread by earlier collections are strong roots
         // from the start of the mark phase — before handle scanning and weak clearing, like
         // the stock order (mark_phase.cpp:3176; missing-features 3.3)
         MarkFReachableQueues();
 
-        var t2 = GcStats.Timestamp();
+        var t3 = GcStats.Timestamp();
 
         ScanHandles();
         ScanRefCountedHandles();
 
-        var t3 = GcStats.Timestamp();
+        var t4 = GcStats.Timestamp();
 
         ScanDependentHandles();
 
-        var t4 = GcStats.Timestamp();
+        var t5 = GcStats.Timestamp();
 
         // After all strong marking, before weak clearing (stock mark_phase.cpp:3385): the EE
         // detaches unmarked RCWs / ComWrappers here, consulting our IsPromoted (2.1)
-        NotifyAfterGcScanRoots(2, 2, &scanContext);
+        NotifyAfterGcScanRoots(condemned, 2, &scanContext);
 
-        var t5 = GcStats.Timestamp();
+        var t6 = GcStats.Timestamp();
 
         ClearHandles([HandleType.HNDTYPE_WEAK_SHORT]);
         ScanForFinalization();
@@ -54,13 +65,14 @@ unsafe partial class GCHeap
 
         if (GcStats.Enabled)
         {
-            var t6 = GcStats.Timestamp();
+            var t7 = GcStats.Timestamp();
             GcStats.RootsTicks = t1 - t0;
-            GcStats.FReachableTicks = t2 - t1;
-            GcStats.HandleTicks = t3 - t2;
-            GcStats.DependentTicks = t4 - t3;
-            GcStats.AfterScanTicks = t5 - t4;
-            GcStats.WeakTicks = t6 - t5;
+            GcStats.CardScanTicks = t2 - t1;
+            GcStats.FReachableTicks = t3 - t2;
+            GcStats.HandleTicks = t4 - t3;
+            GcStats.DependentTicks = t5 - t4;
+            GcStats.AfterScanTicks = t6 - t5;
+            GcStats.WeakTicks = t7 - t6;
         }
     }
 
@@ -199,7 +211,7 @@ unsafe partial class GCHeap
         {
             return;
         }
-        
+
         if (flags.HasFlag(GcCallFlags.GC_CALL_INTERIOR))
         {
             root = ResolveInteriorPointer((nint)root);
@@ -212,6 +224,16 @@ unsafe partial class GCHeap
 
         _markStack.Push((nint)root);
 
+        DrainMarkStack();
+    }
+
+    /// <summary>
+    /// The transitive trace: marks every unmarked reachable object on the stack. Entries may
+    /// be raw field values (EnumerateObjectReferences pushes them unfiltered), so the pop
+    /// side does all the filtering.
+    /// </summary>
+    private void DrainMarkStack()
+    {
         while (!_markStack.IsEmpty)
         {
             var ptr = _markStack.Pop();

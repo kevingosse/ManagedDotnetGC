@@ -69,7 +69,7 @@ Region-based, size-class segregated, **non-moving**, sticky-generation mark & sw
 | M1 ✅ | Correctness backlog, allocator-independent part | EE brackets (2.1), collectible types (3.1), ref-counted handles (3.2), finalization-queue roots (3.3), frozen dependent handles (3.4), handle types 10/11 (4.x), SuppressFinalize (5.1), API stubs (6.x), write-barrier init (7), alloc accounting (8.1) — **suite 56/56 green (2026-07-05)** |
 | M2 ✅ | **Region heap core** (replaces SegmentManager) | Allocation triggering (1.1), memory reuse (1.2), OOM-as-null (1.3), preemptive-mode dance (8.3) implemented *on the new allocator*; suite fully green; ASP.NET sample under 20k req/s load: 0 errors, flat footprint (soak-aspnet.cmd) |
 | M3 | Benchmark harness + first honest comparison | GCPerfSim + custom scenarios (pinning server, LOH churn, cache churn, burst allocation) vs stock WKS/SVR/BGC; throughput, pause histogram, peak RSS, CPU. Published in experiments/results/ |
-| M4 | Sticky generations via card table | Young collections; win or tie GCPerfSim steady-state |
+| M4 ◐ | Sticky generations via card table | Young collections; win or tie GCPerfSim steady-state. **Core landed 2026-07-06** (sticky epochs, whole-heap card barrier, Reopened regions, zero-at-carve): soh 3.20× → 2.52× vs same-day stock, STW zeroing eliminated. Win-or-tie still open — blocked on survivor density (non-moving heaps can't pack scattered survivors; see results/2026-07-06-m4-sticky-generations.md) and the card/sweep region walks (card-offset tables, M5/M7) |
 | M5 | Parallel mark & sweep | Pause ∝ 1/cores |
 | M6 | Concurrent marking (COW snapshot) | O(write-set) pauses on multi-GB heaps |
 | M7 | Tuning war | Beat stock on target workloads 1–3; publish reproducible results |

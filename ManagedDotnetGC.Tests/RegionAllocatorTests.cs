@@ -108,87 +108,97 @@ public unsafe class RegionAllocatorTests
     [Test]
     public void Sweep_CoalescesAdjacentDeadObjectsIntoOnePlug()
     {
-        // One window: o1 | o2 o3 o4 (dead run) | o5 | remainder plug
-        var size = (nint)2048;
-        var o1 = AllocObject(size);
-        var o2 = AllocObject(size);
-        var o3 = AllocObject(size);
-        var o4 = AllocObject(size);
-        var o5 = AllocObject(size);
-        var tailPlug = _ctxPtr;
+        // Twenty 30000-byte objects span five windows; killing 1..18 coalesces a dead run
+        // across window boundaries (the inter-window remainder plugs are never marked, so
+        // they merge for free) into one ~550 KB hole
+        var size = (nint)30000;
+        var objects = new List<nint>();
+
+        for (int i = 0; i < 20; i++)
+        {
+            objects.Add(AllocObject(size));
+        }
+
         FixContext();
 
-        _allocator.TryGetIndex(o1, out var index).ShouldBeTrue();
+        _allocator.TryGetIndex(objects[0], out var index).ShouldBeTrue();
         var entry = _allocator.GetEntry(index);
-        var cursor = entry->Cursor;
 
-        MarkLive(o1);
-        MarkLive(o5);
+        MarkLive(objects[0]);
+        MarkLive(objects[19]);
         _allocator.Sweep();
 
-        // The dead run coalesced into a single plug at o2 covering [o2 - 8, o5 - 8)
-        var plug = (GCObject*)o2;
+        // One plug at objects[1] covering [objects[1] - 8, objects[19] - 8)
+        var plug = (GCObject*)objects[1];
         ((nint)plug->RawMethodTable).ShouldBe((nint)_freeMT);
-        plug->ComputeSize().ShouldBe((uint)(3 * size));
+        plug->ComputeSize().ShouldBe((uint)(objects[19] - objects[1]));
 
-        // The dead tail [tailPlug - 8, cursor) also became a hole (the old remainder plug
-        // is never marked, so it coalesces for free); it was closed last, so it heads the
-        // hole list, and its link word (ref + 16) points to the o2 hole
-        var tailExtent = cursor - (tailPlug - IntPtr.Size);
-        entry->FirstHole.ShouldBe(tailPlug);
-        entry->HoleBytes.ShouldBe((int)(3 * size + tailExtent));
-        (*(nint*)(tailPlug + 2 * IntPtr.Size)).ShouldBe(o2);
+        // It is the only linked hole: the dead tail after objects[19] is far below one
+        // window, so it was plugged but not linked (M4 floor)
+        entry->FirstHole.ShouldBe(objects[1]);
+        entry->HoleBytes.ShouldBe((int)(objects[19] - objects[1]));
+        (*(nint*)(objects[1] + 2 * IntPtr.Size)).ShouldBe(0);
 
         // Live objects and the region survive
         entry->Kind.ShouldBe(RegionKind.Bump);
-        ((GCObject*)o1)->ComputeSize().ShouldBe((uint)size);
-        ((GCObject*)o5)->ComputeSize().ShouldBe((uint)size);
+        AssertPayloadPattern(objects[0], size);
+        AssertPayloadPattern(objects[19], size);
+        WalkBumpRegion(index);
     }
 
     [Test]
     public void TryGetWindow_CarvesFromHolesFirstAndUnlinksExhaustedRegions()
     {
-        var size = (nint)2048;
-        var o1 = AllocObject(size);
-        var o2 = AllocObject(size);
-        var o3 = AllocObject(size);
-        var o4 = AllocObject(size);
-        var o5 = AllocObject(size);
-        var tailPlug = _ctxPtr;
+        var size = (nint)30000;
+        var objects = new List<nint>();
+
+        for (int i = 0; i < 20; i++)
+        {
+            objects.Add(AllocObject(size));
+        }
+
         FixContext();
 
-        _allocator.TryGetIndex(o1, out var index).ShouldBeTrue();
+        _allocator.TryGetIndex(objects[0], out var index).ShouldBeTrue();
         var entry = _allocator.GetEntry(index);
         var cursor = entry->Cursor;
 
-        MarkLive(o1);
-        MarkLive(o5);
+        MarkLive(objects[0]);
+        MarkLive(objects[19]);
         _allocator.Sweep();
 
-        // First carve: hole-first policy takes the head hole (the big dead tail)
-        _allocator.TryGetWindow(1000, out var window1, out var length1).ShouldBeTrue();
-        window1.ShouldBe(tailPlug - IntPtr.Size);
-        length1.ShouldBe(cursor - window1); // whole extent: it is under the 128 KB window size
+        // Hole-first policy: windows carve through the big hole front to back, each handing
+        // out zeroed memory (zero-at-carve), until the remainder drops below one window and
+        // the region unlinks
+        var extent = objects[19] - objects[1];
+        var next = objects[1] - IntPtr.Size;
+        nint consumed = 0;
 
-        // Second carve: the only hole left is the coalesced o2..o4 run
-        _allocator.TryGetWindow(1000, out var window2, out var length2).ShouldBeTrue();
-        window2.ShouldBe(o2 - IntPtr.Size);
-        length2.ShouldBe(3 * size);
+        while (entry->FirstHole != 0)
+        {
+            TryGetZeroedWindow(1000, out var window, out var length).ShouldBeTrue();
+            window.ShouldBe(next);
+            AssertZero(window, length);
 
-        // Carved windows hand out zeroed memory (Invariant P for holes)
-        AssertZero(window2, length2);
+            next += length;
+            consumed += length;
+            (consumed <= extent).ShouldBeTrue();
+        }
 
-        // No holes left: the region is unlinked, the next window comes from the cursor
-        entry->FirstHole.ShouldBe(0);
-        _allocator.TryGetWindow(1000, out var window3, out _).ShouldBeTrue();
-        window3.ShouldBe(cursor);
+        // The unlinked leftover is smaller than a window — floating until a full sweep
+        (extent - consumed < Region.MinLinkedHole).ShouldBeTrue();
+
+        // Exhausted: the next window comes from the cursor
+        TryGetZeroedWindow(1000, out var fromCursor, out _).ShouldBeTrue();
+        fromCursor.ShouldBe(cursor);
     }
 
     [Test]
     public void Sweep_DoesNotLinkHolesSmallerThanMinLinkedHole()
     {
         // Alternate live/dead 256-byte objects: dead extents are 256 bytes each, far below
-        // MinLinkedHole — they must be plugged (walkability) but not linked (carving)
+        // the floor — they must be plugged (walkability) but not linked (carving). Only the
+        // ~119 KB dead window tail clears the floor.
         var size = (nint)256;
         var objects = new List<nint>();
 
@@ -209,11 +219,9 @@ public unsafe class RegionAllocatorTests
 
         _allocator.Sweep();
 
-        // The only linked hole is the big dead tail of the window; every small extent
-        // between live objects is a plug, not a carve candidate
-        var tail = entry->FirstHole;
-        tail.ShouldNotBe(0);
-        (*(nint*)(tail + 2 * IntPtr.Size)).ShouldBe(0); // no second hole in the list
+        // The tail run starts at the last dead object (it coalesced with the context plug)
+        entry->FirstHole.ShouldBe(objects[31]);
+        (*(nint*)(objects[31] + 2 * IntPtr.Size)).ShouldBe(0); // no second hole in the list
 
         // But every dead extent was plugged: the region walks end-to-end
         WalkBumpRegion(index);
@@ -277,10 +285,10 @@ public unsafe class RegionAllocatorTests
         reused.ShouldBe(blocks[0]);
     }
 
-    // ----- §7.1 wholesale recycle + Invariant P -----
+    // ----- §7.1 wholesale recycle + zero-at-carve -----
 
     [Test]
-    public void Sweep_RecyclesAllDeadBumpRegionWholesale_AndMemoryIsZero()
+    public void Sweep_RecyclesAllDeadBumpRegionWholesale_AndCarveZeroesReuse()
     {
         var objects = new List<nint>();
 
@@ -299,13 +307,13 @@ public unsafe class RegionAllocatorTests
         var entry = _allocator.GetEntry(index);
         entry->Kind.ShouldBe(RegionKind.Free);
 
-        // Invariant P: a pooled region is fully zero
-        AssertZero(_allocator.RegionBase(index), Region.Size);
-
-        // The pool is LIFO: the next carve hands the same region back, still zero
-        _allocator.TryGetWindow(1024, out var window, out var length).ShouldBeTrue();
+        // The pool is LIFO: the next carve hands the same region back, flagged dirty
+        // (its dead contents stayed in place), and the carved window is zeroed exactly
+        // where it is handed out (M4 zero-at-carve)
+        TryGetZeroedWindow(1024, out var window, out var length).ShouldBeTrue();
         _allocator.TryGetIndex(window, out var reusedIndex).ShouldBeTrue();
         reusedIndex.ShouldBe(index);
+        entry->BumpIsDirty.ShouldBe((byte)1);
         AssertZero(window, length);
     }
 
@@ -338,7 +346,8 @@ public unsafe class RegionAllocatorTests
         start->Kind.ShouldBe(RegionKind.SpanStart);
         ((GCObject*)(spanBase + IntPtr.Size))->ComputeSize().ShouldBe((uint)objectSize);
 
-        // ...dies on the next one: all three regions return to the pool, zeroed
+        // ...dies on the next one: all three regions return to the pool with their dead
+        // contents (M4 zero-at-carve), and a new span cleans them at allocation
         GCObject.CurrentEpoch++;
         _allocator.Sweep();
 
@@ -347,7 +356,9 @@ public unsafe class RegionAllocatorTests
             _allocator.GetEntry(index + i)->Kind.ShouldBe(RegionKind.Free);
         }
 
-        AssertZero(spanBase, 3 * Region.Size);
+        _allocator.TryAllocSpan(3, out var reused).ShouldBeTrue();
+        reused.ShouldBe(spanBase);
+        AssertZero(reused, 3 * Region.Size);
     }
 
     [Test]
@@ -376,6 +387,281 @@ public unsafe class RegionAllocatorTests
         AssertZero(reused, 2 * Region.Size);
     }
 
+    // ----- M4 sticky-generation young sweep -----
+
+    [Test]
+    public void YoungSweep_RecyclesFreshRegionsAndSweepsReopenedOnes()
+    {
+        // Old region: five objects, all live, sealed by a full sweep
+        var size = (nint)2048;
+        var oldObjects = new List<nint>();
+
+        for (int i = 0; i < 5; i++)
+        {
+            oldObjects.Add(AllocObject(size));
+        }
+
+        FixContext();
+        _allocator.TryGetIndex(oldObjects[0], out var oldIndex).ShouldBeTrue();
+
+        foreach (var obj in oldObjects)
+        {
+            MarkLive(obj);
+        }
+
+        _allocator.Sweep();
+
+        var oldEntry = _allocator.GetEntry(oldIndex);
+        oldEntry->Age.ShouldBe(RegionAge.Old);
+
+        // Fill the old region's holes and bump tail until a fresh young region carves;
+        // allocation into the old region re-opens it (mixed ages)
+        var youngIndex = -1;
+        var youngInReopened = new List<nint>();
+
+        while (youngIndex < 0)
+        {
+            var obj = AllocObject(size);
+            obj.ShouldNotBe(0);
+            _allocator.TryGetIndex(obj, out var index).ShouldBeTrue();
+
+            if (index != oldIndex)
+            {
+                youngIndex = index;
+            }
+            else
+            {
+                youngInReopened.Add(obj);
+            }
+        }
+
+        FixContext();
+        oldEntry->Age.ShouldBe(RegionAge.Reopened);
+        _allocator.GetEntry(youngIndex)->Age.ShouldBe(RegionAge.Fresh);
+
+        // Nothing young is marked: same epoch, no new stamps (sticky marks stay valid)
+        _allocator.Sweep(youngOnly: true);
+
+        // The fresh region died wholesale; the reopened one was swept in place
+        _allocator.GetEntry(youngIndex)->Kind.ShouldBe(RegionKind.Free);
+        oldEntry->Kind.ShouldBe(RegionKind.Bump);
+        oldEntry->Age.ShouldBe(RegionAge.Old);
+
+        // Sticky survivors are intact without any re-marking...
+        foreach (var obj in oldObjects)
+        {
+            ((GCObject*)obj)->ComputeSize().ShouldBe((uint)size);
+            AssertPayloadPattern(obj, size);
+        }
+
+        // ...and the dead young objects among them were absorbed into plugs by this very
+        // sweep — no floating garbage waiting for a full collection. The walk sees the
+        // sticky survivors and hops straight over the coalesced dead run.
+        var walked = WalkBumpRegion(oldIndex);
+        walked.ShouldNotContain(youngInReopened[0]);
+
+        foreach (var obj in oldObjects)
+        {
+            walked.ShouldContain(obj);
+        }
+    }
+
+    [Test]
+    public void YoungSweep_NeverWholesaleRecyclesReopenedRegions()
+    {
+        // Five sticky-marked survivors sealed into an old region
+        var size = (nint)2048;
+        var oldObjects = new List<nint>();
+
+        for (int i = 0; i < 5; i++)
+        {
+            oldObjects.Add(AllocObject(size));
+        }
+
+        FixContext();
+        _allocator.TryGetIndex(oldObjects[0], out var oldIndex).ShouldBeTrue();
+
+        foreach (var obj in oldObjects)
+        {
+            MarkLive(obj);
+        }
+
+        _allocator.Sweep();
+
+        // One young object re-opens the region, then dies unmarked: LiveBytes stays 0 for
+        // this cycle even though five old objects are alive — the wholesale-recycle
+        // shortcut must not fire or it would zero them all
+        var young = AllocObject(size);
+        FixContext();
+
+        _allocator.TryGetIndex(young, out var youngIndex).ShouldBeTrue();
+        youngIndex.ShouldBe(oldIndex);
+        _allocator.GetEntry(oldIndex)->Age.ShouldBe(RegionAge.Reopened);
+
+        _allocator.Sweep(youngOnly: true);
+
+        var entry = _allocator.GetEntry(oldIndex);
+        entry->Kind.ShouldBe(RegionKind.Bump);
+        entry->Age.ShouldBe(RegionAge.Old);
+
+        foreach (var obj in oldObjects)
+        {
+            AssertPayloadPattern(obj, size);
+        }
+
+        // The dead young object was absorbed into a plug (the walk hops over it)
+        WalkBumpRegion(oldIndex).ShouldNotContain(young);
+    }
+
+    [Test]
+    public void YoungSweep_KeepsOldRegionHolesCarveable()
+    {
+        // Old region with one window-sized linked hole built by a full sweep
+        var size = (nint)30000;
+        var objects = new List<nint>();
+
+        for (int i = 0; i < 20; i++)
+        {
+            objects.Add(AllocObject(size));
+        }
+
+        FixContext();
+
+        MarkLive(objects[0]);
+        MarkLive(objects[19]);
+        _allocator.Sweep();
+
+        // A young sweep rebuilds the recycled list from scratch; old regions must be
+        // relinked by the metadata-only path or their holes would be stranded until the
+        // next full collection
+        _allocator.Sweep(youngOnly: true);
+
+        TryGetZeroedWindow(1000, out var window, out _).ShouldBeTrue();
+        window.ShouldBe(objects[1] - IntPtr.Size); // carved from the hole, not the cursor
+    }
+
+    [Test]
+    public void YoungSweep_RelinkOldSizeClassRegionsWithFreeBlocks()
+    {
+        const int sizeClass = 0;
+        var objectSize = (nint)30000;
+        var blocks = new nint[3];
+
+        for (int i = 0; i < 3; i++)
+        {
+            _allocator.TryAllocBlock(sizeClass, out blocks[i]).ShouldBeTrue();
+            WriteObject(blocks[i] + IntPtr.Size, objectSize);
+        }
+
+        _allocator.TryGetIndex(blocks[0], out var index).ShouldBeTrue();
+        _allocator.GetEntry(index)->Age.ShouldBe(RegionAge.Fresh);
+
+        MarkLive(blocks[0] + IntPtr.Size);
+        MarkLive(blocks[2] + IntPtr.Size);
+
+        // Young sweep: the region is young, so it gets real object work and is promoted
+        _allocator.Sweep(youngOnly: true);
+
+        var entry = _allocator.GetEntry(index);
+        entry->Age.ShouldBe(RegionAge.Old);
+        entry->AllocatedBlocks.ShouldBe((1ul << 0) | (1ul << 2));
+
+        // Second young sweep: the region is old now — the metadata relink must keep its
+        // free blocks allocatable, and allocating from it re-opens it
+        _allocator.Sweep(youngOnly: true);
+
+        _allocator.TryAllocBlock(sizeClass, out var reused).ShouldBeTrue();
+        reused.ShouldBe(blocks[1]);
+        entry->Age.ShouldBe(RegionAge.Reopened);
+    }
+
+    [Test]
+    public void YoungSweep_RecyclesDeadYoungSpansAndSkipsOldOnes()
+    {
+        var spanObjectSize = (nint)(2 * Region.Size - 4 * IntPtr.Size);
+
+        _allocator.TryAllocSpan(2, out var deadSpan).ShouldBeTrue();
+        WriteObject(deadSpan + IntPtr.Size, spanObjectSize);
+
+        _allocator.TryAllocSpan(2, out var liveSpan).ShouldBeTrue();
+        WriteObject(liveSpan + IntPtr.Size, spanObjectSize);
+        MarkLive(liveSpan + IntPtr.Size);
+
+        _allocator.TryGetIndex(deadSpan, out var deadIndex).ShouldBeTrue();
+        _allocator.TryGetIndex(liveSpan, out var liveIndex).ShouldBeTrue();
+
+        _allocator.Sweep(youngOnly: true);
+
+        _allocator.GetEntry(deadIndex)->Kind.ShouldBe(RegionKind.Free);
+
+        var liveEntry = _allocator.GetEntry(liveIndex);
+        liveEntry->Kind.ShouldBe(RegionKind.SpanStart);
+        liveEntry->Age.ShouldBe(RegionAge.Old);
+
+        // The next young sweep skips the promoted span even though nothing re-marked it
+        _allocator.Sweep(youngOnly: true);
+
+        liveEntry->Kind.ShouldBe(RegionKind.SpanStart);
+        ((GCObject*)(liveSpan + IntPtr.Size))->ComputeSize().ShouldBe((uint)spanObjectSize);
+    }
+
+    [Test]
+    public void FullSweep_AfterYoungCollections_ReclaimsFloatingGarbage()
+    {
+        // Old region A with all five objects live
+        var size = (nint)2048;
+        var oldObjects = new List<nint>();
+
+        for (int i = 0; i < 5; i++)
+        {
+            oldObjects.Add(AllocObject(size));
+        }
+
+        FixContext();
+        _allocator.TryGetIndex(oldObjects[0], out var oldIndex).ShouldBeTrue();
+
+        foreach (var obj in oldObjects)
+        {
+            MarkLive(obj);
+        }
+
+        _allocator.Sweep();
+
+        // Two young objects carved into A's dead tail (re-opening it): y1 survives a young
+        // collection and is promoted in place, y2 dies and is plugged by that same sweep
+        var y1 = AllocObject(size);
+        var y2 = AllocObject(size);
+        FixContext();
+
+        _allocator.TryGetIndex(y1, out var yIndex).ShouldBeTrue();
+        yIndex.ShouldBe(oldIndex);
+
+        MarkLive(y1);
+        _allocator.Sweep(youngOnly: true);
+
+        ((nint)((GCObject*)y2)->RawMethodTable).ShouldBe((nint)_freeMT);
+        AssertPayloadPattern(y1, size);
+
+        // o2..o5 now die, but a young collection cannot see old deaths: they float until
+        // the full protocol runs (as GCHeap drives it — clear stale accumulators, advance
+        // the epoch, re-mark the true live set, full sweep)
+        _allocator.Sweep(youngOnly: true);
+        ((nint)((GCObject*)oldObjects[1])->RawMethodTable).ShouldBe((nint)_byteMT); // floats
+
+        _allocator.ResetLiveBytes();
+        GCObject.CurrentEpoch++;
+        MarkLive(oldObjects[0]);
+        MarkLive(y1);
+
+        _allocator.Sweep();
+
+        // Survivors intact, everything else (the floating old o2..o5) plugged
+        AssertPayloadPattern(oldObjects[0], size);
+        AssertPayloadPattern(y1, size);
+        ((nint)((GCObject*)oldObjects[1])->RawMethodTable).ShouldBe((nint)_freeMT);
+        WalkBumpRegion(oldIndex);
+    }
+
     // ----- harness -----
 
     /// <summary>Mirrors the EE bump + GCHeap.AllocFromWindow protocol (§3, §4.1).</summary>
@@ -393,7 +679,7 @@ public unsafe class RegionAllocatorTests
 
         FixContext();
 
-        if (!_allocator.TryGetWindow(size, out var window, out var length))
+        if (!TryGetZeroedWindow(size, out var window, out var length))
         {
             return 0;
         }
@@ -410,6 +696,23 @@ public unsafe class RegionAllocatorTests
         _ctxPtr = Align(result + size);
         _ctxLimit = window + length - 2 * IntPtr.Size;
         return result;
+    }
+
+    /// <summary>Requests a window and zeroes it when flagged, exactly like
+    /// GCHeap.AllocFromWindow does after releasing its allocation lock.</summary>
+    private bool TryGetZeroedWindow(nint size, out nint window, out nint length)
+    {
+        if (!_allocator.TryGetWindow(size, out window, out length, out var needsZero))
+        {
+            return false;
+        }
+
+        if (needsZero)
+        {
+            RegionAllocator.ZeroWindow(window, length);
+        }
+
+        return true;
     }
 
     /// <summary>Plugs the context remainder exactly like GCHeap.FixAllocContext.</summary>

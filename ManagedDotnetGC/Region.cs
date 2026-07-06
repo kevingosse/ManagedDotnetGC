@@ -11,7 +11,14 @@ internal static class Region
 
     public const nint BumpMaxSize = 32 * 1024;                  // ≤ 32 KB objects → bump tier
     public const nint WindowSize = 128 * 1024;                  // default alloc-context window
-    public const nint MinLinkedHole = 4 * 1024;                 // smaller holes: plugged, not carved
+
+    // Holes below half a window are plugged but never carved (M4): serving tiny holes
+    // multiplies the handout cadence and smears the nursery across every old region, which
+    // is exactly what sticky young collections cannot afford (each re-opened region gets
+    // card-scanned and swept). Sub-floor holes stay dead until a full collection. Half a
+    // window (not a full one) because survivor gaps cluster tightly around their mean —
+    // a floor above the typical gap strands nearly all of the reclaimable bytes.
+    public const nint MinLinkedHole = WindowSize / 2;
     public const nint GuardBytes = 16;                          // reserved tail of every bump region
 
     public const long MinGCBudget = 64L * 1024 * 1024;
@@ -31,11 +38,10 @@ internal static class Region
     public const int ClassCount = 20;
     public const nint SizeClassMaxSize = 1024 * 1024;
 
-    /// <summary>Post-collection allocation budget (SPEC-M2 §8.3): the heap converges to ≈ 2× live.</summary>
+    /// <summary>Post-collection allocation budget (SPEC-M2 §8.3): the heap converges to
+    /// ≈ 2× live. Also the pool's committed-slack retention target (M4): the next cycle
+    /// carves a budget's worth of regions back out of the pool.</summary>
     public static long ComputeBudget(long liveBytes) => Math.Max(MinGCBudget, liveBytes);
-
-    /// <summary>Committed slack kept in the free pool after a sweep (SPEC-M2 §7.4).</summary>
-    public static long PoolRetentionTarget(long liveBytes) => Math.Max(MinGCBudget, liveBytes / 4);
 
     /// <summary>Regions needed for a span object of the given size (SPEC-M2 §4.3): the
     /// object ref sits at spanBase + 8, so the pre-header byte counts toward the span.</summary>
@@ -69,6 +75,24 @@ internal enum RegionKind : byte
 }
 
 /// <summary>
+/// Region age for sticky-generation collections (SPEC-M4). Young collections do object
+/// work (mark accounting, sweep, recycle) only in non-Old regions; the card scan covers
+/// non-Fresh regions (anything that may hold sticky-marked old objects).
+/// </summary>
+internal enum RegionAge : byte
+{
+    /// <summary>Sealed by a sweep: holds only sticky-marked survivors and their holes.</summary>
+    Old = 0,
+    /// <summary>Carved since the last collection: holds only young objects.</summary>
+    Fresh = 1,
+    /// <summary>Old region re-opened for allocation (hole carve or bump-tail continuation):
+    /// mixed ages — card-scanned like Old, swept like Fresh. The sweep walk is safe because
+    /// sticky marks keep the old survivors marked; the wholesale-recycle shortcut is not
+    /// (LiveBytes only counts objects marked this cycle), so it is gated to Fresh.</summary>
+    Reopened = 2,
+}
+
+/// <summary>
 /// One entry per 2 MB region, in a flat table indexed by (addr - heapBase) >> Region.Shift.
 /// The fields at offsets 8 and 16 are kind-specific unions (SPEC-M2 §2).
 /// </summary>
@@ -77,7 +101,10 @@ internal struct RegionEntry
 {
     [FieldOffset(0)] public RegionKind Kind;
     [FieldOffset(1)] public byte SizeClass;        // SizeClass only
+    [FieldOffset(1)] public byte BumpIsDirty;      // Bump only: 1 = recycled without zeroing,
+                                                   // windows must be zeroed at carve (M4)
     [FieldOffset(2)] public byte IsCommitted;      // Free only: 0 after decommit
+    [FieldOffset(3)] public RegionAge Age;         // sticky-generation age (SPEC-M4)
     [FieldOffset(4)] public int LiveBytes;         // rebuilt by every mark phase, consumed by sweep
 
     [FieldOffset(8)] public nint Cursor;           // Bump: allocation high-water mark (absolute)
