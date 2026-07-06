@@ -696,8 +696,18 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         var tStart = GcStats.Timestamp();
 
-        // Retain a budget's worth of committed pool slack: the next cycle carves
-        // exactly that much back out, so trimming lower is pure recommit churn
+        // Two budgets of working headroom: one for the runway that will trigger the
+        // next collection, one for what mutators allocate through a concurrent cycle's
+        // window (the v4 census measured ~a window of fresh commits per full — the
+        // entire remaining ratchet — when fulls fired with holes already exhausted).
+        var demand = 2 * _budget;
+
+        // Retain the same headroom in committed pool slack. The retention target and
+        // the starvation demand must be one number: retaining less makes the trim
+        // itself manufacture starvation on wholesale-recycling workloads (the first
+        // exchange-rate soak retained one budget against a two-budget demand and ran
+        // 45% of its collections as starved fulls — pool-fed heaps have few holes, so
+        // post-trim free capacity could never reach the demand).
         var cursor = 0;
         bool more;
 
@@ -707,7 +717,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             try
             {
-                more = _regionAllocator.TrimPoolBatch(_budget, maxDecommits: 8, ref cursor);
+                more = _regionAllocator.TrimPoolBatch(demand, maxDecommits: 8, ref cursor);
             }
             finally
             {
@@ -722,12 +732,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         // Written under _gcLock, like every reader.
         var committed = _regionAllocator.CommittedRegionBytes;
         var freeCapacity = _regionAllocator.FreeCapacityBytes;
-
-        // Two budgets of headroom: one for the runway that will trigger the next
-        // collection, one for what mutators allocate through a concurrent cycle's window
-        // (the v4 census measured ~a window of fresh commits per full — the entire
-        // remaining ratchet — when fulls fired with holes already exhausted).
-        var demand = 2 * _budget;
 
         if (!young)
         {
