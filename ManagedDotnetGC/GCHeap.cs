@@ -197,6 +197,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
+        // Per-thread window stash (M7): default-on; =0 restores one-window-per-lock
+        // handouts for A/B runs and bisects
+        fixed (byte* privateKey = "GCWindowStash"u8)
+        fixed (byte* publicKey = "System.GC.WindowStash"u8)
+        {
+            if (_gcToClr.GetBooleanConfigValue(privateKey, publicKey, out var windowStash))
+            {
+                _windowStashEnabled = windowStash;
+            }
+        }
+
         // Non-temporal-store zeroing (M7 census): default-on; =0 restores Span.Clear
         // everywhere for A/B runs and bisects
         fixed (byte* privateKey = "GCNtZero"u8)
@@ -549,6 +560,33 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
     }
 
+    // --- Per-thread window stash (M7): the census put the global alloc lock at 82% of
+    // the remaining handout cost (wait 384 + carve 156 of win 659 ms/run on soh, ~1M
+    // acquisitions at ~20 KB avg), so carves batch extra windows out under the same
+    // acquisition and later handouts pop them with no lock at all. A stashed window is
+    // indistinguishable from an unconsumed alloc-context window: private to its thread,
+    // unmarked, reclaimed by the next sweep like any dead extent. The epoch is what
+    // keeps that sound — every collection rebuilds the supply lists under STW and
+    // relinks stashed extents as holes, so stashes from before the bump are forfeit
+    // (using one would double-hand memory the sweep already re-published). The stash
+    // rides in the context's GC-reserved slot, like the stock GC's heap affinity:
+    // per-EE-thread state with no thread-local machinery in the handout path. ---
+    private const int WindowStashCapacity = 3;
+
+    private struct WindowStash
+    {
+        public int Epoch;
+        public int Count;
+        public uint ZeroMask;
+        public fixed long Window[WindowStashCapacity];
+        public fixed long Length[WindowStashCapacity];
+    }
+
+    // Bumped under STW by every path that rebuilds the allocation supply
+    private static int _stashEpoch;
+
+    private bool _windowStashEnabled = true;
+
     private GCObject* AllocFromWindow(ref gc_alloc_context acontext, nint size)
     {
         var tStart = GcStats.Timestamp();
@@ -558,31 +596,103 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         nint window, length;
         bool needsZero;
+        long tBeforeLock = 0, tLocked = 0;
 
-        var tBeforeLock = GcStats.Timestamp();
-        _allocLock.Acquire();
-        var tLocked = GcStats.Timestamp();
+        // Allocated on first use, freed never: contexts die with their threads, and 64
+        // stale bytes are cheaper than guessing at a retirement hook
+        var stash = (WindowStash*)acontext.gc_reserved_1;
 
-        try
+        if (stash == null && _windowStashEnabled)
         {
-            if (!_regionAllocator.TryGetWindow(size, out window, out length, out needsZero))
+            stash = (WindowStash*)NativeMemory.AllocZeroed((nuint)sizeof(WindowStash));
+            acontext.gc_reserved_1 = stash;
+        }
+
+        if (stash != null && stash->Epoch != Volatile.Read(ref _stashEpoch))
+        {
+            // A collection ran since the refill: the sweep owns those extents now
+            stash->Count = 0;
+        }
+
+        if (stash != null && stash->Count > 0 && (nint)stash->Length[stash->Count - 1] >= Align(size) + 3 * IntPtr.Size)
+        {
+            var i = --stash->Count;
+            window = (nint)stash->Window[i];
+            length = (nint)stash->Length[i];
+            needsZero = (stash->ZeroMask & (1u << i)) != 0;
+
+            if (!needsZero)
             {
-                return null;
+                // Pre-zeroed window: only the stash plug's header slots are stale
+                // (same cleanup TryCarveFromHoles does for pre-zeroed holes)
+                new Span<byte>((void*)window, 4 * IntPtr.Size).Clear();
             }
-
-            // SPEC-M2 §3: first object ref at window + 8; the -16 pairs with the plug
-            // formula in FixAllocContext to keep the region walkable end-to-end
-            acontext.alloc_ptr = Align(window + IntPtr.Size + size);
-            acontext.alloc_limit = window + length - 2 * IntPtr.Size;
-            acontext.alloc_bytes += length;
-
-            _allocatedSinceGC += length;
-            _totalAllocatedBytes += length;
         }
-        finally
+        else
         {
-            _allocLock.Release();
+            tBeforeLock = GcStats.Timestamp();
+            _allocLock.Acquire();
+            tLocked = GcStats.Timestamp();
+
+            try
+            {
+                if (!_regionAllocator.TryGetWindow(size, out window, out length, out needsZero))
+                {
+                    return null;
+                }
+
+                _allocatedSinceGC += length;
+                _totalAllocatedBytes += length;
+
+                // Refill under the same acquisition. Epoch is re-read after Acquire: a
+                // suspension can complete inside a contended Acquire, and the stash must
+                // belong to the supply lists this refill actually carves from. Budget
+                // accounting happens here (the trigger reads are approximate anyway);
+                // alloc_bytes accrues per window at pop, where the EE's thread owns it.
+                if (stash != null)
+                {
+                    stash->Epoch = Volatile.Read(ref _stashEpoch);
+                }
+
+                while (stash != null && stash->Count < WindowStashCapacity
+                    && _regionAllocator.TryGetStashWindow(size, out var extra, out var extraLength, out var extraZero))
+                {
+                    var i = stash->Count++;
+                    stash->Window[i] = extra;
+                    stash->Length[i] = extraLength;
+
+                    if (extraZero)
+                    {
+                        stash->ZeroMask |= 1u << i;
+                    }
+                    else
+                    {
+                        stash->ZeroMask &= ~(1u << i);
+                    }
+
+                    // Plug the stashed extent: interior-pointer resolution walks bump
+                    // regions object-by-object, and unlike the primary window a stashed
+                    // one is not an alloc context FixAllocContext will plug at the next
+                    // suspension. (Found the hard way: GcStress's pinned interior roots
+                    // walked into an unplugged stash extent and died on a garbage
+                    // MethodTable at pause A.)
+                    AllocateFreeObject(extra + IntPtr.Size, (uint)(extraLength - 3 * IntPtr.Size));
+
+                    _allocatedSinceGC += extraLength;
+                    _totalAllocatedBytes += extraLength;
+                }
+            }
+            finally
+            {
+                _allocLock.Release();
+            }
         }
+
+        // SPEC-M2 §3: first object ref at window + 8; the -16 pairs with the plug
+        // formula in FixAllocContext to keep the region walkable end-to-end
+        acontext.alloc_ptr = Align(window + IntPtr.Size + size);
+        acontext.alloc_limit = window + length - 2 * IntPtr.Size;
+        acontext.alloc_bytes += length;
 
         var tCarved = GcStats.Timestamp();
 
@@ -596,12 +706,13 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         if (GcStats.Enabled)
         {
-            // The full handout cost an app thread feels: plugging, lock wait, carving, zeroing
+            // The full handout cost an app thread feels: plugging, lock wait, carving,
+            // zeroing. Stash pops report zero wait/carve — that is the point of them.
             var tEnd = GcStats.Timestamp();
             Interlocked.Increment(ref GcStats.WindowCount);
             Interlocked.Add(ref GcStats.WindowTicks, tEnd - tStart);
             Interlocked.Add(ref GcStats.WindowWaitTicks, tLocked - tBeforeLock);
-            Interlocked.Add(ref GcStats.WindowCarveTicks, tCarved - tLocked);
+            Interlocked.Add(ref GcStats.WindowCarveTicks, tLocked == 0 ? 0 : tCarved - tLocked);
             Interlocked.Add(ref GcStats.WindowZeroTicks, tEnd - tCarved);
         }
 
@@ -691,6 +802,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     /// Runs under STW with the zeroer gate held.</summary>
     private void SweepAndAccount(bool young)
     {
+        // The sweep relinks every stashed window's extent as a hole: stashes carved
+        // before this point must never be consumed again (M7 window stash)
+        Interlocked.Increment(ref _stashEpoch);
+
         var swept = _regionAllocator.Sweep(youngOnly: young, _workerPool);
 
         if (young)

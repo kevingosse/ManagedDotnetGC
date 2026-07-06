@@ -211,6 +211,11 @@ unsafe partial class GCHeap
 
             _regionAllocator.ClearCards();
             BuildRegionPlan();
+
+            // Supply lists are about to reset and the concurrent walk will relink every
+            // stashed extent: pre-pause stashes are forfeit (M7 window stash)
+            Interlocked.Increment(ref _stashEpoch);
+
             _regionAllocator.BeginConcurrentSweep(_regionPlan!, _regionPlanCount);
 
             // O(1)-per-region recycling stays in the pause: the dead nursery is the

@@ -297,6 +297,34 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
+    /// <summary>Hole-only carve for stash refills (M7): redistributes committed supply
+    /// without deepening a drought — no active-bump, assist, pool or frontier
+    /// fallthrough, so a dry hole list just means no refill. (The first stash shipped
+    /// refills through the full TryGetWindow and two of three lohmix runs ratcheted
+    /// +0.5 GB: 4 fresh 128 KB carves per acquisition outran the concurrent sweep's
+    /// publications exactly like the pre-assist M6.5 gate story.)</summary>
+    public bool TryGetStashWindow(nint size, out nint window, out nint length, out bool needsZero)
+    {
+        var needed = Align(size) + 3 * IntPtr.Size;
+
+        if (!TryCarveFromHoles(needed, out window, out length, out needsZero))
+        {
+            return false;
+        }
+
+        if (GcStats.Enabled)
+        {
+            GcStats.HoleWindowCount++;
+
+            if (!needsZero)
+            {
+                GcStats.CleanWindowCount++;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>
     /// Carves a window from the first hole that fits, per SPEC-M2 §4.4. A hole is a linked
     /// free-object plug in a swept bump region: extent [ref - 8, ref + 16 + Length).
