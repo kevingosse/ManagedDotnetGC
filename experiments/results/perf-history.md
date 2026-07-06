@@ -354,6 +354,14 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   hit the soak before the bench. Rows `m7-bitmapwalks`/`m65s2-assist*` predate the
   fix (~0-3% optimistic).
 
+- **Worker-count sweep post-stage-2** (`m65s2-h16`/`-h32`, 2026-07-06, Kevin's
+  question): the m6s3-era 5-11% gain from 32 workers is gone — h32 now reads
+  flat-to-worse (soh 1.440 → 1.528, pinheavy 1.461 → 1.430 ≈ noise). The parallel
+  STW mass those workers accelerated (~500 ms/run) is ~185 ms and mostly off-pause;
+  extra workers only add chunk/quorum overhead on 2-4 ms phases. Default stays 8.
+  Unlike stock (SVR-32 vs -h8: 27-37%, budget partitioning), our knob is collector
+  threads only — allocation is unpartitioned at any setting.
+
 ```powershell
 # after any perf-relevant commit (GC dll = Release publish):
 dotnet publish .\ManagedDotnetGC /p:SelfContained=true -r win-x64 -c Release
