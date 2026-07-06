@@ -171,6 +171,11 @@ internal unsafe class RegionAllocator : IDisposable
     /// design (read with the world running for the full-trigger heuristic).</summary>
     public long FreeCapacityBytes => Volatile.Read(ref _pooledCommittedBytes) + Volatile.Read(ref _linkedHoleBytes);
 
+    /// <summary>Committed pool bytes alone — the concurrent sweep's window gate (M6.5):
+    /// unlike <see cref="FreeCapacityBytes"/> it ignores linked holes, which a sweep is
+    /// about to invalidate and rebuild.</summary>
+    public long PooledCommittedBytes => Volatile.Read(ref _pooledCommittedBytes);
+
     public nint RegionBase(int index) => HeapBase + ((nint)index << Region.Shift);
 
     public RegionEntry* GetEntry(int index) => _table + index;
@@ -710,7 +715,7 @@ internal unsafe class RegionAllocator : IDisposable
         if (pool is null)
         {
             var lists = NewSweepLists();
-            SweepRange(0, frontier, youngOnly, ref lists);
+            SweepRange(0, frontier, youngOnly, ref lists, deferredFrees: null, plan: null);
             SpliceSweepLists(ref lists);
             return lists.Live;
         }
@@ -738,7 +743,7 @@ internal unsafe class RegionAllocator : IDisposable
                     break;
                 }
 
-                SweepRange(start, Math.Min(start + Chunk, frontier), youngOnly, ref lists);
+                SweepRange(start, Math.Min(start + Chunk, frontier), youngOnly, ref lists, deferredFrees: null, plan: null);
             }
 
             lock (mergeLock)
@@ -747,6 +752,151 @@ internal unsafe class RegionAllocator : IDisposable
                 liveTotal += lists.Live;
             }
         });
+
+        return liveTotal;
+    }
+
+    /// <summary>Whole-heap live bytes as accumulated by the mark phase's interlocked
+    /// adds — the same number a full sweep would return, available at pause B before
+    /// any sweeping (M6.5): budgets and the sticky accounting no longer wait for the
+    /// sweep. Free entries hold zero by construction.</summary>
+    public long SumLiveBytes()
+    {
+        long total = 0;
+
+        for (int i = 0; i < _frontier; i++)
+        {
+            total += GetEntry(i)->LiveBytes;
+        }
+
+        return total;
+    }
+
+    /// <summary>
+    /// The STW half of a concurrent full sweep (M6.5), run inside pause B: reset the
+    /// allocation supply — hole lists, class lists, the active bump region — so
+    /// nothing the concurrent walk will rewrite is reachable to carves. Post-restart
+    /// allocation runs on the pool, the frontier, and whatever
+    /// <see cref="SweepConcurrentFull"/> has published so far. Abandoning the active
+    /// bump region wastes at most its virgin tail until the region recycles.
+    /// </summary>
+    public void BeginConcurrentSweep()
+    {
+        _minLinkedHole = UnderMemoryPressure ? PressureMinLinkedHole : Region.FullMinLinkedHole;
+        _recycledHead = -1;
+        _linkedHoleBytes = 0;
+        _classHeads.AsSpan().Fill(-1);
+        _activeBump = -1;
+    }
+
+    /// <summary>
+    /// STW pre-pass of the concurrent sweep (M6.5), inside pause B after
+    /// <see cref="BeginConcurrentSweep"/>: wholesale-recycle every region the marks
+    /// left empty — O(1) per region, and on churn workloads that is the entire dead
+    /// nursery — so the allocation runway reopens the moment the world restarts.
+    /// Without this the first A/B ran +1.1 GB committed: mutators fresh-committed
+    /// through the whole sweep window while every recyclable region sat unpublished.
+    /// Regions needing a walk stay in the plan for the concurrent phase.
+    /// </summary>
+    public void RecycleWholesaleDead(int[] plan, int planCount)
+    {
+        for (int i = 0; i < planCount; i++)
+        {
+            if (plan[i] < 0)
+            {
+                continue;
+            }
+
+            var entry = GetEntry(i);
+
+            if (entry->LiveBytes != 0)
+            {
+                continue;
+            }
+
+            if (entry->Kind == RegionKind.Bump)
+            {
+                RecycleBumpRegion(i, deferredFrees: null);
+                plan[i] = -1;
+            }
+            else if (entry->Kind == RegionKind.SpanStart)
+            {
+                RecycleSpan(i, deferredFrees: null);
+                plan[i] = -1;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The concurrent half (M6.5): sweeps exactly the regions the pause-B plan marked
+    /// in-use, with the world running. Safe because none of them is reachable to
+    /// allocation until published: <see cref="BeginConcurrentSweep"/> reset the supply
+    /// lists under STW, pool pops during the sweep only produce regions the plan says
+    /// to skip, and planned regions' cursors cannot move (only the active bump
+    /// region's does, and it was abandoned). Workers publish their chunk's supply —
+    /// list splices and pool pushes — under <paramref name="publishLock"/> (the
+    /// allocation lock), so carves see complete per-chunk results; the zeroer must be
+    /// gated out by the caller for the whole sweep (it walks hole memory without the
+    /// lock). The return value is Σ LiveBytes over swept regions, for parity checks —
+    /// budgets already consumed <see cref="SumLiveBytes"/> at pause B.
+    /// </summary>
+    public long SweepConcurrentFull(int[] plan, int planCount, GcAwareLock publishLock, GcWorkerPool? pool)
+    {
+        long liveTotal = 0;
+        var cursor = 0;
+
+        void Worker()
+        {
+            const int Chunk = 16;
+            var lists = NewSweepLists();
+            var freed = new List<int>();
+            long live = 0;
+
+            while (true)
+            {
+                var start = Interlocked.Add(ref cursor, Chunk) - Chunk;
+
+                if (start >= planCount)
+                {
+                    break;
+                }
+
+                SweepRange(start, Math.Min(start + Chunk, planCount), youngOnly: false, ref lists, freed, plan);
+                live += lists.Live;
+
+                // Publish this chunk's supply: recycled/class list splices and pool
+                // pushes become visible to carves atomically per chunk
+                publishLock.Acquire();
+
+                try
+                {
+                    SpliceSweepLists(ref lists);
+
+                    foreach (var index in freed)
+                    {
+                        MakeFree(index);
+                    }
+                }
+                finally
+                {
+                    publishLock.Release();
+                }
+
+                lists = NewSweepLists();
+                freed.Clear();
+            }
+
+            Interlocked.Add(ref liveTotal, live);
+        }
+
+        if (pool is null)
+        {
+            Worker();
+        }
+        else
+        {
+            pool.Run(Worker);
+        }
 
         return liveTotal;
     }
@@ -820,10 +970,24 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private void SweepRange(int start, int end, bool youngOnly, ref SweepLists lists)
+    /// <summary>
+    /// <paramref name="deferredFrees"/> collects freed region indices instead of pushing
+    /// them to the pool inline — the concurrent sweep publishes them under the alloc
+    /// lock, because carves pop the pool while it runs (STW sweeps pass null).
+    /// <paramref name="plan"/> is the pause-B in-use snapshot: with the world running,
+    /// entries the plan skips can be mid-recarve by mutators and must not be read.
+    /// </summary>
+    private void SweepRange(int start, int end, bool youngOnly, ref SweepLists lists, List<int>? deferredFrees, int[]? plan)
     {
         for (int i = start; i < end; i++)
         {
+            if (plan is not null && plan[i] < 0)
+            {
+                // Free/extension at pause B — either still free (a pool pop during the
+                // sweep may be re-carving it right now) or covered by its span start
+                continue;
+            }
+
             var entry = GetEntry(i);
 
             if (youngOnly && entry->Age == RegionAge.Old)
@@ -860,7 +1024,7 @@ internal unsafe class RegionAllocator : IDisposable
                         // The wholesale-recycle path: no per-object work (SPEC-M2 §7.1).
                         // Gated to Fresh in young mode: a Reopened region's LiveBytes only
                         // counts this cycle's marks, not its sticky-marked old survivors.
-                        RecycleBumpRegion(i);
+                        RecycleBumpRegion(i, deferredFrees);
                     }
                     else
                     {
@@ -871,13 +1035,13 @@ internal unsafe class RegionAllocator : IDisposable
 
                 case RegionKind.SizeClass:
                     lists.Live += entry->LiveBytes;
-                    SweepSizeClassRegion(i, ref lists);
+                    SweepSizeClassRegion(i, ref lists, deferredFrees);
                     break;
 
                 case RegionKind.SpanStart:
                     if (entry->LiveBytes == 0)
                     {
-                        RecycleSpan(i);
+                        RecycleSpan(i, deferredFrees);
                     }
                     else
                     {
@@ -931,7 +1095,7 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private void RecycleBumpRegion(int index)
+    private void RecycleBumpRegion(int index, List<int>? deferredFrees)
     {
         // Zero-at-carve (M4): the region returns to the pool with its dead contents in
         // place; the next carve zeroes the windows it hands out
@@ -940,7 +1104,7 @@ internal unsafe class RegionAllocator : IDisposable
             _activeBump = -1;
         }
 
-        MakeFree(index);
+        MakeFree(index, deferredFrees);
     }
 
     private void SweepBumpRegion(int index, ref SweepLists lists)
@@ -1027,7 +1191,7 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private void SweepSizeClassRegion(int index, ref SweepLists lists)
+    private void SweepSizeClassRegion(int index, ref SweepLists lists, List<int>? deferredFrees)
     {
         var entry = GetEntry(index);
         var regionBase = RegionBase(index);
@@ -1059,7 +1223,7 @@ internal unsafe class RegionAllocator : IDisposable
 
         if (entry->AllocatedBlocks == 0)
         {
-            MakeFree(index); // stale contents stay; the next carve flags it dirty
+            MakeFree(index, deferredFrees); // stale contents stay; the next carve flags it dirty
         }
         else if ((entry->AllocatedBlocks & fullMask) != fullMask)
         {
@@ -1071,7 +1235,7 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private void RecycleSpan(int index)
+    private void RecycleSpan(int index, List<int>? deferredFrees)
     {
         var entry = GetEntry(index);
         var count = entry->SpanCount;
@@ -1080,6 +1244,8 @@ internal unsafe class RegionAllocator : IDisposable
 
         // Big spans: decommit — the OS re-zeroes lazily. Small spans stay committed with
         // their dead contents; the next carve zeroes what it hands out (M4 zero-at-carve).
+        // Safe with the world running too: the span was dead at pause B, so no mutator
+        // holds a reference into it, and the entries stay unreachable until MakeFree.
         if (count >= 4 && _memory.Decommit(spanBase, spanBytes))
         {
             Interlocked.Add(ref _committedRegionBytes, -spanBytes); // parallel sweep workers race here
@@ -1092,12 +1258,20 @@ internal unsafe class RegionAllocator : IDisposable
 
         for (int i = 0; i < count; i++)
         {
-            MakeFree(index + i);
+            MakeFree(index + i, deferredFrees);
         }
     }
 
-    private void MakeFree(int index)
+    private void MakeFree(int index, List<int>? deferredFrees = null)
     {
+        if (deferredFrees is not null)
+        {
+            // Concurrent sweep (M6.5): carves pop the pool while the sweep runs, so
+            // the push happens later, under the publish (alloc) lock
+            deferredFrees.Add(index);
+            return;
+        }
+
         var entry = GetEntry(index);
         entry->Kind = RegionKind.Free;
         entry->LiveBytes = 0;
@@ -1106,9 +1280,9 @@ internal unsafe class RegionAllocator : IDisposable
         // there would make the span run scan treat the region as checked out forever
         entry->ZeroerCheckedOut = 0;
 
-        // Lock-free push: parallel sweep workers free regions concurrently. Allocation
-        // never runs during a sweep (STW) and the zeroer gate is held by the collecting
-        // thread, so pushes only race with each other.
+        // Lock-free push: parallel sweep workers free regions concurrently. STW sweeps
+        // run with allocation stopped and the zeroer gated, so pushes only race with
+        // each other; the concurrent sweep reaches here holding the alloc lock instead.
         var slot = Interlocked.Increment(ref _poolCount) - 1;
         _pool[slot] = index;
 

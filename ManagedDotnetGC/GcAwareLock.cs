@@ -43,7 +43,12 @@ internal class GcAwareLock
 
         while (!TryAcquire())
         {
-            Thread.Sleep((++iterations & 0x1F) == 0 ? 1 : 0);
+            // Yield-first backoff: Sleep(1) parks a full ~15.6 ms timer quantum,
+            // three orders of magnitude past any alloc-lock hold (the concurrent
+            // sweep's publish traffic measured exactly that stall). Reserve it for
+            // genuinely long waits — a GC.Collect queued on _gcLock behind an entire
+            // concurrent cycle — reached only after ~1 ms of yielding.
+            Thread.Sleep(++iterations >= 1024 && (iterations & 0x1F) == 0 ? 1 : 0);
         }
 
         if (wasCooperative)

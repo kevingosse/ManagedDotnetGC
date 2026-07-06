@@ -25,15 +25,21 @@ unsafe partial class GCHeap
     // for a future huge-heap/low-store profile where the trade could reverse.
     private bool _cardPreDrain;
 
-    // Pause-A snapshot of each region's shape: -1 = never scan (Free, SpanExtension,
-    // or carved after pause A), 0 = bump/size-class, k > 0 = span of k regions. The
-    // pre-drain trusts only this — the entry fields of regions carved *during* the
-    // window (pool recycles included) can be mid-publication when a worker reads them,
-    // and consuming a card without scanning its objects loses remark information, so
-    // window-born regions keep their cards for pause B. Kinds recorded here are stable
-    // through the window: regions only change kind at a sweep, and sweeps are STW.
-    private int[]? _preDrainPlan;
-    private int _preDrainPlanCount;
+    // STW snapshot of each region's shape: -1 = never touch (Free, SpanExtension, or
+    // carved after the snapshot), 0 = bump/size-class, k > 0 = span of k regions.
+    // Concurrent machinery trusts only this — the entry fields of regions carved
+    // *while the world runs* (pool recycles included) can be mid-publication when a
+    // worker reads them. Kinds recorded here are stable until the next sweep of that
+    // region. Two users, never overlapping in time: the card pre-drain builds it at
+    // pause A and reads it during the window; the concurrent sweep (M6.5) rebuilds it
+    // at pause B and reads it during the sweep.
+    private int[]? _regionPlan;
+    private int _regionPlanCount;
+
+    // M6.5: full-cycle sweep runs after RestartEE on the pool, publishing supply
+    // per chunk under the alloc lock. Staging knob: DOTNET_GCConcurrentSweep,
+    // default-off until the stage exits hold (suite/stress/bench/soak green).
+    private bool _concurrentSweep;
 
     private const int PreDrainMaxPasses = 4;
     private const int PreDrainRepeatThreshold = 64; // cards; ~128 KB of re-dirtied heap
@@ -88,7 +94,7 @@ unsafe partial class GCHeap
 
         if (_cardPreDrain)
         {
-            BuildPreDrainPlan();
+            BuildRegionPlan();
         }
 
         FixAllocContexts();
@@ -182,8 +188,43 @@ unsafe partial class GCHeap
 
         MarkTail(condemned, &scanContext);
 
-        Write("Full cycle: sweep");
-        SweepAndAccount(young: false);
+        // The window gate (M6.5): young collections stay blocked while a concurrent
+        // walk runs (this thread holds _gcLock) with allocation flowing through, so
+        // the overshoot is allocation-rate × walk time — and on smear-heavy heaps it
+        // ratchets permanently (regions with survivors never pool, never decommit;
+        // measured +1.1 GB at equilibrium on soh). Only heaps whose pool can float
+        // the window go concurrent; the rest run the unchanged in-pause sweep. The
+        // gate reads the pool alone: linked holes are about to be invalidated.
+        var sweepConcurrent = _concurrentSweep && _workerPool is not null
+            && _regionAllocator.PooledCommittedBytes >= Math.Max(Region.MinGCBudget, _budget / 4);
+
+        if (sweepConcurrent)
+        {
+            // Marks are final — the sweep only rebuilds allocation supply, so it can
+            // leave the pause. Accounting comes from the mark's LiveBytes (the same
+            // number the sweep would have summed), the supply lists reset under STW
+            // so nothing the concurrent walk rewrites is reachable to carves, and the
+            // plan pins the pause-B in-use set (pool pops during the sweep produce
+            // regions the walk must skip).
+            var live = _regionAllocator.SumLiveBytes();
+            _liveAtLastFull = live;
+            _promotedSinceFull = 0;
+            _lastLiveBytes = live;
+
+            _regionAllocator.ClearCards();
+            BuildRegionPlan();
+            _regionAllocator.BeginConcurrentSweep();
+
+            // O(1)-per-region recycling stays in the pause: the dead nursery is the
+            // next runway's supply, and deferring it to the walk measured +1.1 GB of
+            // fresh commits (mutators outrun the concurrent sweep's publications)
+            _regionAllocator.RecycleWholesaleDead(_regionPlan!, _regionPlanCount);
+        }
+        else
+        {
+            Write("Full cycle: sweep");
+            SweepAndAccount(young: false);
+        }
 
         var tSwept = GcStats.Timestamp();
 
@@ -194,14 +235,36 @@ unsafe partial class GCHeap
 
         NotifyGcDone(condemned);
 
-        _fullCycleInFlight = false;
+        if (!sweepConcurrent)
+        {
+            _fullCycleInFlight = false;
+            _regionAllocator.ExitGateForCollection();
+        }
 
         var tPauseBEnd = GcStats.Timestamp();
 
-        _regionAllocator.ExitGateForCollection();
+        // The concurrent sweep keeps the zeroer gate: the walk rewrites hole memory
+        // the zeroer would otherwise be memsetting (its stand-down poll covers the
+        // longer hold, exactly like the two pauses)
         _gcToClr.RestartEE(finishedGC: true);
 
         _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
+
+        if (sweepConcurrent)
+        {
+            Write("Full cycle: concurrent sweep");
+
+            var tSweep = GcStats.Timestamp();
+            _regionAllocator.SweepConcurrentFull(_regionPlan!, _regionPlanCount, _allocLock, _workerPool);
+            GcStats.CycleConcurrentSweepTicks = GcStats.Timestamp() - tSweep;
+
+            _regionAllocator.ExitGateForCollection();
+
+            // Budget-triggered collects kept returning immediately through the sweep
+            // (§6.3 — a young collection could not have run under _gcLock anyway, and
+            // the runway was already reset at pause B)
+            _fullCycleInFlight = false;
+        }
 
         TrimOutsidePause(young: false);
 
@@ -251,24 +314,24 @@ unsafe partial class GCHeap
     }
 
     /// <summary>
-    /// Records, under pause A's suspension, which regions the concurrent pre-drain may
-    /// touch (see <see cref="_preDrainPlan"/>). Everything the scan will trust — span
-    /// counts included — is captured here while it cannot move.
+    /// Records, under suspension, which regions concurrent machinery may touch (see
+    /// <see cref="_regionPlan"/>). Everything the reader will trust — span counts
+    /// included — is captured here while it cannot move.
     /// </summary>
-    private void BuildPreDrainPlan()
+    private void BuildRegionPlan()
     {
         var count = _regionAllocator.CarvedCount;
 
-        if (_preDrainPlan is null || _preDrainPlan.Length < count)
+        if (_regionPlan is null || _regionPlan.Length < count)
         {
-            _preDrainPlan = new int[Math.Max(count + (count >> 1), 256)];
+            _regionPlan = new int[Math.Max(count + (count >> 1), 256)];
         }
 
         for (int i = 0; i < count; i++)
         {
             var entry = _regionAllocator.GetEntry(i);
 
-            _preDrainPlan[i] = entry->Kind switch
+            _regionPlan[i] = entry->Kind switch
             {
                 RegionKind.Bump or RegionKind.SizeClass => 0,
                 RegionKind.SpanStart => entry->SpanCount,
@@ -276,7 +339,7 @@ unsafe partial class GCHeap
             };
         }
 
-        _preDrainPlanCount = count;
+        _regionPlanCount = count;
     }
 
     /// <summary>
@@ -302,12 +365,12 @@ unsafe partial class GCHeap
     {
         var cardBase = _regionAllocator.CardTableStorage;
 
-        if (cardBase == 0 || _preDrainPlan is null)
+        if (cardBase == 0 || _regionPlan is null)
         {
             return 0; // unit tests drive the heap without a card table
         }
 
-        var count = _preDrainPlanCount;
+        var count = _regionPlanCount;
         var consumed = 0;
         var cursor = 0;
         var workerId = -1;
@@ -334,7 +397,7 @@ unsafe partial class GCHeap
 
                 for (int i = start; i < end; i++)
                 {
-                    var plan = _preDrainPlan[i];
+                    var plan = _regionPlan[i];
 
                     if (plan == 0)
                     {
