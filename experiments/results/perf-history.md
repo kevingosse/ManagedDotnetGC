@@ -40,6 +40,45 @@ would flatter whichever collector wastes more.
 | M5 slice: parallel sweep (8 participants) | `266284a` | 2.89 (**1.30×**) | 3.21 (~1.44×†) | 3.00 (1.41×) |
 | stock WKS re-reference (2026-07-06 night) | — | 2.36 | 2.54 | 2.37 |
 | **M5 slice 2: parallel card scan** | `8e45e7f` | 2.29 (**0.97×**) | 2.56 (**1.01×**) | 2.28 (**0.96×**) |
+| stock WKS re-reference (2026-07-06, matrix sitting) | — | 2.41 | 2.61 | 2.46 |
+| **M5 slice 3: parallel full mark + trigger mute** | `344ce8b` | 1.83 (**0.76×**) | 2.17 (**0.83×**) | 1.82 (**0.74×**) |
+
+`pinheavy` matrix sitting: stock WKS 2.66, ours **1.87 (0.70×)**.
+
+## The M7 fairness matrix (2026-07-06, one sitting, commit `344ce8b`)
+
+Stock WKS was never the real opponent for a GC that uses 8 phase threads. The matrix adds
+the configurations that are: Server GC at its default heap count (32 = cores), Server GC
+with background collections (the production default), and — the strongest stock config on
+this workload — Server GC capped to 8 heaps, matching our thread count. Memory columns per
+the rule above. Cell = median wall s (avg WS GB / peak WS GB), 3 iterations:
+
+| Config | soh | lohmix | pin | pinheavy |
+|---|---|---|---|---|
+| stock WKS | 2.41 (0.8/1.1) | 2.61 (1.1/1.4) | 2.46 (0.8/1.1) | 2.66 (2.4/4.3) |
+| stock SVR (32 heaps) | 2.04 (0.9/1.2) | **1.77** (1.0/1.4) | 1.95 (0.9/1.2) | 1.99 (2.4/4.5) |
+| stock SVR+BGC | 1.86 (1.0/1.3) | 1.93 (1.0/1.4) | 1.69 (1.0/1.4) | 2.49 (2.5/4.4) |
+| stock SVR, 8 heaps | **1.40** (1.8/2.2) | 1.52 (1.7/2.1) | **1.36** (1.8/2.2) | 1.81 (2.6/4.3) |
+| ours (8 workers) | 1.83 (3.8/6.7) | 2.17 (3.8/6.9) | 1.82 (3.7/6.7) | 1.87 (4.2/8.5) |
+| ours (32 workers) | 1.63 (3.6/6.7) | 2.02 (3.6/6.9) | 1.66 (3.7/6.8) | **1.87** (4.4/8.5) |
+| ours, capped at SVR-h8's peak | 2.38 (1.8/2.0) | 3.01 (1.8/2.0) | 2.46 (1.8/2.0) | 1.97 (3.1/4.1) |
+
+Read honestly:
+
+- **vs WKS we now win everywhere** (0.70–0.83×); vs *default* SVR-32 we win 3 of 4 (soh
+  0.80×, pin 0.85×, pinheavy 0.94×) and lose lohmix (1.14×); vs SVR+BGC likewise 3 of 4.
+- **The tuned SVR-h8 row still beats us on every scenario** (we're 1.03–1.33× at our
+  default memory), and it does so on **half our memory**. At *enforced* memory parity
+  (hard limit = SVR-h8's peak) we're 1.1× on pinheavy but 1.7–2.0× elsewhere: our wall
+  wins are partly bought with the 8×-live trigger's headroom. The memory-throughput
+  exchange rate is the M7 fight.
+- SVR at 32 heaps is over-partitioned for a 4-thread allocator: capping it to 8 heaps is
+  *faster* (soh 2.04 → 1.40) at higher WS — per-heap budgets concentrate instead of
+  fragmenting. Any public comparison must include the tuned row, not just defaults.
+- BGC is not free for stock either: it *hurts* SVR on pinheavy (1.99 → 2.49).
+- Caveat for yesterday's pinning narrative: WKS's 4.1 GB permanent pinheavy fragmentation
+  does not carry to SVR, which holds 2.4–2.6 GB avg. The structural-win story vs SVR rests
+  on the capped/OOM behavior, not steady-state footprint — re-verify at M7.
 
 `pinheavy` night sitting: stock 2.78, ours **1.94 (0.70×)**. First beat-stock across the
 suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 13 ms.
@@ -101,6 +140,22 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   day (stock 2.00 → 2.36), so only same-sitting ratios are valid — and same-sitting
   says soh 0.97×, pin 0.96×, pinheavy 0.70×, lohmix 1.01×. Remaining pause pool: the
   serial full-GC mark (~66 ms at 500 MB live) — parallel root mark is the rest of M5.
+- **The fairness matrix found a full-GC storm.** GCStats on the matrix build: 0.98 s of a
+  2.2 s soh run was STW pause, and 14 of 41 collections were full — GCs 29–40 ran full
+  *back-to-back* (~550 ms) because committed (6.5 GB) could never get under 8× live
+  (0.5 GB) once survivors scattered: the committed trigger re-fired forever, by design.
+  Mutator time was already roughly competitive with SVR-h8; the whole gap was pause.
+- **M5 slice 3 (parallel full mark, `344ce8b`) + trigger mute (`183ee3a`): soh full count
+  14 → 3, total pause 0.98 → 0.55 s, wall 2.30 → 1.83 (0.76× WKS, 0.80× default SVR).**
+  Full marks buffer strong roots during root/handle enumeration and the worker pool traces
+  them together; because a couple of stack slots own the whole live graph, drains donate
+  the bottom half of any stack past 4096 entries into a native share queue and idle
+  workers take bites until every participant idles at once. The remaining full-mark floor
+  is the *serial* EE-side enumeration (`GcScanRoots` stack walks — the standalone API
+  offers no per-thread partitioning). Young pauses unchanged (p50 ~13 ms; cards+sweep).
+  Evidence: suite 56/56, unit 69/69, 3-min soak 5.58 M req 0 err @ 31 k req/s (WS stable
+  ~1.7 GB). Next levers, in expected-value order: the lohmix gap (only scenario lost to
+  default SVR), the memory exchange rate (capped rows 1.7–2.0×), young cards+sweep p50.
 
 ## How to add a step
 
