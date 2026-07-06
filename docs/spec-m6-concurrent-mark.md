@@ -183,6 +183,12 @@ Staging knob: `DOTNET_GCConcurrentCycles` (a private name — the EE reports sto
 before it earns that). Off = the current inline STW path. Once §7 stage-2 exit
 criteria hold, the gate flips to honoring stock `DOTNET_GCConcurrent`.
 
+**Flipped 2026-07-06** (stage 3, results/2026-07-06-m6-stage3-default-on.md): the
+collector honors stock `gcConcurrent` (default-on); `DOTNET_GCConcurrentCycles`
+survives as an explicit two-way override for A/B runs. Beware project files pinning
+`<ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>` — that opts the
+app out via runtimeconfig; removed from the in-repo samples.
+
 ### 6.2 OOM and forced collections
 
 `GC.Collect` and OOM-path forced fulls block preemptively on cycle completion if one
@@ -225,6 +231,10 @@ remark measures long on store-heavy workloads.
 3. **Tune + publish**: window/remark instrumentation (§10), card pre-drain if needed,
    rerun the fairness matrix (pause profile changed — then re-evaluate the frozen M7
    pause-tuning list per the 2026-07-06 course-check).
+   *Status 2026-07-06: instrumentation ✅ (pause_a/window/pause_b columns); histograms
+   on all four scenarios ✅ (pause A 0.8–4.1 ms everywhere, worst pause cut, young
+   pauses untouched); gate flipped to stock gcConcurrent ✅; card pre-drain not
+   needed at these remark costs (4–15 ms). See results/2026-07-06-m6-stage3-default-on.md.*
 
 ## 8. Verification items against a real EE (tracked, not assumed)
 
@@ -240,9 +250,17 @@ remark measures long on store-heavy workloads.
 
 ## 9. Deliberately deferred
 
+- **Remark-drain buffer-time mark skip**: pause B's re-buffered roots are ~97%
+  already marked; the drain pays queue traffic to discover that (measured 13.5 ms,
+  the largest pause-B slice after the trim fix). Checking the bitmap while buffering
+  the *remark* re-scan (not pause A's — its speed is the design goal) would shrink
+  the drain to the genuinely-new tail. Measured on the 2026-07-06 soak.
 - **Concurrent sweep** (pause B → remark only): sound once marks are final at pause
-  B; requires re-architecting sweep/allocator/zeroer interleaving. M6.5.
-- **Concurrent card pre-drain** (shrinks remark on store-heavy workloads).
+  B; requires re-architecting sweep/allocator/zeroer interleaving. M6.5. (Post-trim
+  numbers: sweep is 3.4 ms of pause B on the server soak, 15–22 ms on GCPerfSim's
+  denser heaps — the trim fix demoted this from "the pause-B floor".)
+- **Concurrent card pre-drain** (shrinks remark on store-heavy workloads; remark
+  cards measured ≤ 15 ms everywhere so far, so not currently needed).
 - **Young collections during the window** (needs bitmap generation separation; only
   worth it if windows measure long on huge heaps).
 - Ping-pong mark bitmaps (pause A's wholesale clear → O(1) swap + background clear)

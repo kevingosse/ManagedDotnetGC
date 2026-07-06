@@ -281,7 +281,24 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   Remaining for stage 3: per-phase pause/window columns in GCStats, knob-on soak
   (running at session close), fairness matrix rerun.
 
-## How to add a step
+- **M6 stage 3 — default-on, and pause B loses its 46 ms of decommit** (2026-07-06,
+  results/2026-07-06-m6-stage3-default-on.md). Histograms on all four scenarios:
+  pause A 0.8–4.1 ms everywhere, worst STW event cut on every scenario (pinheavy
+  74 → 44 ms), young pauses untouched → gate flipped to honor stock `gcConcurrent`
+  (default-on; `GCConcurrentCycles` stays as a two-way A/B override; beware csproj
+  `<ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>` pins — both
+  in-repo samples had them and silently opted out). Default-config ASP.NET soak
+  19.0 M req / 0 err / ~45 k rps, all 153 fulls concurrent — but its stats showed
+  pause B at 66 ms with <5 ms explained: new interior columns measured
+  **`TrimPool` free-region decommit at 46 ms, 70% of pause B**, and the same call
+  produced the 53 ms young-pause tail. Moved outside the pause (post-RestartEE on
+  the trigger thread, 8-region batches under the alloc lock): **pause B 66 → 19 ms,
+  young p99 17.7 → 10 ms / max 53 → 12.7 ms**, committed profile identical.
+  `m6s3-fairness` matrix (same-sitting, stock anchors ±4% of m7-fairness): custom
+  −9.5/−17.8/−12/flat % vs m7-fairness, **beats WKS on all four (0.74–0.86×)**,
+  even with default SVR on lohmix (1.01×), SVR-h8 gap narrowed to 1.17–1.50×
+  (was 1.14–1.71), cap2200 soh 3.44 → 2.66. Remaining pause-B mass: remark drain
+  ~13.5 ms (buffer-time mark skip is the measured next lever), sweep (M6.5).
 
 ```powershell
 # after any perf-relevant commit (GC dll = Release publish):
