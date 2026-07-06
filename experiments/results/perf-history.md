@@ -43,10 +43,18 @@ would flatter whichever collector wastes more.
 | stock WKS re-reference (2026-07-06, matrix sitting) | — | 2.41 | 2.61 | 2.46 |
 | **M5 slice 3: parallel full mark + trigger mute** | `344ce8b` | 1.83 (**0.76×**) | 2.17 (**0.83×**) | 1.82 (**0.74×**) |
 | **Span zero-at-carve (outside the alloc lock)** | `9251e10` | 1.81 (**0.75×**) | 1.99 (**0.76×**) | 1.76 (**0.71×**) |
+| stock WKS re-reference (2026-07-06 midday, zeroer sitting) | — | 2.19 | 2.32 | 2.13 |
+| **M7: block zero-at-carve + background zeroer (pool + holes)** | `df8920e` | 1.74 (**0.79×**) | 1.66 (**0.72×**) | 1.75 (**0.82×**) |
 
 `pinheavy` matrix sitting: stock WKS 2.66, ours **1.87 (0.70×)** at `344ce8b`,
 **1.79 (0.67×)** at `9251e10` (1.67 with 32 workers — **0.92× of stock SVR-h8**, the
-first win against the strongest stock config).
+first win against the strongest stock config). Zeroer sitting: stock WKS 2.34, ours
+**1.76 (0.75×)**.
+
+Zeroer sitting, same-sitting Server GC (fresh 3-iter medians): default SVR-32 —
+soh 1.72, lohmix 1.69, pin 1.68, pinheavy 1.72 → ours **1.01× / 0.98× / 1.04× / 1.02×**:
+**parity with default Server GC on every scenario**. SVR-h8 — 1.31 / 1.37 / 1.31 / 1.56 →
+ours 1.33× / 1.22× / 1.34× / 1.13×: the tuned 8-heap config is the remaining wall target.
 
 ## The M7 fairness matrix (2026-07-06, one sitting, commit `344ce8b`)
 
@@ -182,6 +190,35 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   ASP.NET soak went 31 k → **45.5 k req/s (+47%)**: Kestrel's LOH-band buffers live on
   this path. Remaining lohmix costs: the per-thread zeroing itself and the O(table) run
   scan for 2-region spans.
+
+- **Zeroing off the app threads (`df8920e`): parity with default Server GC on every
+  scenario.** Profiling the lohmix remainder: 14.5 GB/run of zero-at-carve memset cost the
+  app threads ~1.0 s (win_ms 1210 on a 1.6 s × 4-thread run), and a new window-source
+  stat showed **73% of windows carve from holes** — pool-level fixes can't reach them.
+  (Also learned: `-lohar` is per-mille, so lohmix's LOH band is ~1 GB, not 10 — the
+  planned multi-region run-scan fix is moot for this scenario; all its spans are
+  single-region.) Three moves: (1) the block tier joins zero-at-carve via a `DirtyBlocks`
+  bitmap — no more 2 MB memset inside the alloc lock when a recycled region enters the
+  block tier, no more dead-block zeroing in the sweep pause (STW zero_us now reads 0
+  structurally); (2) **a background zeroer thread** (BelowNormal, on the GC dll's own
+  runtime, EE-invisible) checks dirty regions out of the pool and — the part that
+  actually paid — pre-zeroes **hole bodies** region-by-region under a gate the collector
+  holds during suspensions, preserving each plug's 32-byte header+link prefix; hole
+  carves clean just that prefix inline and hand out windows with no zeroing debt. lohmix
+  windows 27% → 67% pre-zeroed, win_ms 1208 → 867. Purely opportunistic: a starved
+  zeroer degrades to inline zeroing. (3) **The soak found a deadlock** in the first
+  build (~1k requests): a contended `GcAwareLock` winner parks in `DisablePreemptiveGC`
+  *holding the lock* until the collection ends; the collector waited on the zeroer's
+  gate; the zeroer spun on the parked thread's lock — a GC → zeroer → parked-mutator
+  cycle. Fix: once `CollectorWaitingForGate` is set, the world is suspended and
+  allocator state is zeroer-exclusive (anyone winning the alloc lock afterwards parks
+  before touching it), so the zeroer's spin bails out to lock-free completion. Walls
+  (same sitting, all stock refs re-run): soh 1.74 / lohmix 1.66 / pin 1.75 / pinheavy
+  1.76 → **0.72–0.82× of WKS and 0.98–1.04× of default SVR-32** — the lohmix loss to
+  default SVR is erased. SVR-h8 still leads (1.13–1.34×). Memory unchanged (soh avg WS
+  ~3.7 GB vs SVR-32 ~1.0 / SVR-h8 ~1.6). Evidence: suite 56/56, unit 72/72, soak 7.95 M
+  req / 0 err / 44.2 k req/s / WS ~1.8 GB. GCStats: zero_us/zero_mb are cumulative
+  alloc-path totals now; hole_n/clean_n columns added.
 
 ## How to add a step
 
