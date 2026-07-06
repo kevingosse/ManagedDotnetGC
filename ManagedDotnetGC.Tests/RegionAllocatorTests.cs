@@ -138,11 +138,16 @@ public unsafe class RegionAllocatorTests
         ((nint)plug->RawMethodTable).ShouldBe((nint)_freeMT);
         plug->ComputeSize().ShouldBe((uint)(objects[19] - objects[1]));
 
-        // It is the only linked hole: the dead tail after objects[19] is far below one
-        // window, so it was plugged but not linked (M4 floor)
-        entry->FirstHole.ShouldBe(objects[1]);
-        entry->HoleBytes.ShouldBe((int)(objects[19] - objects[1]));
+        // Full sweeps link down to the 4 KB floor (M7 memory exchange rate), so the
+        // ~11 KB dead window tail after objects[19] is linked too; the sweep walks
+        // front to back inserting at the head, so the tail leads the list
+        var tailRef = objects[19] + size;
+        var tailExtent = entry->Cursor - (tailRef - IntPtr.Size);
+
+        entry->FirstHole.ShouldBe(tailRef);
+        (*(nint*)(tailRef + 2 * IntPtr.Size)).ShouldBe(objects[1]);
         (*(nint*)(objects[1] + 2 * IntPtr.Size)).ShouldBe(0);
+        entry->HoleBytes.ShouldBe((int)(objects[19] - objects[1] + tailExtent));
 
         // Live objects and the region survive
         entry->Kind.ShouldBe(RegionKind.Bump);
@@ -172,26 +177,27 @@ public unsafe class RegionAllocatorTests
         MarkLive(objects[19]);
         _allocator.Sweep();
 
-        // Hole-first policy: windows carve through the big hole front to back, each handing
-        // out zeroed memory (zero-at-carve), until the remainder drops below one window and
-        // the region unlinks
-        var extent = objects[19] - objects[1];
-        var next = objects[1] - IntPtr.Size;
+        // Hole-first policy: windows carve the hole list front to back, each handing out
+        // zeroed memory (zero-at-carve). Under the M7 full-sweep floor every re-plugged
+        // remainder ≥ 4 KB stays linked, so the carves consume the holes completely
+        // before touching fresh memory.
+        var totalHoleBytes = (nint)entry->HoleBytes;
         nint consumed = 0;
 
         while (entry->FirstHole != 0)
         {
+            var expected = entry->FirstHole - IntPtr.Size;
+
             TryGetZeroedWindow(1000, out var window, out var length).ShouldBeTrue();
-            window.ShouldBe(next);
+            window.ShouldBe(expected);
             AssertZero(window, length);
 
-            next += length;
             consumed += length;
-            (consumed <= extent).ShouldBeTrue();
+            (consumed <= totalHoleBytes).ShouldBeTrue();
         }
 
-        // The unlinked leftover is smaller than a window — floating until a full sweep
-        (extent - consumed < Region.MinLinkedHole).ShouldBeTrue();
+        // Any unlinked leftover is below the full floor — floating until a full sweep
+        (totalHoleBytes - consumed < Region.FullMinLinkedHole).ShouldBeTrue();
 
         // Exhausted: the next window comes from the cursor
         TryGetZeroedWindow(1000, out var fromCursor, out _).ShouldBeTrue();
@@ -562,8 +568,12 @@ public unsafe class RegionAllocatorTests
         // next full collection
         _allocator.Sweep(youngOnly: true);
 
+        _allocator.TryGetIndex(objects[0], out var index).ShouldBeTrue();
+        var firstHole = _allocator.GetEntry(index)->FirstHole;
+        firstHole.ShouldNotBe(0);
+
         TryGetZeroedWindow(1000, out var window, out _).ShouldBeTrue();
-        window.ShouldBe(objects[1] - IntPtr.Size); // carved from the hole, not the cursor
+        window.ShouldBe(firstHole - IntPtr.Size); // carved from the hole, not the cursor
     }
 
     [Test]
@@ -685,15 +695,19 @@ public unsafe class RegionAllocatorTests
 
         MarkLive(objects[0]);
         MarkLive(objects[19]);
-        _allocator.Sweep(); // one big linked hole between the two survivors
+        _allocator.Sweep(); // linked holes: the window tail (list head, M7 full floor)
+                            // and the big one between the two survivors
+
+        var firstHole = _allocator.GetEntry(index)->FirstHole;
 
         _allocator.TryCheckOutDirtyHoleRegion(out var holeRegion).ShouldBeTrue();
         holeRegion.ShouldBe(index);
 
         // While checked out, hole carves cannot reach the region — the next window comes
-        // from the bump cursor, not the hole (window carves of the virgin tail stay legal)
+        // from the bump cursor, not a hole (window carves of the virgin tail stay legal)
+        var cursor = _allocator.GetEntry(index)->Cursor;
         TryGetZeroedWindow(1000, out var fromCursor, out var cursorLength).ShouldBeTrue();
-        fromCursor.ShouldNotBe(objects[1] - IntPtr.Size);
+        fromCursor.ShouldBe(cursor);
 
         // Plug it (context protocol) so the region stays walkable for the checks below
         _ctxPtr = fromCursor + IntPtr.Size;
@@ -706,7 +720,7 @@ public unsafe class RegionAllocatorTests
         // Back in the list and flagged: hole carves arrive with no zeroing debt — the
         // 32-byte plug prefix was cleaned inline — and the survivors are untouched
         _allocator.TryGetWindow(1000, out var window, out var length, out var needsZero).ShouldBeTrue();
-        window.ShouldBe(objects[1] - IntPtr.Size);
+        window.ShouldBe(firstHole - IntPtr.Size);
         needsZero.ShouldBeFalse();
         AssertZero(window, length);
 

@@ -344,7 +344,12 @@ unsafe partial class GCHeap
                         continue;
                     }
 
-                    spin.SpinOnce();
+                    // Never Sleep(1): its ~15.6 ms timer quantum became the entire cost
+                    // of the remark drain (drain2 measured 15 ms marking ONE object) and
+                    // one quantum per pre-drain pass — any worker idle for >~50 µs slept
+                    // through the join. Yield/Sleep(0) still hand the core to runnable
+                    // mutators during a concurrent window.
+                    spin.SpinOnce(sleep1Threshold: -1);
                 }
             }
         });

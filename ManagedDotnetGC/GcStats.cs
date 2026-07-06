@@ -59,6 +59,12 @@ internal static class GcStats
     public static long CycleRescanTicks;   // BufferStrongRoots #2: root re-scan + handles + f-reachable
     public static long CycleDrain2Ticks;   // remark ParallelDrainMark over the re-buffered roots
 
+    // --- Concurrent card pre-drain (SPEC-M6 §9): world-running time inside the window,
+    // spent so the pause-B rescan/drain2/cards slices shrink ---
+    public static long CyclePreDrainTicks;
+    public static long CyclePreDrainCards;
+    public static long CyclePreDrainPasses;
+
     // Post-restart free-region decommit (TrimOutsidePause), every collection kind. That
     // soak's verdict: trim was 46 of pause B's 66 ms — so it left the pause entirely;
     // this column is world-running time on the triggering thread, not pause time.
@@ -80,7 +86,7 @@ internal static class GcStats
         try
         {
             _writer = new StreamWriter(path, append: false) { AutoFlush = true };
-            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n,hole_n,clean_n,pause_a_us,window_us,pause_b_us,window_marked_n,bsusp_us,rescan_us,drain2_us,trim_us,pool_mb,bfresh_n,breo_n,bold_n,holes_mb,tail_mb,cls_n,clsfree_mb,spanreg_n,budget_mb,reason");
+            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n,hole_n,clean_n,pause_a_us,window_us,pause_b_us,window_marked_n,bsusp_us,rescan_us,drain2_us,predrain_us,predrain_cards,predrain_passes,trim_us,pool_mb,bfresh_n,breo_n,bold_n,holes_mb,tail_mb,cls_n,clsfree_mb,spanreg_n,budget_mb,reason");
             Enabled = true;
         }
         catch
@@ -112,6 +118,9 @@ internal static class GcStats
         CycleSuspendBTicks = 0;
         CycleRescanTicks = 0;
         CycleDrain2Ticks = 0;
+        CyclePreDrainTicks = 0;
+        CyclePreDrainCards = 0;
+        CyclePreDrainPasses = 0;
         TrimTicks = 0;
     }
 
@@ -129,7 +138,7 @@ internal static class GcStats
         }
 
         var row = string.Create(CultureInfo.InvariantCulture,
-            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)},{ToUs(CyclePauseATicks):F0},{ToUs(CycleWindowTicks):F0},{ToUs(CyclePauseBTicks):F0},{CycleWindowMarked},{ToUs(CycleSuspendBTicks):F0},{ToUs(CycleRescanTicks):F0},{ToUs(CycleDrain2Ticks):F0},{ToUs(TrimTicks):F0},{census.PooledCommittedBytes / 1048576.0:F1},{census.BumpFresh},{census.BumpReopened},{census.BumpOld},{census.LinkedHoleBytes / 1048576.0:F1},{census.BumpTailBytes / 1048576.0:F1},{census.ClassRegions},{census.ClassFreeBytes / 1048576.0:F1},{census.SpanRegions},{budget / 1048576.0:F1},{FullReason}");
+            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)},{ToUs(CyclePauseATicks):F0},{ToUs(CycleWindowTicks):F0},{ToUs(CyclePauseBTicks):F0},{CycleWindowMarked},{ToUs(CycleSuspendBTicks):F0},{ToUs(CycleRescanTicks):F0},{ToUs(CycleDrain2Ticks):F0},{ToUs(CyclePreDrainTicks):F0},{CyclePreDrainCards},{CyclePreDrainPasses},{ToUs(TrimTicks):F0},{census.PooledCommittedBytes / 1048576.0:F1},{census.BumpFresh},{census.BumpReopened},{census.BumpOld},{census.LinkedHoleBytes / 1048576.0:F1},{census.BumpTailBytes / 1048576.0:F1},{census.ClassRegions},{census.ClassFreeBytes / 1048576.0:F1},{census.SpanRegions},{budget / 1048576.0:F1},{FullReason}");
 
         _writer.WriteLine(row);
     }

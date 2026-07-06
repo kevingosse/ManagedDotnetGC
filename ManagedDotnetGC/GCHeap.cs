@@ -185,6 +185,18 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
+        // Concurrent card pre-drain (SPEC-M6 §9): default-off — measured a net loss once
+        // the drain-termination quantum was fixed (see GCHeap.Concurrent.cs); the knob
+        // stays for A/B runs
+        fixed (byte* privateKey = "GCCardPreDrain"u8)
+        fixed (byte* publicKey = "System.GC.CardPreDrain"u8)
+        {
+            if (_gcToClr.GetBooleanConfigValue(privateKey, publicKey, out var preDrain))
+            {
+                _cardPreDrain = preDrain;
+            }
+        }
+
         if (participants > 1)
         {
             _workerPool = new GcWorkerPool(participants - 1);
