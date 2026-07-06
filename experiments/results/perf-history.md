@@ -42,8 +42,11 @@ would flatter whichever collector wastes more.
 | **M5 slice 2: parallel card scan** | `8e45e7f` | 2.29 (**0.97×**) | 2.56 (**1.01×**) | 2.28 (**0.96×**) |
 | stock WKS re-reference (2026-07-06, matrix sitting) | — | 2.41 | 2.61 | 2.46 |
 | **M5 slice 3: parallel full mark + trigger mute** | `344ce8b` | 1.83 (**0.76×**) | 2.17 (**0.83×**) | 1.82 (**0.74×**) |
+| **Span zero-at-carve (outside the alloc lock)** | `9251e10` | 1.81 (**0.75×**) | 1.99 (**0.76×**) | 1.76 (**0.71×**) |
 
-`pinheavy` matrix sitting: stock WKS 2.66, ours **1.87 (0.70×)**.
+`pinheavy` matrix sitting: stock WKS 2.66, ours **1.87 (0.70×)** at `344ce8b`,
+**1.79 (0.67×)** at `9251e10` (1.67 with 32 workers — **0.92× of stock SVR-h8**, the
+first win against the strongest stock config).
 
 ## The M7 fairness matrix (2026-07-06, one sitting, commit `344ce8b`)
 
@@ -156,6 +159,17 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   Evidence: suite 56/56, unit 69/69, 3-min soak 5.58 M req 0 err @ 31 k req/s (WS stable
   ~1.7 GB). Next levers, in expected-value order: the lohmix gap (only scenario lost to
   default SVR), the memory exchange rate (capped rows 1.7–2.0×), young cards+sweep p50.
+- **Span zero-at-carve (`9251e10`): the lohmix loss was the alloc lock, not the GC.**
+  The lohmix profile showed *less* pause than soh — the gap was mutator time: every span
+  carve memset whole recycled regions *inside* the global allocation lock (~10 GB of it
+  on lohmix) while bump windows had zeroed outside the lock since M4. Spans now flag
+  stale members (`SpanIsDirty`) and the allocating thread zeroes only the object extent
+  after release; ≤ 2 MB spans pop the pool LIFO instead of scanning the table for a run.
+  lohmix 2.17 → 1.99 (1.05× of default SVR-32, from 1.22×); pinheavy at 32 workers 1.67 —
+  **0.92× of SVR-h8, the first scenario won against the strongest stock config**. The
+  ASP.NET soak went 31 k → **45.5 k req/s (+47%)**: Kestrel's LOH-band buffers live on
+  this path. Remaining lohmix costs: the per-thread zeroing itself and the O(table) run
+  scan for 2-region spans.
 
 ## How to add a step
 
