@@ -247,6 +247,14 @@ remark measures long on store-heavy workloads.
   worth it if windows measure long on huge heaps).
 - Ping-pong mark bitmaps (pause A's wholesale clear → O(1) swap + background clear)
   if the in-pause memset ever shows up at scale.
+- **COW-SATB on Linux**: the kernel-write wall (§2) is Windows-specific. Linux's
+  `userfaultfd` write-protect mode makes kernel-originated writes to monitored pages
+  block and resolve through the fault handler instead of failing the syscall, so the
+  2026-07-05 snapshot design is soundly implementable there. Only relevant if the
+  "Linux is a bonus" clause ever activates *and* remark tails prove real; recorded so
+  the door stays marked. PSS also survives on Windows as diagnostics — an occasional
+  offline shadow-mark verification pass against a PSS clone is a cheap way to audit
+  the concurrent marker in debug builds.
 
 ## 10. Instrumentation
 
