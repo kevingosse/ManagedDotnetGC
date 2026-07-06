@@ -37,3 +37,32 @@ today's `m65s2-final` rows (current HEAD build). Stock reference rows reuse toda
 ## Footnotes
 
 - M2 baseline predates the `pinheavy` scenario's existence in the archive's protocol (added 2026-07-06), but today's backfill ran it anyway against the old GC build using the current `bench-gcperfsim.ps1`/GCPerfSim — it completed normally, so no scenario is actually missing in the final chart.
+
+## Peak working set (GB)
+
+Same rows/SHAs as the wall-time table above (see SHA notes for the M6/M7 label corrections). Values are the median `peak_ws_mb` per scenario (3 iterations each), geomean of the 4 scenario medians, converted to GB (`/1024`).
+
+**This series is NOT monotonic like the wall-time chart.** M2 (first working allocator) has the *lowest* peak working set of all six points — lower than the current build. Working set then more than quadruples across M4/M5/M6 (generational through concurrent marking, ~6.9-7.0 GB) before M7 ("memory diet + tuning") cuts it back down by ~2.8x. See the full callout below.
+
+| Milestone | soh | lohmix | pin | pinheavy | geomean (GB) |
+|---|---|---|---|---|---|
+| M2 baseline | 1.336 | 1.357 | 1.344 | 2.413 | **1.557** |
+| M4 sticky gens | 6.410 | 6.626 | 6.372 | 8.314 | **6.887** |
+| M5 parallel | 6.521 | 6.683 | 6.563 | 8.255 | **6.971** |
+| M6 concurrent | 6.690 | 6.483 | 6.590 | 8.230 | **6.964** |
+| M7 tuning | 2.336 | 2.077 | 2.113 | 3.866 | **2.509** |
+| M6.5 sweep-assist | 2.064 | 2.121 | 2.067 | 3.877 | **2.434** |
+
+| Stock config | soh | lohmix | pin | pinheavy | geomean (GB) |
+|---|---|---|---|---|---|
+| stock WKS | 1.040 | 1.351 | 1.036 | 4.271 | **1.579** |
+| stock Server GC (32 heaps) | 1.153 | 1.223 | 1.171 | 4.331 | **1.635** |
+| stock Server GC (8 heaps) | 2.128 | 2.021 | 2.125 | 4.219 | **2.492** |
+
+### What's surprising here
+
+- **M2's footprint is not high — it's the lowest of the whole series (1.56 GB), and close to stock Workstation GC's 1.58 GB.** The "first working allocator" milestone apparently ran tight (likely simple/non-generational, more frequent full collections, no reserved generational structure), so despite being by far the *slowest* build (7.67s wall time), it was not memory-hungry.
+- **Going generational (M4) roughly 4.4x's the footprint** (1.56 GB -> 6.89 GB) and it stays there through M5 (parallel) and M6 (concurrent marking) — all three cluster at 6.9-7.0 GB, well above every other point in the chart including the stock GCs.
+- **M7 ("memory diet + tuning") is the milestone that actually earns its name**: it cuts peak working set by ~2.8x in one step (6.96 GB -> 2.51 GB), the single largest change of any kind (wall-time or memory) in either chart.
+- **M6.5 (current build) at 2.43 GB is barely below M7**, and lands almost exactly on top of stock Server GC with 8 heaps (2.49 GB) — the dashed reference line for that config passes right through the last two data points. We've matched the memory profile of an 8-heap Server GC, but we're still ~1.5x above stock Workstation GC (1.58 GB) and stock Server GC with 32 heaps (1.64 GB), even though we already beat both of those configs on wall time.
+- Net effect: the wall-time chart tells a clean "monotonically improving" story; the memory chart tells a "cost of going generational, later partially repaid" story — generational/concurrent collection bought the wall-time win at a real, multi-GB memory cost that only the M7 diet pass clawed back (not all the way to M2's floor, and not down to stock WKS/Server-32h levels).
