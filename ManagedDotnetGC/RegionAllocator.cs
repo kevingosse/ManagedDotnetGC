@@ -136,7 +136,7 @@ internal unsafe class RegionAllocator : IDisposable
 
             if (length > 0)
             {
-                new Span<byte>((void*)_cardTableStorage, (int)length).Clear();
+                Zeroing.Clear(_cardTableStorage, length);
             }
         }
     }
@@ -1171,16 +1171,9 @@ internal unsafe class RegionAllocator : IDisposable
     /// </summary>
     public void ClearMarks()
     {
-        var remaining = (nint)_frontier << 15;
-        var cursor = (nint)_markBitmap;
-
-        while (remaining > 0)
-        {
-            var chunk = (int)Math.Min(remaining, int.MaxValue & ~7);
-            new Span<byte>((void*)cursor, chunk).Clear();
-            cursor += chunk;
-            remaining -= chunk;
-        }
+        // NT stores (M7): the bitmap is bigger than any cache level on the heaps where
+        // this matters, and marking rewrites it scattered either way
+        Zeroing.Clear((nint)_markBitmap, (nint)_frontier << 15);
     }
 
     /// <summary>Clears one region's 32 KB bitmap slice at carve: sticky marks from the
@@ -1188,7 +1181,9 @@ internal unsafe class RegionAllocator : IDisposable
     /// cleared wholesale by full collections).</summary>
     private void ClearRegionMarks(int index)
     {
-        new Span<byte>((byte*)_markBitmap + ((nint)index << 15), 1 << 15).Clear();
+        // Runs under the allocation lock (pool carves): the NT path keeps the 32 KB
+        // slice from evicting the carve's hot metadata on its way through
+        Zeroing.Clear((nint)_markBitmap + ((nint)index << 15), 1 << 15);
     }
 
     /// <summary>
@@ -1691,20 +1686,13 @@ internal unsafe class RegionAllocator : IDisposable
     private static void ZeroMemory(nint start, nint length)
     {
         var tStart = GcStats.Timestamp();
-        var total = length;
 
-        while (length > 0)
-        {
-            var chunk = (int)Math.Min(length, int.MaxValue & ~7);
-            new Span<byte>((void*)start, chunk).Clear();
-            start += chunk;
-            length -= chunk;
-        }
+        Zeroing.Clear(start, length);
 
         if (GcStats.Enabled)
         {
-            // Callers include parallel sweep workers and post-lock window zeroing
-            Interlocked.Add(ref GcStats.ZeroBytes, total);
+            // Callers include the background zeroer and post-lock window zeroing
+            Interlocked.Add(ref GcStats.ZeroBytes, length);
             Interlocked.Add(ref GcStats.ZeroTicks, GcStats.Timestamp() - tStart);
         }
     }

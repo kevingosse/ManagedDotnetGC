@@ -22,6 +22,13 @@ internal static class GcStats
     public static long BlockCount;
     public static long SpanCount;
 
+    // --- win_ms interior (M7 census): lock WAIT vs carve WORK under the lock vs inline
+    // zero-at-carve. wait+carve+zero < win; the remainder is FixAllocContext + timestamps.
+    // This split decides which big rock is next: NT zeroing or supply sharding. ---
+    public static long WindowWaitTicks;
+    public static long WindowCarveTicks;
+    public static long WindowZeroTicks;
+
     // --- Window-source split (M7, written under the alloc lock): hole carves always zero
     // inline; clean windows arrived pre-zeroed (fresh commit or the background zeroer) ---
     public static long HoleWindowCount;
@@ -90,7 +97,7 @@ internal static class GcStats
         try
         {
             _writer = new StreamWriter(path, append: false) { AutoFlush = true };
-            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,blk_n,span_n,hole_n,clean_n,pause_a_us,window_us,pause_b_us,window_marked_n,bsusp_us,rescan_us,drain2_us,predrain_us,predrain_cards,predrain_passes,csweep_us,trim_us,pool_mb,bfresh_n,breo_n,bold_n,holes_mb,tail_mb,cls_n,clsfree_mb,spanreg_n,budget_mb,reason");
+            _writer.WriteLine("gc,kind,pause_us,suspend_us,fixctx_us,roots_us,freach_us,handles_us,dep_us,after_us,weak_us,cards_us,card_regions,sweep_us,zero_us,zero_mb,marked_n,marked_mb,live_mb,committed_mb,win_n,win_ms,wait_ms,carve_ms,wzero_ms,blk_n,span_n,hole_n,clean_n,pause_a_us,window_us,pause_b_us,window_marked_n,bsusp_us,rescan_us,drain2_us,predrain_us,predrain_cards,predrain_passes,csweep_us,trim_us,pool_mb,bfresh_n,breo_n,bold_n,holes_mb,tail_mb,cls_n,clsfree_mb,spanreg_n,budget_mb,reason");
             Enabled = true;
         }
         catch
@@ -143,7 +150,7 @@ internal static class GcStats
         }
 
         var row = string.Create(CultureInfo.InvariantCulture,
-            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)},{ToUs(CyclePauseATicks):F0},{ToUs(CycleWindowTicks):F0},{ToUs(CyclePauseBTicks):F0},{CycleWindowMarked},{ToUs(CycleSuspendBTicks):F0},{ToUs(CycleRescanTicks):F0},{ToUs(CycleDrain2Ticks):F0},{ToUs(CyclePreDrainTicks):F0},{CyclePreDrainCards},{CyclePreDrainPasses},{ToUs(CycleConcurrentSweepTicks):F0},{ToUs(TrimTicks):F0},{census.PooledCommittedBytes / 1048576.0:F1},{census.BumpFresh},{census.BumpReopened},{census.BumpOld},{census.LinkedHoleBytes / 1048576.0:F1},{census.BumpTailBytes / 1048576.0:F1},{census.ClassRegions},{census.ClassFreeBytes / 1048576.0:F1},{census.SpanRegions},{budget / 1048576.0:F1},{FullReason}");
+            $"{gcNumber},{kind},{ToUs(end - start):F0},{ToUs(afterSuspend - start):F0},{ToUs(afterFix - afterSuspend):F0},{ToUs(RootsTicks):F0},{ToUs(FReachableTicks):F0},{ToUs(HandleTicks):F0},{ToUs(DependentTicks):F0},{ToUs(AfterScanTicks):F0},{ToUs(WeakTicks):F0},{ToUs(CardScanTicks):F0},{CardRegionsScanned},{ToUs(afterSweep - afterMark):F0},{ToUs(zeroTicks):F0},{zeroBytes / 1048576.0:F1},{MarkedCount},{MarkedBytes / 1048576.0:F1},{liveBytes / 1048576.0:F1},{committedBytes / 1048576.0:F1},{Volatile.Read(ref WindowCount)},{ToUs(Volatile.Read(ref WindowTicks)) / 1000.0:F1},{ToUs(Volatile.Read(ref WindowWaitTicks)) / 1000.0:F1},{ToUs(Volatile.Read(ref WindowCarveTicks)) / 1000.0:F1},{ToUs(Volatile.Read(ref WindowZeroTicks)) / 1000.0:F1},{Volatile.Read(ref BlockCount)},{Volatile.Read(ref SpanCount)},{Volatile.Read(ref HoleWindowCount)},{Volatile.Read(ref CleanWindowCount)},{ToUs(CyclePauseATicks):F0},{ToUs(CycleWindowTicks):F0},{ToUs(CyclePauseBTicks):F0},{CycleWindowMarked},{ToUs(CycleSuspendBTicks):F0},{ToUs(CycleRescanTicks):F0},{ToUs(CycleDrain2Ticks):F0},{ToUs(CyclePreDrainTicks):F0},{CyclePreDrainCards},{CyclePreDrainPasses},{ToUs(CycleConcurrentSweepTicks):F0},{ToUs(TrimTicks):F0},{census.PooledCommittedBytes / 1048576.0:F1},{census.BumpFresh},{census.BumpReopened},{census.BumpOld},{census.LinkedHoleBytes / 1048576.0:F1},{census.BumpTailBytes / 1048576.0:F1},{census.ClassRegions},{census.ClassFreeBytes / 1048576.0:F1},{census.SpanRegions},{budget / 1048576.0:F1},{FullReason}");
 
         _writer.WriteLine(row);
     }

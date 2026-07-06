@@ -6,6 +6,10 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
+    <!-- NativeAOT resolves ISA IsSupported checks at compile time: the default
+         x86-64-v2 baseline has no AVX, which silently dead-codes the NT-store zeroing
+         (M7). v3 (Haswell 2013+) bakes in AVX2/BMI as the lab's floor. -->
+    <IlcInstructionSet>x86-64-v3</IlcInstructionSet>
   </PropertyGroup>
   
   <ItemGroup>

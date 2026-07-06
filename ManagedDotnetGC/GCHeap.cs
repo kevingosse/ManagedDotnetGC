@@ -197,6 +197,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
+        // Non-temporal-store zeroing (M7 census): default-on; =0 restores Span.Clear
+        // everywhere for A/B runs and bisects
+        fixed (byte* privateKey = "GCNtZero"u8)
+        fixed (byte* publicKey = "System.GC.NtZero"u8)
+        {
+            if (_gcToClr.GetBooleanConfigValue(privateKey, publicKey, out var ntZero))
+            {
+                Zeroing.Enabled = ntZero;
+            }
+        }
+
         // Concurrent full-cycle sweep (M6.5): default-on since stage 2 (mutator
         // sweep-assist); =0 forces the in-pause sweep for A/B runs
         fixed (byte* privateKey = "GCConcurrentSweep"u8)
@@ -548,7 +559,9 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         nint window, length;
         bool needsZero;
 
+        var tBeforeLock = GcStats.Timestamp();
         _allocLock.Acquire();
+        var tLocked = GcStats.Timestamp();
 
         try
         {
@@ -571,6 +584,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             _allocLock.Release();
         }
 
+        var tCarved = GcStats.Timestamp();
+
         if (needsZero)
         {
             // Zero-at-carve (M4), outside the lock: the window is private to this thread,
@@ -582,8 +597,12 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         if (GcStats.Enabled)
         {
             // The full handout cost an app thread feels: plugging, lock wait, carving, zeroing
+            var tEnd = GcStats.Timestamp();
             Interlocked.Increment(ref GcStats.WindowCount);
-            Interlocked.Add(ref GcStats.WindowTicks, GcStats.Timestamp() - tStart);
+            Interlocked.Add(ref GcStats.WindowTicks, tEnd - tStart);
+            Interlocked.Add(ref GcStats.WindowWaitTicks, tLocked - tBeforeLock);
+            Interlocked.Add(ref GcStats.WindowCarveTicks, tCarved - tLocked);
+            Interlocked.Add(ref GcStats.WindowZeroTicks, tEnd - tCarved);
         }
 
         return (GCObject*)(window + IntPtr.Size);
