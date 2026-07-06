@@ -12,6 +12,8 @@ median wall clock measured outside the process; workstation, non-concurrent, win
 - `soh` — pure small-object churn: `-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -tk time`
 - `lohmix` — soh + LOH-band: `+ -lohar 50 -lohsr 100000-2000000 -lohsi 50`
 - `pin` — soh + pinning: `+ -sohpi 100`
+- `pinheavy` (added 2026-07-06) — rotating long-lived pinned survivors, 1 GB live:
+  `-tc 4 -tagb 20 -tlgb 1 -sohsi 50 -sohsr 100-4000 -sohpi 10`
 
 Machine: AMD Ryzen 9 7950X3D (16C/32T), 96 GB RAM, Windows 11. Re-benchmark the stock
 reference in the same sitting as any new step — absolute numbers drift with machine state;
@@ -27,6 +29,11 @@ ratios are the archive's currency.
 | M1 complete (EE brackets, card/bundle tables, collectible mark edge, ref-counted scan) | `3c25f87` | 9.01 (3.20×) | 8.42 (2.77×) | 8.97 (2.72×) |
 | stock WKS reference (2026-07-06) | — | 2.00 | 2.23 | 1.98 |
 | M4 sticky generations (young GCs via cards, Reopened regions, 64 KB hole floor, zero-at-carve) | `5db0ed9` | 5.04 (2.52×) | 4.96 (2.23×) | 5.01 (2.53×) |
+
+`pinheavy` (same sitting): stock 2.92 s / **4.53 GB peak WS, 4.32 GB final heap**; M4
+4.92 s (1.69×) / 8.5 GB peak, **1.39 GB final**. Wall vs memory: see
+[2026-07-06-pinning-structural-win.md](2026-07-06-pinning-structural-win.md) — with a
+4 GB hard cap and 50% pinned survivors, stock OOMs and we complete.
 
 ## Step notes
 

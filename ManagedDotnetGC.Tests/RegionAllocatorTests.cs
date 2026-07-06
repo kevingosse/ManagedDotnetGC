@@ -662,6 +662,45 @@ public unsafe class RegionAllocatorTests
         WalkBumpRegion(oldIndex);
     }
 
+    [Test]
+    public void Sweep_UnderMemoryPressure_LinksSubWindowHoles()
+    {
+        // An alternating live/dead pattern that links nothing at the normal 64 KB floor —
+        // but within an eighth of the hard limit, every ≥ 4 KB extent must be carveable
+        // or a capped heap OOMs on fragmentation it actually owns (M4 adaptive floor)
+        var size = (nint)4096;
+        var objects = new List<nint>();
+
+        for (int i = 0; i < 32; i++)
+        {
+            objects.Add(AllocObject(size));
+        }
+
+        FixContext();
+
+        _allocator.TryGetIndex(objects[0], out var index).ShouldBeTrue();
+        var entry = _allocator.GetEntry(index);
+
+        for (int i = 0; i < objects.Count; i += 2)
+        {
+            MarkLive(objects[i]);
+        }
+
+        // One committed region, hard limit = one region: committed sits at the limit
+        _allocator.SetHardLimit(_allocator.CommittedRegionBytes);
+        _allocator.UnderMemoryPressure.ShouldBeTrue();
+
+        _allocator.Sweep();
+
+        // The 2 KB inter-survivor extents are linked now (they never are at the 64 KB floor)
+        entry->FirstHole.ShouldNotBe(0);
+        (*(nint*)(entry->FirstHole + 2 * IntPtr.Size)).ShouldNotBe(0); // more than one hole
+
+        // And they are genuinely carveable
+        TryGetZeroedWindow(1000, out var window, out _).ShouldBeTrue();
+        (window < entry->Cursor).ShouldBeTrue(); // from a hole, not the cursor
+    }
+
     // ----- harness -----
 
     /// <summary>Mirrors the EE bump + GCHeap.AllocFromWindow protocol (§3, §4.1).</summary>

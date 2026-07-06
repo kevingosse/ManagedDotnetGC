@@ -53,3 +53,9 @@ utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb
 2026-07-06T06:51:35,5db0ed9,m4-sticky-gens,pin,custom,1,4.976,4.8590805,6493.8,38/38/38,386.4
 2026-07-06T06:51:40,5db0ed9,m4-sticky-gens,pin,custom,2,5.02,4.923732,6549.2,40/40/40,130.1
 2026-07-06T06:51:45,5db0ed9,m4-sticky-gens,pin,custom,3,5.008,4.9159251,6550.9,41/41/41,130.1
+2026-07-06T07:06:10,aa7069e,stock,pinheavy,stock-wks,1,2.92,2.81261,4531.4,491/231/4,4324.1
+2026-07-06T07:06:13,aa7069e,stock,pinheavy,stock-wks,2,2.92,2.8162912,4581.5,493/227/4,4373.8
+2026-07-06T07:06:16,aa7069e,stock,pinheavy,stock-wks,3,2.842,2.7427764,4336.5,487/424/4,4131.1
+2026-07-06T07:06:21,5db0ed9,m4-sticky-gens,pinheavy,custom,1,4.981,4.8528219,8428.8,22/22/22,1386.6
+2026-07-06T07:06:26,5db0ed9,m4-sticky-gens,pinheavy,custom,2,4.865,4.799459,8528.5,22/22/22,1384.9
+2026-07-06T07:06:31,5db0ed9,m4-sticky-gens,pinheavy,custom,3,4.922,4.8658237,8525.2,22/22/22,1386.8

@@ -35,10 +35,24 @@ internal unsafe class RegionAllocator : IDisposable
     // DOTNET_GCHeapHardLimit: cap on committed region bytes, 0 = none
     private long _hardLimit;
 
+    // The linked-hole floor in force (M4): Region.MinLinkedHole normally, but when the
+    // committed heap closes on the hard limit every sweep links holes down to the plug
+    // minimum — slower handouts beat OutOfMemoryException
+    private nint _minLinkedHole = Region.MinLinkedHole;
+    private const nint PressureMinLinkedHole = 4 * 1024;
+
     // Card table storage (unbiased base), committed alongside the region frontier so the
     // EE's bulk-copy card writes always land on writable pages (missing-features 7.1)
     private nint _cardTableStorage;
     private nint _cardTableCommittedEnd;
+
+    // Card-offset table (M4): one ushort per card = 8-byte words from the card's start
+    // back to the nearest object start at or before it, 0xFFFF = saturated (≥ 512 KB,
+    // only large coalesced plugs). Rebuilt for bump regions by every sweep walk and
+    // refreshed at window carves, so the card scan can jump into a dirty region instead
+    // of walking it from the base. 2 KB per region, committed alongside the frontier.
+    private readonly ushort* _cardOffsets;
+    private nint _cardOffsetsCommittedEnd;
 
     // Committed bytes currently sitting in the free pool (drives the retention trim)
     private long _pooledCommittedBytes;
@@ -52,7 +66,11 @@ internal unsafe class RegionAllocator : IDisposable
 
         _pool = (int*)NativeAllocator.OsReserve((nint)Region.Count * sizeof(int));
 
-        if (_table == null || _pool == null || !NativeAllocator.OsCommit((nint)_pool, (nint)Region.Count * sizeof(int)))
+        _cardOffsets = (ushort*)NativeAllocator.OsReserve((nint)Region.Count << 11);
+        _cardOffsetsCommittedEnd = (nint)_cardOffsets;
+
+        if (_table == null || _pool == null || _cardOffsets == null
+            || !NativeAllocator.OsCommit((nint)_pool, (nint)Region.Count * sizeof(int)))
         {
             // Initialization-time failure: the process cannot run without these
             throw new OutOfMemoryException("Failed to reserve GC region metadata");
@@ -67,6 +85,7 @@ internal unsafe class RegionAllocator : IDisposable
     {
         NativeAllocator.OsRelease((nint)_table);
         NativeAllocator.OsRelease((nint)_pool);
+        NativeAllocator.OsRelease((nint)_cardOffsets);
     }
 
     public void SetFreeObjectMethodTable(MethodTable* methodTable) => _freeObjectMethodTable = methodTable;
@@ -102,6 +121,11 @@ internal unsafe class RegionAllocator : IDisposable
     public void SetHardLimit(long limit) => _hardLimit = limit;
 
     private bool CanCommit(nint bytes) => _hardLimit == 0 || CommittedRegionBytes + bytes <= _hardLimit;
+
+    /// <summary>True within an eighth of the hard limit. The caller should prefer full
+    /// collections (young ones cannot reclaim floating old garbage or stranded holes),
+    /// and sweeps link every carveable hole (see Sweep).</summary>
+    public bool UnderMemoryPressure => _hardLimit > 0 && CommittedRegionBytes > _hardLimit - (_hardLimit >> 3);
 
     public static int BlockCount(int sizeClass) => (int)(Region.Size / Region.ClassSizes[sizeClass]);
 
@@ -267,7 +291,7 @@ internal unsafe class RegionAllocator : IDisposable
                         remainder->Length = (uint)(extent - length - 3 * IntPtr.Size);
                         remainder->Epoch = 0;
 
-                        if (extent - length >= Region.MinLinkedHole)
+                        if (extent - length >= _minLinkedHole)
                         {
                             *(nint*)(remainderStart + 3 * IntPtr.Size) = entry->FirstHole;
                             entry->FirstHole = remainderStart + IntPtr.Size;
@@ -563,6 +587,10 @@ internal unsafe class RegionAllocator : IDisposable
     {
         long liveTotal = 0;
 
+        // Memory pressure: within an eighth of the hard limit, stop stranding sub-window
+        // holes — link everything carveable so the heap can run dense instead of dying
+        _minLinkedHole = UnderMemoryPressure ? PressureMinLinkedHole : Region.MinLinkedHole;
+
         // Hole lists and class lists are rebuilt from scratch on every sweep
         _recycledHead = -1;
         _classHeads.AsSpan().Fill(-1);
@@ -685,9 +713,13 @@ internal unsafe class RegionAllocator : IDisposable
                 if (deadStart != 0)
                 {
                     // The extent ends at the live object's pre-header slot (SPEC-M2 §3)
-                    ClosePlug(entry, deadStart, ptr - IntPtr.Size);
+                    ClosePlug(entry, index, deadStart, ptr - IntPtr.Size);
                     deadStart = 0;
                 }
+
+                // The survivor's card-offset interval ends where the next object ref
+                // starts, so live and plug intervals tile the region without gaps
+                WriteCardOffsets(index, ptr, next);
             }
             else if (deadStart == 0)
             {
@@ -700,7 +732,7 @@ internal unsafe class RegionAllocator : IDisposable
 
         if (deadStart != 0)
         {
-            ClosePlug(entry, deadStart, end);
+            ClosePlug(entry, index, deadStart, end);
         }
 
         if (entry->FirstHole != 0)
@@ -730,7 +762,7 @@ internal unsafe class RegionAllocator : IDisposable
         plug->Length = (uint)(extent - 3 * IntPtr.Size);
         plug->Epoch = 0;
 
-        if (extent >= Region.MinLinkedHole)
+        if (extent >= _minLinkedHole)
         {
             // The link lives in the plug's dead body, at ref + 16 (SPEC-M2 §4.4)
             *(nint*)(start + 3 * IntPtr.Size) = entry->FirstHole;
@@ -850,6 +882,54 @@ internal unsafe class RegionAllocator : IDisposable
     /// the requesting thread by then, and concurrent windows zero in parallel.</summary>
     public static void ZeroWindow(nint window, nint length) => ZeroMemory(window, length);
 
+    /// <summary>
+    /// Records, for every card whose start falls inside [objStart, intervalEnd), the
+    /// distance back to objStart (the card-offset table, M4). Intervals written by a sweep
+    /// tile the region seamlessly — each live object's interval ends at the next object
+    /// ref, each plug's at the ref after its extent — so every card of the swept range
+    /// gets a current entry.
+    /// </summary>
+    private void WriteCardOffsets(int regionIndex, nint objStart, nint intervalEnd)
+    {
+        var offsets = _cardOffsets + ((nint)regionIndex << 10);
+        var regionBase = RegionBase(regionIndex);
+
+        // First card boundary at or after objStart
+        var b = (objStart - regionBase + 2047) & ~(nint)2047;
+
+        for (; regionBase + b < intervalEnd; b += 1 << 11)
+        {
+            var back = (regionBase + b - objStart) >> 3;
+            offsets[b >> 11] = back < 0xFFFF ? (ushort)back : (ushort)0xFFFF;
+        }
+    }
+
+    /// <summary>
+    /// Maps an address inside a card-scanned bump region to an object start at or before
+    /// it, via the card-offset table (M4). The result is always a valid walk boundary:
+    /// exact after a sweep, conservatively earlier (a window's first object) for memory
+    /// carved since — walking forward from it always lands on real object headers.
+    /// </summary>
+    public nint FindBumpObjectAtOrBefore(int regionIndex, nint addr)
+    {
+        var offsets = _cardOffsets + ((nint)regionIndex << 10);
+        var regionBase = RegionBase(regionIndex);
+        var card = (int)((addr - regionBase) >> 11);
+
+        // 0xFFFF = the covering object starts ≥ 512 KB − 2 KB before this card (a large
+        // coalesced plug): hop back and retry; a few hops cross the whole region
+        while (card > 0 && offsets[card] == 0xFFFF)
+        {
+            card = Math.Max(0, card - 255);
+        }
+
+        var objStart = regionBase + ((nint)card << 11) - ((nint)offsets[card] << 3);
+
+        // The first object of a region sits at base + 8; card 0 (whose start precedes it)
+        // is never written and resolves here via the clamp
+        return Math.Max(objStart, regionBase + IntPtr.Size);
+    }
+
     private static void ZeroMemory(nint start, nint length)
     {
         var tStart = GcStats.Timestamp();
@@ -874,6 +954,11 @@ internal unsafe class RegionAllocator : IDisposable
     private bool EnsureTableCommitted(int requiredEntries)
     {
         if (!EnsureCardTableCommitted(requiredEntries))
+        {
+            return false;
+        }
+
+        if (!EnsureCommitted(ref _cardOffsetsCommittedEnd, (nint)_cardOffsets + ((nint)requiredEntries << 11)))
         {
             return false;
         }
@@ -925,6 +1010,25 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         _cardTableCommittedEnd = alignedEnd;
+        return true;
+    }
+
+    private static bool EnsureCommitted(ref nint committedEnd, nint requiredEnd)
+    {
+        if (requiredEnd <= committedEnd)
+        {
+            return true;
+        }
+
+        var pageSize = (nint)Environment.SystemPageSize;
+        var alignedEnd = (requiredEnd + pageSize - 1) & ~(pageSize - 1);
+
+        if (!NativeAllocator.OsCommit(committedEnd, alignedEnd - committedEnd))
+        {
+            return false;
+        }
+
+        committedEnd = alignedEnd;
         return true;
     }
 

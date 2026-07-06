@@ -173,6 +173,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             // survivors, so on hostile scatter committed legitimately sits at several
             // times live and a tight bound just degenerates every collection to full.
             var young = !requireFull
+                && !_regionAllocator.UnderMemoryPressure
                 && _promotedSinceFull < Math.Max(Region.MinGCBudget, _liveAtLastFull)
                 && _regionAllocator.CommittedRegionBytes
                     < 8 * Math.Max(Region.MinGCBudget, _lastLiveBytes);

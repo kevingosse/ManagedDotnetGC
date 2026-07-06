@@ -105,4 +105,7 @@ identical machine state) and the ratio movement tell the same ~40% story.
 - Unit suite: 65/65 (5 new young-sweep tests incl. the wholesale-recycle-gate regression
   test — a Reopened region with zero young survivors must never be recycled).
 - EE suite: 56/56 with the full M4 barrier + young paths.
-- ASP.NET soak: see below (young GCs under real load, flat footprint).
+- ASP.NET soak (10 min, 32 workers, commit `5db0ed9`): **14.51 M requests, 0 errors**,
+  ~23.8 k req/s sustained (pre-M4 evidence was ~20 k). Working set oscillates
+  1.6–1.9 GB — stable, periodically pulled down by full collections; the higher plateau
+  vs the pre-M4 ~700 MB is the 8×-live policy at work, not a leak.

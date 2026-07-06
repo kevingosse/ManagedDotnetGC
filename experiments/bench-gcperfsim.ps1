@@ -13,7 +13,8 @@ param(
     [string]$GcDll = "",          # full path to a Release ManagedDotnetGC.dll; "" = stock GC
     [Parameter(Mandatory = $true)][string]$Label,
     [string]$Sha = "",
-    [int]$Iterations = 3
+    [int]$Iterations = 3,
+    [string[]]$Scenario = @()     # subset of scenario names; empty = all
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,10 +31,15 @@ if (-not $Sha) { $Sha = (git -C $repoRoot rev-parse --short HEAD).Trim() }
 
 # The canonical scenarios. Do not edit lightly: changing them invalidates cross-step
 # comparability of the whole archive. Add new scenarios instead.
+#
+# pinheavy (added 2026-07-06): the structural-win shape the plain 'pin' scenario misses —
+# a rotating population of long-lived pinned survivors (10% of a 1 GB live set) amid
+# churn, the async-socket-buffer pattern that blocks ephemeral compaction in a moving GC.
 $scenarios = [ordered]@{
-    'soh'    = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -tk time'
-    'lohmix' = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -lohar 50 -lohsr 100000-2000000 -lohsi 50 -tk time'
-    'pin'    = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -sohpi 100 -tk time'
+    'soh'      = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -tk time'
+    'lohmix'   = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -lohar 50 -lohsr 100000-2000000 -lohsi 50 -tk time'
+    'pin'      = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -sohpi 100 -tk time'
+    'pinheavy' = '-tc 4 -tagb 20 -tlgb 1 -sohsi 50 -sohsr 100-4000 -sohpi 10 -tk time'
 }
 
 if ($GcDll) {
@@ -60,6 +66,8 @@ if (-not (Test-Path $csv)) {
 }
 
 foreach ($name in $scenarios.Keys) {
+    if ($Scenario.Count -gt 0 -and $Scenario -notcontains $name) { continue }
+
     $walls = @()
 
     for ($i = 1; $i -le $Iterations; $i++) {
