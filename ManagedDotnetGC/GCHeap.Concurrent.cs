@@ -604,9 +604,11 @@ unsafe partial class GCHeap
         }
     }
 
-    /// <summary>Highest set bit in [lowBit, highBit), or -1. lowBit is region-aligned
-    /// (word-aligned by construction); the search is bounded by one region's bitmap
-    /// slice and typically ends within a word or two in dense old regions.</summary>
+    /// <summary>Highest set bit in [lowBit, highBit), or -1 — approximately: the word
+    /// containing lowBit is searched in full, so a hit below a mid-word floor can come
+    /// back (the card scan's carry max() absorbs it; other callers pass word-aligned
+    /// floors). Bounded by one region's bitmap slice and typically ends within a word
+    /// or two in dense old regions.</summary>
     private static long FindLastSetBitBefore(ulong* bitmap, long lowBit, long highBit)
     {
         if (highBit <= lowBit)

@@ -1,4 +1,6 @@
 using System.Numerics;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace ManagedDotnetGC;
 
@@ -136,22 +138,101 @@ unsafe partial class GCHeap
         }
     }
 
-    /// <summary>Fast whole-region test: 128 word reads per region, so clean old regions
-    /// cost ~1 µs to skip. Region i's cards are the 1 KB at storage + (i &lt;&lt; 10).</summary>
+    /// <summary>Fast whole-region test (vectorized, M7): 8 OR-and-test strides over the
+    /// 1 KB slice, so clean old regions cost ~¼ µs to skip. Region i's cards are the
+    /// 1 KB at storage + (i &lt;&lt; 10) — slices are 1 KB multiples, so 128-byte strides
+    /// divide exactly.</summary>
     private static bool RegionHasDirtyCard(nint cardBase, int regionIndex, int regionCount)
     {
-        var cards = (ulong*)(cardBase + ((nint)regionIndex << (Region.Shift - 11)));
-        var words = regionCount << (Region.Shift - 11 - 3);
+        var cards = (byte*)(cardBase + ((nint)regionIndex << (Region.Shift - 11)));
+        var bytes = (nint)regionCount << (Region.Shift - 11);
 
-        for (int w = 0; w < words; w++)
+        if (Avx2.IsSupported)
         {
-            if (cards[w] != 0)
+            for (nint b = 0; b < bytes; b += 128)
+            {
+                var acc = Avx2.Or(
+                    Avx2.Or(Avx.LoadVector256(cards + b), Avx.LoadVector256(cards + b + 32)),
+                    Avx2.Or(Avx.LoadVector256(cards + b + 64), Avx.LoadVector256(cards + b + 96)));
+
+                if (!Avx.TestZ(acc, acc))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        var words = (ulong*)cards;
+
+        for (nint w = 0; w < bytes >> 3; w++)
+        {
+            if (words[w] != 0)
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>Index of the first dirty card in [start, end), or end.</summary>
+    private static int NextDirtyCard(byte* cards, int start, int end)
+    {
+        var c = start;
+
+        if (Avx2.IsSupported)
+        {
+            for (; c + 32 <= end; c += 32)
+            {
+                var zeroes = (uint)Avx2.MoveMask(Avx2.CompareEqual(Avx.LoadVector256(cards + c), Vector256<byte>.Zero));
+
+                if (zeroes != uint.MaxValue)
+                {
+                    return c + BitOperations.TrailingZeroCount(~zeroes);
+                }
+            }
+        }
+
+        for (; c < end; c++)
+        {
+            if (cards[c] != 0)
+            {
+                break;
+            }
+        }
+
+        return c;
+    }
+
+    /// <summary>Index of the first clean card in [start, end), or end.</summary>
+    private static int NextCleanCard(byte* cards, int start, int end)
+    {
+        var c = start;
+
+        if (Avx2.IsSupported)
+        {
+            for (; c + 32 <= end; c += 32)
+            {
+                var zeroes = (uint)Avx2.MoveMask(Avx2.CompareEqual(Avx.LoadVector256(cards + c), Vector256<byte>.Zero));
+
+                if (zeroes != 0)
+                {
+                    return c + BitOperations.TrailingZeroCount(zeroes);
+                }
+            }
+        }
+
+        for (; c < end; c++)
+        {
+            if (cards[c] == 0)
+            {
+                break;
+            }
+        }
+
+        return c;
     }
 
     /// <summary>
@@ -171,25 +252,66 @@ unsafe partial class GCHeap
         var cards = (byte*)(cardBase + ((nint)index << (Region.Shift - 11)));
         var cardCount = (int)Math.Min(Region.Size >> 11, ((limit - regionBase) + 2047) >> 11);
 
+        var bitmap = GCObject.MarkBitmap;
+        var heapBase = GCObject.MarkHeapBase;
+        var regionFirstBit = (long)(regionBase - heapBase) >> 3;
+
+        // Forward-carry head state (M7): bits below scannedBit have been examined once
+        // and carryBit is the highest set bit found there. Each run's head search only
+        // covers its own unseen gap, so a region's bitmap words are read at most once
+        // per scan — the per-run backward searches this replaces re-walked up to the
+        // full 128 KB lookback for every run on smear regions (runs ~2 KB apart,
+        // survivors ~100 KB apart).
+        var scannedBit = regionFirstBit;
+        var carryBit = -1L;
+
         for (int c = 0; c < cardCount;)
         {
-            if (cards[c] == 0)
+            c = NextDirtyCard(cards, c, cardCount);
+
+            if (c >= cardCount)
             {
-                c++;
-                continue;
+                break;
             }
 
-            var runEnd = c + 1;
-
-            while (runEnd < cardCount && cards[runEnd] != 0)
-            {
-                runEnd++;
-            }
+            var runEnd = NextCleanCard(cards, c + 1, cardCount);
 
             var runStart = regionBase + ((nint)c << 11);
             var runLimit = Math.Min(regionBase + ((nint)runEnd << 11), limit);
 
-            ScanMarkedRangeClamped(regionBase, runStart, runLimit, maxObjectBytes, stack);
+            var firstBit = (long)(runStart - heapBase) >> 3;
+            var lowBit = Math.Max(regionFirstBit, firstBit - (maxObjectBytes >> 3));
+
+            if (scannedBit < firstBit)
+            {
+                // Unseen gap: bounded backward search over it, early-exiting at the
+                // highest set bit (a word or two in dense old regions). Bits below a
+                // mid-word floor were already covered by the carry, so a stale find
+                // there loses to the max.
+                carryBit = Math.Max(carryBit, FindLastSetBitBefore(bitmap, Math.Max(lowBit, scannedBit), firstBit));
+                scannedBit = firstBit;
+            }
+
+            // Head: a marked object starting before the run can overlap into it, but
+            // never from further back than the largest object the region kind can hold
+            if (carryBit >= lowBit)
+            {
+                var obj = (GCObject*)(heapBase + (nint)(carryBit << 3));
+
+                if ((nint)obj + (nint)obj->ComputeSize() > runStart)
+                {
+                    GCObject.EnumerateObjectReferencesInRange(obj, stack, runStart, runLimit);
+                }
+            }
+
+            EnumerateMarkedRange(heapBase, runStart, runLimit, ref carryBit, stack);
+
+            var endBit = (long)(runLimit - heapBase) >> 3;
+
+            if (endBit > scannedBit)
+            {
+                scannedBit = endBit;
+            }
 
             c = runEnd;
         }
@@ -198,43 +320,28 @@ unsafe partial class GCHeap
     }
 
     /// <summary>
-    /// Enumerates the references of every marked object overlapping [start, end), from
-    /// the mark bitmap alone, clamped to the range. STW sibling of the pre-drain's
-    /// <see cref="ScanMarkedRange"/>; the bitmap read races nothing here, and bits set
-    /// mid-scan by parallel card workers marking young objects only add enumerations
-    /// whose tracer covers them anyway (waste, not a bug — same argument as the CAS
-    /// dedup on the pop side).
+    /// Enumerates the references of every marked object starting in [start, end), from
+    /// the mark bitmap alone, clamping enumerated slots to the range. STW sibling of the
+    /// pre-drain's <see cref="ScanMarkedRange"/>; the bitmap read races nothing here, and
+    /// bits set mid-scan by parallel card workers marking young objects only add
+    /// enumerations whose tracer covers them anyway (waste, not a bug — same argument as
+    /// the CAS dedup on the pop side). The first word is masked to the range so sub-start
+    /// bits are never re-enumerated (they belong to the caller's head carry), and
+    /// <paramref name="lastSetBit"/> carries the highest bit seen out to the caller.
     /// </summary>
-    private static void ScanMarkedRangeClamped(nint regionBase, nint start, nint end, nint maxObjectBytes, MarkStack stack)
+    private static void EnumerateMarkedRange(nint heapBase, nint start, nint end, ref long lastSetBit, MarkStack stack)
     {
         var bitmap = GCObject.MarkBitmap;
-        var heapBase = GCObject.MarkHeapBase;
-
-        // Head: a marked object starting before the run can overlap into it. The
-        // backward search is bounded by the largest object the region kind can hold —
-        // on smear heaps survivors sit ~100 KB apart, and without the bound the search
-        // walks all of it once per run.
         var firstBit = (long)(start - heapBase) >> 3;
-        var lowBit = Math.Max((long)(regionBase - heapBase) >> 3, firstBit - (maxObjectBytes >> 3));
-        var prev = FindLastSetBitBefore(bitmap, lowBit, firstBit);
-
-        if (prev >= 0)
-        {
-            var obj = (GCObject*)(heapBase + (nint)(prev << 3));
-
-            if ((nint)obj + (nint)obj->ComputeSize() > start)
-            {
-                GCObject.EnumerateObjectReferencesInRange(obj, stack, start, end);
-            }
-        }
-
-        // Body: every set bit in [start, end) is a marked object start
-        var w = firstBit >> 6;
         var endBit = (long)(end - heapBase) >> 3;
+
+        var w = firstBit >> 6;
+        var mask = ~0ul << (int)(firstBit & 63);
 
         for (; w << 6 < endBit; w++)
         {
-            var word = bitmap[w];
+            var word = bitmap[w] & mask;
+            mask = ulong.MaxValue;
 
             while (word != 0)
             {
@@ -248,6 +355,7 @@ unsafe partial class GCHeap
                     return;
                 }
 
+                lastSetBit = bitIndex;
                 var obj = (GCObject*)(heapBase + (nint)(bitIndex << 3));
                 GCObject.EnumerateObjectReferencesInRange(obj, stack, start, end);
             }
@@ -269,18 +377,14 @@ unsafe partial class GCHeap
 
             for (int c = 0; c < cardCount;)
             {
-                if (cards[c] == 0)
+                c = NextDirtyCard(cards, c, cardCount);
+
+                if (c >= cardCount)
                 {
-                    c++;
-                    continue;
+                    break;
                 }
 
-                var runEnd = c + 1;
-
-                while (runEnd < cardCount && cards[runEnd] != 0)
-                {
-                    runEnd++;
-                }
+                var runEnd = NextCleanCard(cards, c + 1, cardCount);
 
                 GCObject.EnumerateObjectReferencesInRange(obj, stack,
                     spanBase + ((nint)c << 11), spanBase + ((nint)runEnd << 11));
