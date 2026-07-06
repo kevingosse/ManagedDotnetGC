@@ -238,6 +238,28 @@ bounds as promoted** (`runtime-gc/interface.cpp:783-784`; regions variant `:790`
 and secondaries alike (`runtime-gc/objecthandle.cpp:244-246`). So "outside the managed heap ⇒ always
 alive" is exactly the stock behavior.
 
+### 3.5 🟩 Frozen segments' outgoing references are never scanned — safe by construction (verified 2026-07-06)
+
+Neither the full mark nor the M4 card scan ever enumerates the fields of frozen-segment objects
+(they are outside the reservation; stores into them don't even reach our card table, since the
+checked barrier tests the destination against the heap bounds first). If a frozen object could
+reference a GC-heap object, that edge would be invisible and the target collectable while
+reachable — even before M4.
+
+Verified against the runtime sources that this cannot happen today: everything the EE puts on the
+frozen object heap is reference-free or reference-inert —
+
+- string literals (`runtime/vm/gchelpers.cpp:1158`) — no ref fields;
+- constant primitive arrays (`gchelpers.cpp:759`) — no ref elements;
+- boxed statics, gated by `_ASSERT(!pFieldMT->ContainsGCPointers())` (`runtime/vm/methodtable.cpp:3487`);
+- `RuntimeType` instances for **non-collectible** types only (`runtime/vm/typehandle.cpp:349-365`,
+  under `!allocator->CanUnload()`): its single ref field `m_keepalive` is only used for collectible
+  types and stays null; the member cache hangs off an `IntPtr` GCHandle, not a direct ref.
+
+So "frozen objects never point into the GC heap" is a runtime invariant we inherit. **Re-verify it
+when bumping the target runtime** — if a future runtime relaxes it, frozen segments need the stock
+treatment (artificially live + card-scanned for outgoing refs, `runtime-gc/mark_phase.cpp:3652`).
+
 ---
 
 ## 4. Handle-table structural gaps
