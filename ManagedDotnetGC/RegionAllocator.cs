@@ -724,12 +724,22 @@ internal unsafe class RegionAllocator : IDisposable
 
     private static void ZeroMemory(nint start, nint length)
     {
+        var tStart = GcStats.Timestamp();
+        var total = length;
+
         while (length > 0)
         {
             var chunk = (int)Math.Min(length, int.MaxValue & ~7);
             new Span<byte>((void*)start, chunk).Clear();
             start += chunk;
             length -= chunk;
+        }
+
+        if (GcStats.Enabled)
+        {
+            // Callers all run under the alloc lock or STW, so plain adds are safe
+            GcStats.ZeroBytes += total;
+            GcStats.ZeroTicks += GcStats.Timestamp() - tStart;
         }
     }
 

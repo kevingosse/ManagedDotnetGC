@@ -60,6 +60,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     {
         Write("Initialize GCHeap");
 
+        GcStats.Initialize();
+
         if (DacManager.TryLoad(out var dacManager))
         {
             _dacManager = dacManager;
@@ -144,7 +146,12 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         if (force || Volatile.Read(ref _gcCount) == gcCountSnapshot)
         {
+            GcStats.BeginCollection();
+            var tStart = GcStats.Timestamp();
+
             _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
+
+            var tSuspended = GcStats.Timestamp();
 
             // EE bracket notifications (missing-features 2.1): condemned = 2 so the full-GC
             // paths engage (JIT code-heap cleanup, ComWrappers reference tracking)
@@ -154,11 +161,19 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             FixAllocContexts();
 
+            var tFixed = GcStats.Timestamp();
+
             Write("Mark phase");
             MarkPhase();
 
+            var tMarked = GcStats.Timestamp();
+            var zeroBytesBefore = GcStats.ZeroBytes;
+            var zeroTicksBefore = GcStats.ZeroTicks;
+
             Write("Sweep phase");
             SweepPhase();
+
+            var tSwept = GcStats.Timestamp();
 
             // DumpHeap();
 
@@ -166,11 +181,21 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             _allocatedSinceGC = 0;
             _budget = Region.ComputeBudget(_lastLiveBytes);
 
+            var gcNumber = _gcCount;
             Interlocked.Increment(ref _gcCount);
 
             NotifyGcDone(2);
 
             _gcToClr.RestartEE(finishedGC: true);
+
+            if (GcStats.Enabled)
+            {
+                GcStats.RecordCollection(gcNumber, "full",
+                    tStart, tSuspended, tFixed, tMarked, tSwept, GcStats.Timestamp(),
+                    GcStats.ZeroBytes - zeroBytesBefore, GcStats.ZeroTicks - zeroTicksBefore,
+                    _lastLiveBytes, _regionAllocator.CommittedRegionBytes);
+            }
+
             _gcToClr.EnableFinalization(GetNumberOfFinalizable() > 0);
         }
 
@@ -280,6 +305,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     private GCObject* AllocFromWindow(ref gc_alloc_context acontext, nint size)
     {
+        var tStart = GcStats.Timestamp();
+
         // Plug the context's remainder to keep the heap walkable before replacing it
         FixAllocContext(ref acontext);
 
@@ -307,6 +334,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         }
         finally
         {
+            if (GcStats.Enabled)
+            {
+                // The full handout cost an app thread feels: plugging + lock wait + carving.
+                // Ticks accumulate while still holding the alloc lock, so plain adds are safe.
+                GcStats.WindowCount++;
+                GcStats.WindowTicks += GcStats.Timestamp() - tStart;
+            }
+
             _allocLock.Release();
         }
     }
@@ -322,6 +357,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             if (!_regionAllocator.TryAllocBlock(sizeClass, out var block))
             {
                 return null;
+            }
+
+            if (GcStats.Enabled)
+            {
+                GcStats.BlockCount++;
             }
 
             var classSize = Region.ClassSizes[sizeClass];
@@ -349,6 +389,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             if (!_regionAllocator.TryAllocSpan(regionCount, out var spanBase))
             {
                 return null;
+            }
+
+            if (GcStats.Enabled)
+            {
+                GcStats.SpanCount++;
             }
 
             var allocated = (long)regionCount << Region.Shift;

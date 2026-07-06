@@ -14,22 +14,35 @@ unsafe partial class GCHeap
 
         NotifyBeforeGcScanRoots(2, isBgc: false, isConcurrent: false);
 
+        var t0 = GcStats.Timestamp();
+
         Write("Scan roots");
         var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
         _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, 2, 2, &scanContext);
+
+        var t1 = GcStats.Timestamp();
 
         // Objects queued for the finalizer thread by earlier collections are strong roots
         // from the start of the mark phase — before handle scanning and weak clearing, like
         // the stock order (mark_phase.cpp:3176; missing-features 3.3)
         MarkFReachableQueues();
 
+        var t2 = GcStats.Timestamp();
+
         ScanHandles();
         ScanRefCountedHandles();
+
+        var t3 = GcStats.Timestamp();
+
         ScanDependentHandles();
+
+        var t4 = GcStats.Timestamp();
 
         // After all strong marking, before weak clearing (stock mark_phase.cpp:3385): the EE
         // detaches unmarked RCWs / ComWrappers here, consulting our IsPromoted (2.1)
         NotifyAfterGcScanRoots(2, 2, &scanContext);
+
+        var t5 = GcStats.Timestamp();
 
         ClearHandles([HandleType.HNDTYPE_WEAK_SHORT]);
         ScanForFinalization();
@@ -38,6 +51,17 @@ unsafe partial class GCHeap
 
         var weakPtrScanCallback = (delegate* unmanaged<GCObject**, nint, nint, nint, void>)&WeakPtrScanCallback;
         _gcToClr.SyncBlockCacheWeakPtrScan(weakPtrScanCallback, GCHandle.ToIntPtr(_handle), 0);
+
+        if (GcStats.Enabled)
+        {
+            var t6 = GcStats.Timestamp();
+            GcStats.RootsTicks = t1 - t0;
+            GcStats.FReachableTicks = t2 - t1;
+            GcStats.HandleTicks = t3 - t2;
+            GcStats.DependentTicks = t4 - t3;
+            GcStats.AfterScanTicks = t5 - t4;
+            GcStats.WeakTicks = t6 - t5;
+        }
     }
 
     [UnmanagedCallersOnly]
@@ -234,7 +258,14 @@ unsafe partial class GCHeap
 
             o->Mark();
 
-            entry->LiveBytes = (int)Math.Min(int.MaxValue, entry->LiveBytes + (long)Align((nint)o->ComputeSize()));
+            var markedSize = (long)Align((nint)o->ComputeSize());
+            entry->LiveBytes = (int)Math.Min(int.MaxValue, entry->LiveBytes + markedSize);
+
+            if (GcStats.Enabled)
+            {
+                GcStats.MarkedCount++;
+                GcStats.MarkedBytes += markedSize;
+            }
         }
     }
 
