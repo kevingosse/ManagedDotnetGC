@@ -261,6 +261,26 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   cards. The 07-05 COW/PSS benchmarks stand as the measurement that killed the
   alternative; PSS survives as diagnostics.
 
+- **M6 stages 1+2 — concurrent full marking lands (incremental update).** Stage 1:
+  full collections behind `DOTNET_GCConcurrentCycles` split into pause A (clear
+  marks/cards, buffer every strong root) and pause B (trace + root re-scan + card
+  remark over all region ages + the unchanged weak/finalization tail + sweep), with
+  the world resumed in between but the window still empty — the remark machinery
+  proven against real gap mutations, and `GcCallbackBracketTest` enforcing
+  once-per-GC EE bracket notifications (the remark is our re-scan, not a new
+  EE-visible phase). The triggering EE thread orchestrates both pauses itself — a
+  normal GC-induction caller of SuspendEE — so v1's coordinator thread and its
+  CreateThread verification item disappeared. Stage 2: `ParallelDrainMark` moved
+  into the window — the full-mark closure now runs on the M5 pool concurrently with
+  mutators, reading the live heap, writing only the side bitmap and region table;
+  budget-triggered collects allocate through an in-flight cycle. Suite 56/56 knob
+  on/off, 10× repeated-suite stress clean, `m6s2-ccwindow` vs `m6s0-bitmap`
+  same-sitting: soh 1.99 → **1.82** (−9%), lohmix 1.91 → **1.79** (−6%), pinheavy
+  1.97 → **1.89** (−4%), pin flat 1.93 — the full mark's pause cost became idle-core
+  time. Cumulative same-sitting vs the morning's epoch baseline: soh **0.82×**.
+  Remaining for stage 3: per-phase pause/window columns in GCStats, knob-on soak
+  (running at session close), fairness matrix rerun.
+
 ## How to add a step
 
 ```powershell

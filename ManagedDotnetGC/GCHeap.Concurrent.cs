@@ -71,12 +71,17 @@ unsafe partial class GCHeap
         _regionAllocator.ExitGateForCollection();
         _gcToClr.RestartEE(finishedGC: false);
 
-        // ---- Mark window ----
-        // Stage 1: empty — the buffered roots stay on _markStack (GC-private) across
-        // the gap and the whole trace runs STW below. Stage 2 will run
-        // ParallelDrainMark() right here, concurrently with the mutators.
+        // ---- Mark window: the closure over the pause-A roots, concurrent with the
+        // mutators (§5.3). Safe because nothing reclaims or moves memory here: sweep,
+        // decommit and plug rewrites of live extents all happen under the pauses, so a
+        // popped ref always points at an intact object (dead-by-now = floating
+        // garbage); mark bits and LiveBytes go to GC-private memory; every mutator ref
+        // store lands in the card table for pause B's remark. The one EE call — the
+        // deferred collectible LoaderAllocator edges — runs on this (EE) thread, and
+        // collectible unloading cannot race the very GC that must prove it dead.
+        ParallelDrainMark();
 
-        // ---- Pause B: trace (stage 1) + remark + reclaim ----
+        // ---- Pause B: remark + reclaim ----
         _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
         _regionAllocator.EnterGateForCollection();
 
@@ -85,10 +90,7 @@ unsafe partial class GCHeap
         // Contexts handed out while the world ran get plugged like always
         FixAllocContexts();
 
-        // The main closure over the pause-A roots (stage 2: already done in the window)
-        ParallelDrainMark();
-
-        // Remark (§5.4): roots may have moved during the gap — re-capture and trace
+        // Remark (§5.4): roots may have moved during the window — re-capture and trace
         // the delta, then scan every card the window's stores dirtied. Fresh regions
         // included: the young-scan skip is only sound when marking is entirely STW.
         // No second BeforeGcScanRoots: the bracket notifications are once-per-GC (the
