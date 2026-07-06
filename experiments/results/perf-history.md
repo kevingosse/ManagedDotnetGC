@@ -374,6 +374,21 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   rows `stock-svr-datas` and pins adaptation off on `-HeapCount` rows; public
   charts carry four stock reference lines (WKS / DATAS / h8 / h32).
 
+- **M7 mutator war** (`m7-ntzero-*`/`m7-cards`/`m7-stash2`(+`-anchor`), 2026-07-06
+  seventh session, results/2026-07-06-m7-mutator-war.md): census split win_ms into
+  wait/carve/wzero — zeroing was 61%, and `Span.Clear` walls at ~33 GB/s aggregate
+  on this machine while NT stores do 54–69. **NT-store zeroing** (after discovering
+  NativeAOT compile-time-folds `IsSupported` — `IlcInstructionSet x86-64-v3` now in
+  the csproj): zero throughput 10.8 → 34 GB/s, pre-zeroed windows 48 → 88%, knob A/B
+  soh −3.7% / pin −9.1% / lohmix −4.3% / pinheavy −5.7%. **Card-scan rewrite**
+  (forward-carry head + AVX2 detection): soh 1.536 → 1.394 same-sitting, soak
+  throughput record 52.6–54.0k rps windows. **Per-thread window stash** (batched
+  hole-only carves in gc_reserved_1, epoch-invalidated): wait_ms 384 → 90, pin peak
+  3.0 → 2.1 GB; two scars documented (unplugged stash extents AV interior-pointer
+  walks; full-refill stashes ratchet lohmix +0.5 GB). Whole-evening same-sitting
+  soh: 1.595 → 1.379 (−13.5%) at equal-or-better footprint. Machine drifted ~9%
+  slower across the evening (WKS soh 2.205 → 2.405) — trust ratios, not walls.
+
 ```powershell
 # after any perf-relevant commit (GC dll = Release publish):
 dotnet publish .\ManagedDotnetGC /p:SelfContained=true -r win-x64 -c Release
