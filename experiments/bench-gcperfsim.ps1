@@ -14,7 +14,15 @@ param(
     [Parameter(Mandatory = $true)][string]$Label,
     [string]$Sha = "",
     [int]$Iterations = 3,
-    [string[]]$Scenario = @()     # subset of scenario names; empty = all
+    [string[]]$Scenario = @(),    # subset of scenario names; empty = all
+    # M7 fairness-matrix knobs (2026-07-06). They alter the `gc` column so rows stay
+    # distinguishable: stock-svr, stock-svr-bgc, stock-svr-h8, custom-h32, ...
+    [switch]$ServerGC,            # stock only: DOTNET_gcServer=1
+    [switch]$Concurrent,          # stock only: DOTNET_gcConcurrent=1 (BGC)
+    [int]$HeapCount = 0,          # GC threads/heaps; 0 = collector default. Decimal here;
+                                  # the script converts to hex for DOTNET_GCHeapCount.
+    [int]$HardLimitMB = 0         # DOTNET_GCHeapHardLimit in MB; 0 = none. For the
+                                  # "memory-lean" fairness rows (cap ours at stock-SVR's peak).
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,12 +62,30 @@ if ($GcDll) {
 }
 else {
     Remove-Item Env:DOTNET_GCName -ErrorAction SilentlyContinue
-    $gcName = 'stock-wks'
+    $gcName = if ($ServerGC) { 'stock-svr' } else { 'stock-wks' }
 }
 
-$env:DOTNET_gcServer = '0'
-$env:DOTNET_gcConcurrent = '0'
+$env:DOTNET_gcServer = if ($ServerGC -and -not $GcDll) { '1' } else { '0' }
+$env:DOTNET_gcConcurrent = if ($Concurrent -and -not $GcDll) { '1' } else { '0' }
 $env:DOTNET_gcConservative = '0'
+
+if ($Concurrent -and -not $GcDll) { $gcName += '-bgc' }
+
+# Leftover knobs from a previous shell would silently skew results
+Remove-Item Env:DOTNET_GCgen0size, Env:DOTNET_GCStatsFile, Env:DOTNET_GCHeapHardLimit -ErrorAction SilentlyContinue
+
+if ($HeapCount -gt 0) {
+    $env:DOTNET_GCHeapCount = '{0:x}' -f $HeapCount   # runtime config ints parse as HEX
+    $gcName += "-h$HeapCount"
+}
+else {
+    Remove-Item Env:DOTNET_GCHeapCount -ErrorAction SilentlyContinue
+}
+
+if ($HardLimitMB -gt 0) {
+    $env:DOTNET_GCHeapHardLimit = '{0:x}' -f ([long]$HardLimitMB * 1MB)
+    $gcName += "-cap$($HardLimitMB)m"
+}
 
 if (-not (Test-Path $csv)) {
     'utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb,avg_ws_mb' | Set-Content $csv
