@@ -315,6 +315,20 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   set grows) — default-off behind `DOTNET_GCCardPreDrain`. Honest remark cards:
   3–6 ms; new top pause-B slice: sweep (avg 11 ms at soh density → M6.5).
 
+- **M6.5 stage 1 — gated concurrent sweep** (2026-07-06,
+  results/2026-07-06-m65-concurrent-sweep.md, docs/spec-m65-concurrent-sweep.md).
+  Full-cycle sweep off-pause behind `DOTNET_GCConcurrentSweep` (default-off):
+  pause-B accounting from mark-time LiveBytes, supply reset + region plan + O(1)
+  wholesale pre-pass under STW (deferring the pre-pass measured +1.1 GB — the dead
+  nursery must hit the pool at RestartEE), walk on the worker pool publishing
+  per-chunk under the alloc lock. **Window gate**: concurrent only when pool ≥
+  max(64 MB, budget/4) — ungated, smear heaps ratchet (soh 2.1 → 3.2 GB committed).
+  Soak knob-on: **record 48.8 k req/s, full pause B p50 3.1 ms** (concurrent-swept
+  cycles 2–3 ms), young max 26 → 10.6, at +0.5 GB WS (overshoot→holes→full cadence
+  halves 666 → 309) — the default flip is an exchange-rate call. soh: gate keeps
+  fulls in-pause, knob-off behavior exact. Also killed `GcAwareLock`'s early
+  Sleep(1) (third quantum site — sweep publishers hit it against allocators).
+
 ```powershell
 # after any perf-relevant commit (GC dll = Release publish):
 dotnet publish .\ManagedDotnetGC /p:SelfContained=true -r win-x64 -c Release
