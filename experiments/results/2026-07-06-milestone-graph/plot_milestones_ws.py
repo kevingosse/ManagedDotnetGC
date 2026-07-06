@@ -16,10 +16,13 @@ milestones = [
     ("concurrent\nsweep", 2.434),
 ]
 
+# (label, line y, explicit label y). DATAS discovery 2026-07-06: bare gcServer=1 is
+# adaptive (that is what held 1.64 GB); classic fixed heap-per-core costs 6.18 GB.
 stock_refs = [
-    ("Workstation GC", 1.579, "#9a988f"),
-    ("Server GC (32 heaps)", 1.635, "#6b6a63"),
-    ("Server GC (8 heaps)", 2.492, "#3a3a37"),
+    ("Server GC (32 heaps)", 6.177, 5.60, "#6b6a63"),
+    ("Server GC (8 heaps)", 2.492, 3.10, "#3a3a37"),
+    ("Server GC (DATAS)", 1.635, 1.05, "#55544e"),
+    ("Workstation GC", 1.579, 0.55, "#9a988f"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -58,12 +61,8 @@ ax.set_ylim(ymin, ymax)
 # stay clear of both each other and the hero value-labels at x=4,5.
 label_x = len(milestones) - 1 + 0.35
 line_end_x = len(milestones) - 1 + 0.20
-CLEARANCE = 0.27  # keeps each label clear of its own dashed line (no strikethrough)
-sorted_refs = sorted(stock_refs, key=lambda r: -r[1])  # Server(8h), Server(32h), WKS
-directions = ["above", "above", "below"]
 
-for (label, val, color), direction in zip(sorted_refs, directions):
-    dy = val + CLEARANCE if direction == "above" else val - CLEARANCE
+for (label, val, dy, color) in stock_refs:
     ax.axhline(val, color=color, linestyle=(0, (6, 4)), linewidth=1.6, alpha=0.9, zorder=2)
     ax.plot([line_end_x, label_x - 0.05], [val, dy], color=color, linewidth=1.0,
             alpha=0.7, zorder=2, solid_capstyle="round")

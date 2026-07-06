@@ -75,14 +75,30 @@ $env:DOTNET_gcConservative = '0'
 if ($Concurrent -and -not $GcDll) { $gcName += '-bgc' }
 
 # Leftover knobs from a previous shell would silently skew results
-Remove-Item Env:DOTNET_GCgen0size, Env:DOTNET_GCStatsFile, Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCConcurrentCycles -ErrorAction SilentlyContinue
+Remove-Item Env:DOTNET_GCgen0size, Env:DOTNET_GCStatsFile, Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCConcurrentCycles, Env:DOTNET_GCConcurrentSweep, Env:DOTNET_GCDynamicAdaptationMode -ErrorAction SilentlyContinue
 
 if ($HeapCount -gt 0) {
     $env:DOTNET_GCHeapCount = '{0:x}' -f $HeapCount   # runtime config ints parse as HEX
+
+    if (-not $GcDll) {
+        # A fixed heap count must mean a fixed heap count: pin DATAS off so the row
+        # measures classic N-heap Server GC, not adaptation seeded at N
+        $env:DOTNET_GCDynamicAdaptationMode = '0'
+    }
+
     $gcName += "-h$HeapCount"
 }
 else {
     Remove-Item Env:DOTNET_GCHeapCount -ErrorAction SilentlyContinue
+
+    if ($ServerGC -and -not $GcDll) {
+        # Bare gcServer=1 on .NET 9+ is NOT a fixed heap-per-core config: DATAS is on
+        # by default and adapts the heap count to the workload (discovered 2026-07-06
+        # — it is why bare-server rows ran ~1.2 GB with high-variance walls; every
+        # archive row labeled plain stock-svr is really this). Classic heap-per-core
+        # measurements need -HeapCount 32, which pins adaptation off above.
+        $gcName += '-datas'
+    }
 }
 
 if ($HardLimitMB -gt 0) {

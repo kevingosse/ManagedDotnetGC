@@ -362,6 +362,18 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   Unlike stock (SVR-32 vs -h8: 27-37%, budget partitioning), our knob is collector
   threads only — allocation is unpartitioned at any setting.
 
+- **DATAS discovery (Kevin, 2026-07-06 evening) — reinterpret every `stock-svr` row
+  in this archive.** Bare `gcServer=1` on .NET 9+ runs **DATAS**: the heap count
+  adapts to the workload (that is what held ~1.2 GB and produced the "high-variance
+  SVR rows" this file kept apologizing for). Fixed heap-per-core was never measured
+  until today: `stock-svr-h32` (svrgap sitting, `DOTNET_GCHeapCount=0x20` +
+  `DOTNET_GCDynamicAdaptationMode=0`) runs geomean **1.86 s at 6.18 GB geomean /
+  7.6 GB peak** — slower than DATAS (1.70) and ~4× its memory. The old
+  "over-partitioned budgets" reading was half-right; DATAS exists to adapt away
+  from exactly that. Protocol change: bench-gcperfsim.ps1 now labels bare server
+  rows `stock-svr-datas` and pins adaptation off on `-HeapCount` rows; public
+  charts carry four stock reference lines (WKS / DATAS / h8 / h32).
+
 ```powershell
 # after any perf-relevant commit (GC dll = Release publish):
 dotnet publish .\ManagedDotnetGC /p:SelfContained=true -r win-x64 -c Release

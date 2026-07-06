@@ -15,10 +15,14 @@ milestones = [
     ("concurrent\nsweep", 1.438),
 ]
 
+# (label, line y, explicit label y — slots picked to clear every dashed line and each
+# other; DATAS discovery 2026-07-06: bare gcServer=1 adapts heap count, fixed-32 is
+# its own config)
 stock_refs = [
-    ("Workstation GC", 2.276, "#9a988f"),
-    ("Server GC (32 heaps)", 1.704, "#6b6a63"),
-    ("Server GC (8 heaps)", 1.347, "#3a3a37"),
+    ("Workstation GC", 2.276, 2.62, "#9a988f"),
+    ("Server GC (32 heaps)", 1.863, 2.07, "#6b6a63"),
+    ("Server GC (DATAS)", 1.704, 1.53, "#55544e"),
+    ("Server GC (8 heaps)", 1.347, 0.98, "#3a3a37"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -53,20 +57,12 @@ ax.set_ylim(ymin, ymax)
 # each to its true line with a short leader.
 label_x = len(milestones) - 1 + 0.35
 line_end_x = len(milestones) - 1 + 0.20
-CLEARANCE = 0.27  # keeps each label clear of its own dashed line (no strikethrough)
-# The three values are clustered (2.28 / 1.70 / 1.35). The top two get room above their
-# own line; the bottom-most (lowest value) has open space below it down to y=0, so it
-# is labeled below instead — this keeps every label comfortably clear of every line
-# without needing an iterative stagger.
-sorted_refs = sorted(stock_refs, key=lambda r: -r[1])  # WKS, Server GC, Server GC (8 heaps)
-directions = ["above", "above", "below"]
 
-for (label, val, color), direction in zip(sorted_refs, directions):
-    dy = val + CLEARANCE if direction == "above" else val - CLEARANCE
+for label, val, label_y, color in stock_refs:
     ax.axhline(val, color=color, linestyle=(0, (6, 4)), linewidth=1.6, alpha=0.9, zorder=2)
-    ax.plot([line_end_x, label_x - 0.05], [val, dy], color=color, linewidth=1.0,
+    ax.plot([line_end_x, label_x - 0.05], [val, label_y], color=color, linewidth=1.0,
             alpha=0.7, zorder=2, solid_capstyle="round")
-    ax.text(label_x, dy, f"{label}  {val:.2f}s",
+    ax.text(label_x, label_y, f"{label}  {val:.2f}s",
             color=color, fontsize=11.5, va="center", ha="left", fontweight="bold")
 
 # ---- hero line ----

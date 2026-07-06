@@ -11,10 +11,22 @@ Fresh matrix at session start (`svrgap`), median wall seconds (peak WS MB):
 | gc | soh | lohmix | pin | pinheavy |
 |---|---|---|---|---|
 | stock-wks | 2.205 (1064) | 2.378 (1382) | 2.099 (1063) | 2.437 (4363) |
-| stock-svr (32 heaps) | 1.696 (1185) | 1.722 (1259) | 1.659 (1190) | 1.742 (4434) |
+| stock-svr (DATAS)* | 1.696 (1185) | 1.722 (1259) | 1.659 (1190) | 1.742 (4434) |
 | stock-svr-h8 | 1.234 (2179) | 1.339 (2102) | 1.275 (2175) | 1.562 (4312) |
+| stock-svr-h32 (fixed)* | 1.849 (7136) | 1.782 (4283) | 1.810 (7118) | 2.021 (7635) |
 | custom (HEAD `765f680`) | 1.774 (2123) | 1.724 (2139) | 1.774 (2183) | 1.741 (3929) |
 | custom + csweep knob | 1.804 | 1.692 | 1.736 | 1.759 |
+
+\* Kevin's evening catch, retro-applied to this table: bare `gcServer=1` on .NET 9+
+is **DATAS** — the heap count adapts to the workload — not a fixed 32-heap config.
+It explains the "SVR-32" rows' low memory and high variance across every previous
+matrix; the truly fixed heap-per-core config (h32 row, measured once the discovery
+landed) is *slower than DATAS* (geomean 1.86 vs 1.70) **and holds 6.2 GB geomean /
+7.6 GB peak** — nearly our sticky-era footprint. The "over-partitioned budgets"
+reading of earlier matrices was half-right: fixed-32 is indeed bad for a 4-thread
+allocator, and DATAS exists precisely to adapt away from it, trading throughput for
+footprint. bench-gcperfsim.ps1 now labels bare server rows `stock-svr-datas` and
+pins `DOTNET_GCDynamicAdaptationMode=0` on `-HeapCount` rows.
 
 Two facts drove the session:
 
@@ -97,14 +109,18 @@ Final matrix (`m65s2-final`, after the window-bound fix; the earlier
 |---|---|---|---|---|
 | custom | 1.440 (2111) | 1.393 (2193) | 1.461 (2067) | 1.461 (3981) |
 | vs stock-wks | **0.65** | **0.59** | **0.70** | **0.60** |
-| vs stock-svr (default) | **0.85** | **0.81** | **0.88** | **0.84** |
+| vs stock-svr (DATAS, the default) | **0.85** | **0.81** | **0.88** | **0.84** |
+| vs stock-svr-h32 (fixed) | **0.78** | **0.78** | **0.81** | **0.72** |
 | vs stock-svr-h8 | 1.17 | 1.04 | 1.15 | **0.94** |
 
 Read honestly:
 
-- **Default Server GC is beaten on every scenario, by 12-19%** — at ~1.8× its peak
-  working set (2.1 vs 1.2 GB; pinheavy: 4.0 vs 4.4 GB, *below* it). One session ago
-  the best case was parity.
+- **Default Server GC (= DATAS) is beaten on every scenario, by 12-19%** — at ~1.8×
+  its peak working set (2.1 vs 1.2 GB; pinheavy: 4.0 vs 4.4 GB, *below* it). DATAS
+  deliberately trades throughput for footprint, so that memory premium is the two
+  collectors sitting at different points of the same curve.
+- **Classic fixed heap-per-core Server GC (h32) is beaten on both axes at once**:
+  19-28% faster at a third of its memory (2.1 vs 6.2 GB geomean).
 - **The tuned SVR-h8 row is beaten on pinheavy (0.94×) and matched on lohmix
   (1.04×)** — at byte-identical peak memory (ours 2067-2193 MB, theirs 2102-2179).
   soh (1.17) and pin (1.15) remain, and their remaining gap is measured, not
