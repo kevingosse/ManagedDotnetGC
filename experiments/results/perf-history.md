@@ -26,7 +26,7 @@ ratios are the archive's currency.
 | M1 part 1: nine gates (stubs, SuppressFinalize, f-reachable roots, frozen deps, types 10/11, accounting) | `88ae0ef` | 8.75 (3.11×) | 8.04 (2.65×) | 8.70 (2.64×) |
 | M1 complete (EE brackets, card/bundle tables, collectible mark edge, ref-counted scan) | `3c25f87` | 9.01 (3.20×) | 8.42 (2.77×) | 8.97 (2.72×) |
 | stock WKS reference (2026-07-06) | — | 2.00 | 2.23 | 1.98 |
-| M4 sticky generations (young GCs via cards, Reopened regions, 64 KB hole floor, zero-at-carve) | *(this commit)* | 5.04 (2.52×) | 4.96 (2.23×) | 5.01 (2.53×) |
+| M4 sticky generations (young GCs via cards, Reopened regions, 64 KB hole floor, zero-at-carve) | `5db0ed9` | 5.04 (2.52×) | 4.96 (2.23×) | 5.01 (2.53×) |
 
 ## Step notes
 
