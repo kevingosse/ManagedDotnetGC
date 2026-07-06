@@ -300,6 +300,21 @@ suite: soh/pin under 1×, lohmix tied, pinheavy won by 30% — young pauses p50 
   (was 1.14–1.71), cap2200 soh 3.44 → 2.66. Remaining pause-B mass: remark drain
   ~13.5 ms (buffer-time mark skip is the measured next lever), sweep (M6.5).
 
+- **M7 — the drain-termination quantum; card pre-drain shipped off** (2026-07-06,
+  results/2026-07-06-m7-quantum-and-predrain.md; the same-day m7-exchange/-exchange2
+  rows are the memory-exchange-rate step,
+  results/2026-07-06-m7-memory-exchange-rate.md). The 13–15 ms pause-B "drain2" was
+  one `Thread.Sleep(1)` timer quantum in `ParallelDrainMark`'s idle-quorum spin —
+  measured 15 ms marking a single object — not window-era marking;
+  `SpinOnce(sleep1Threshold: -1)` cut it to 20–60 µs and soh full-cycle pause B from
+  24–41 to 9–22 ms. `m7-quantum` rows: **0.84/0.90/0.91/0.67× vs same-sitting WKS**
+  (soh/lohmix/pin/pinheavy) — the M7 exchange give-back reclaimed — at the same
+  2.1–2.2 GB (3.9 pinheavy) footprint. The concurrent card pre-drain built for that
+  slice proved sound (stress-clean both modes) but net-negative once the quantum
+  fell: passes can't converge on store-heavy windows (window 3–5× longer, remark
+  set grows) — default-off behind `DOTNET_GCCardPreDrain`. Honest remark cards:
+  3–6 ms; new top pause-B slice: sweep (avg 11 ms at soh density → M6.5).
+
 ```powershell
 # after any perf-relevant commit (GC dll = Release publish):
 dotnet publish .\ManagedDotnetGC /p:SelfContained=true -r win-x64 -c Release

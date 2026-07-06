@@ -259,8 +259,29 @@ remark measures long on store-heavy workloads.
   B; requires re-architecting sweep/allocator/zeroer interleaving. M6.5. (Post-trim
   numbers: sweep is 3.4 ms of pause B on the server soak, 15–22 ms on GCPerfSim's
   denser heaps — the trim fix demoted this from "the pause-B floor".)
-- **Concurrent card pre-drain** (shrinks remark on store-heavy workloads; remark
-  cards measured ≤ 15 ms everywhere so far, so not currently needed).
+- **Concurrent card pre-drain** — built 2026-07-06, measured, **shipped default-off**
+  (`DOTNET_GCCardPreDrain` opts in). The implementation is sound and stress-proven:
+  a pause-A snapshot of region kinds (entries of window-carved regions can be
+  mid-publication), per-region consume-then-scan with byte-granular card clears and a
+  full fence (the x64 store→load hole would otherwise let a heap read pass the clear),
+  and a **bitmap-guided scan** — set mark bits are exactly marked-object starts, which
+  is the only region walk that is safe with mutators allocating (linear walks read
+  cursors and plug headers mid-rewrite). Two findings killed the default:
+  1. The 13–15 ms "drain2" slice it was built to reclaim was not marking work at all
+     but a **Sleep(1) timer quantum** in the drain termination protocol (below).
+  2. With the quantum fixed, the honest remark card scan costs 3–6 ms on the densest
+     scenario, while pre-drain passes stretched the window 3–5× on store-heavy
+     workloads — and the longer window *grew* the pause-B re-dirty delta (9–18 ms).
+     The trade could reverse on a huge-heap/low-store profile; the knob stays.
+
+- **The drain-termination quantum** (fixed 2026-07-06): idle workers in
+  `ParallelDrainMark`'s idle-quorum loop used `SpinWait.SpinOnce()`, which escalates
+  to `Thread.Sleep(1)` ≈ one ~15.6 ms Windows timer quantum. Any worker idle for more
+  than ~50 µs slept through the join, so **every** remark drain cost one quantum
+  (drain2 measured 15 ms marking a single object) and every pre-drain pass idled one.
+  `SpinOnce(sleep1Threshold: -1)` (spin/yield, never Sleep(1)) cut drain2 to 20–60 µs
+  and full-cycle pause B on soh from 24–41 ms to 9–22 ms. The M5 inline full mark
+  paid the same quantum in its buffered-root drain.
 - **Young collections during the window** (needs bitmap generation separation; only
   worth it if windows measure long on huge heaps).
 - Ping-pong mark bitmaps (pause A's wholesale clear → O(1) swap + background clear)
@@ -279,5 +300,6 @@ remark measures long on store-heavy workloads.
 Per full cycle: pause A ms (suspend / fix / clear / roots breakdown), window ms,
 pause B ms (root-rescan / card-remark / protocol / sweep breakdown), cards dirty at
 remark, objects marked concurrently vs at remark, allocation during window. GCStats
-CSV columns extend accordingly; perf-history.md records each stage per the archive
+CSV columns extend accordingly (`predrain_us`/`predrain_cards`/`predrain_passes`
+added with the card pre-drain); perf-history.md records each stage per the archive
 protocol.
