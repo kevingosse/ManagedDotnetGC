@@ -29,7 +29,9 @@ ratios are the archive's currency.
 | M1 complete (EE brackets, card/bundle tables, collectible mark edge, ref-counted scan) | `3c25f87` | 9.01 (3.20×) | 8.42 (2.77×) | 8.97 (2.72×) |
 | stock WKS reference (2026-07-06) | — | 2.00 | 2.23 | 1.98 |
 | M4 sticky generations (young GCs via cards, Reopened regions, 64 KB hole floor, zero-at-carve) | `5db0ed9` | 5.04 (2.52×) | 4.96 (2.23×) | 5.01 (2.53×) |
-| M4 + card-offset tables (card scan by dirty runs) | `5ab6a54` | 4.46 (2.23×) | 4.55 (2.04×) | 4.86 (2.45×)* | 
+| M4 + card-offset tables (card scan by dirty runs) | `5ab6a54` | 4.46 (2.23×) | 4.55 (2.04×) | 4.86 (2.45×)* |
+| stock WKS re-reference (2026-07-06 evening) | — | 2.22 | — | 2.13 |
+| M5 slice: parallel sweep (8 participants) | `266284a` | 2.89 (**1.30×**) | 3.21 (~1.44×†) | 3.00 (1.41×) |
 
 `pinheavy` (same sitting): stock 2.92 s / **4.53 GB peak WS, 4.32 GB final heap**; M4
 4.92 s (1.69×) / 8.5 GB peak, **1.39 GB final**. Wall vs memory: see
@@ -71,6 +73,14 @@ ratios are the archive's currency.
   with the next step. `pinheavy` same sitting: 4.53 s (1.55×). Remaining young-pause
   pools are now the sweep walk of allocation-touched regions and densely-dirty reopened
   regions — parallelism (M5) is the next lever.
+- **Parallel sweep: soh 2.23× → 1.30×, sweep pauses ÷7.** Persistent worker threads on
+  the GC dll's own runtime (invisible to the EE); region-chunk dispenser, per-worker
+  list building, lock-free pool pushes. Stock re-referenced the same evening (2.22 —
+  it drifted from 2.00 within the day, hence the fresh row; † lohmix ratio uses the
+  morning stock). **`pinheavy`: 2.90 vs stock 2.92 — first parity — with ~1.4 GB final
+  heap vs stock's 4.3 GB.** Young pauses are now ~70% card scan (0.96 s): parallel card
+  scan (per-worker mark stacks + CAS marking, collectible edges deferred to the GC
+  thread) is the queued next step, projected to put soh near ~1.2×.
 
 ## How to add a step
 

@@ -17,6 +17,11 @@ unsafe partial class GCHeap
     ///
     /// The set of marked objects a young collection starts from is fixed (sticky marks never
     /// appear mid-collection on old objects), so one pass over the cards is complete.
+    ///
+    /// Parallel (M5): regions are dispensed in chunks to the worker pool; each worker
+    /// traces through its own mark stack with CAS-claimed marking, and collectible
+    /// LoaderAllocator edges — the one EE call in the trace — are deferred to the GC
+    /// thread, because workers must never call into the EE.
     /// </summary>
     private void ScanCards()
     {
@@ -29,7 +34,59 @@ unsafe partial class GCHeap
 
         var count = _regionAllocator.CarvedCount;
 
-        for (int i = 0; i < count; i++)
+        if (_workerPool is null || _cardScanStacks is null)
+        {
+            ScanCardRange(cardBase, 0, count, _markStack, deferredCollectible: null);
+            return;
+        }
+
+        var cursor = 0;
+        var workerId = -1;
+
+        _workerPool.Run(() =>
+        {
+            const int Chunk = 8;
+
+            var id = Interlocked.Increment(ref workerId);
+            var stack = _cardScanStacks[id];
+            var deferred = _cardScanDeferred![id];
+
+            while (true)
+            {
+                var start = Interlocked.Add(ref cursor, Chunk) - Chunk;
+
+                if (start >= count)
+                {
+                    break;
+                }
+
+                ScanCardRange(cardBase, start, Math.Min(start + Chunk, count), stack, deferred);
+            }
+        });
+
+        // The deferred collectible edges call into the EE, so only the GC thread takes
+        // them; anything they reach traces inline (and further collectible edges too)
+        foreach (var deferred in _cardScanDeferred!)
+        {
+            foreach (var ptr in deferred)
+            {
+                var loaderAllocator = (GCObject*)_gcToClr.GetLoaderAllocatorObjectForGC((GCObject*)ptr);
+
+                if (loaderAllocator != null)
+                {
+                    _markStack.Push((nint)loaderAllocator);
+                }
+            }
+
+            deferred.Clear();
+        }
+
+        DrainMarkStack(_markStack, deferredCollectible: null);
+    }
+
+    private void ScanCardRange(nint cardBase, int start, int end, MarkStack stack, List<nint>? deferredCollectible)
+    {
+        for (int i = start; i < end; i++)
         {
             var entry = _regionAllocator.GetEntry(i);
 
@@ -43,21 +100,21 @@ unsafe partial class GCHeap
                 case RegionKind.Bump:
                     if (RegionHasDirtyCard(cardBase, i, 1))
                     {
-                        ScanBumpRegionCards(cardBase, i, entry);
+                        ScanBumpRegionCards(cardBase, i, entry, stack, deferredCollectible);
                     }
                     break;
 
                 case RegionKind.SizeClass:
                     if (RegionHasDirtyCard(cardBase, i, 1))
                     {
-                        ScanSizeClassRegionCards(cardBase, i, entry);
+                        ScanSizeClassRegionCards(cardBase, i, entry, stack, deferredCollectible);
                     }
                     break;
 
                 case RegionKind.SpanStart:
                     if (RegionHasDirtyCard(cardBase, i, entry->SpanCount))
                     {
-                        ScanSpanCards(cardBase, i);
+                        ScanSpanCards(cardBase, i, stack, deferredCollectible);
                     }
                     break;
 
@@ -106,9 +163,9 @@ unsafe partial class GCHeap
     /// run's first card to a nearby object start, so only the dirty neighborhoods get
     /// walked — a sparsely mutated region costs a few object hops instead of a 2 MB walk.
     /// An object spanning two runs can be enumerated twice; the mark-stack pop side
-    /// deduplicates via IsMarked, so that is waste, not a bug.
+    /// deduplicates via the CAS claim, so that is waste, not a bug.
     /// </summary>
-    private void ScanBumpRegionCards(nint cardBase, int index, RegionEntry* entry)
+    private void ScanBumpRegionCards(nint cardBase, int index, RegionEntry* entry, MarkStack stack, List<nint>? deferredCollectible)
     {
         var regionBase = _regionAllocator.RegionBase(index);
         var end = entry->Cursor;
@@ -145,7 +202,7 @@ unsafe partial class GCHeap
                 if (ptr + size > runStart
                     && obj->IsMarked() && RangeHasDirtyCard(cardBase, ptr, ptr + size))
                 {
-                    GCObject.EnumerateObjectReferences(obj, _markStack);
+                    GCObject.EnumerateObjectReferences(obj, stack);
                 }
 
                 ptr = Align(ptr + size);
@@ -154,10 +211,10 @@ unsafe partial class GCHeap
             c = runEnd;
         }
 
-        FinishRegionCardScan();
+        FinishRegionCardScan(stack, deferredCollectible);
     }
 
-    private void ScanSizeClassRegionCards(nint cardBase, int index, RegionEntry* entry)
+    private void ScanSizeClassRegionCards(nint cardBase, int index, RegionEntry* entry, MarkStack stack, List<nint>? deferredCollectible)
     {
         var regionBase = _regionAllocator.RegionBase(index);
         var classSize = Region.ClassSizes[entry->SizeClass];
@@ -173,14 +230,14 @@ unsafe partial class GCHeap
 
             if (obj->IsMarked() && RangeHasDirtyCard(cardBase, (nint)obj, (nint)obj + size))
             {
-                GCObject.EnumerateObjectReferences(obj, _markStack);
+                GCObject.EnumerateObjectReferences(obj, stack);
             }
         }
 
-        FinishRegionCardScan();
+        FinishRegionCardScan(stack, deferredCollectible);
     }
 
-    private void ScanSpanCards(nint cardBase, int index)
+    private void ScanSpanCards(nint cardBase, int index, MarkStack stack, List<nint>? deferredCollectible)
     {
         // One object per span; a single dirty card re-enumerates the whole object (a large
         // ref array pays full enumeration — card-sliced scanning is a known follow-up)
@@ -189,21 +246,21 @@ unsafe partial class GCHeap
 
         if (obj->IsMarked() && RangeHasDirtyCard(cardBase, (nint)obj, (nint)obj + size))
         {
-            GCObject.EnumerateObjectReferences(obj, _markStack);
+            GCObject.EnumerateObjectReferences(obj, stack);
         }
 
-        FinishRegionCardScan();
+        FinishRegionCardScan(stack, deferredCollectible);
     }
 
-    /// <summary>Traces everything the region's dirty objects referenced, keeping the mark
-    /// stack bounded to one region's worth of pushes.</summary>
-    private void FinishRegionCardScan()
+    /// <summary>Traces everything the region's dirty objects referenced, keeping each
+    /// worker's mark stack bounded to one region's worth of pushes.</summary>
+    private void FinishRegionCardScan(MarkStack stack, List<nint>? deferredCollectible)
     {
-        DrainMarkStack();
+        DrainMarkStack(stack, deferredCollectible);
 
         if (GcStats.Enabled)
         {
-            GcStats.CardRegionsScanned++;
+            Interlocked.Increment(ref GcStats.CardRegionsScanned);
         }
     }
 }

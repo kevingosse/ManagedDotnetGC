@@ -39,8 +39,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private long _youngBudgetCap;
 
     // Parallel collection workers (M5), null = serial. The threads belong to the GC dll's
-    // own runtime and never call into the EE.
+    // own runtime and never call into the EE. Each participant gets its own mark stack
+    // and collectible-deferral list for the parallel card scan.
     private GcWorkerPool? _workerPool;
+    private MarkStack[]? _cardScanStacks;
+    private List<nint>[]? _cardScanDeferred;
 
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
@@ -118,6 +121,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         if (participants > 1)
         {
             _workerPool = new GcWorkerPool(participants - 1);
+            _cardScanStacks = new MarkStack[participants];
+            _cardScanDeferred = new List<nint>[participants];
+
+            for (int i = 0; i < participants; i++)
+            {
+                _cardScanStacks[i] = new MarkStack();
+                _cardScanDeferred[i] = [];
+            }
         }
 
         // The Initialize contract wants real heap bounds and a non-null card table — debug

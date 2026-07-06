@@ -74,6 +74,32 @@ public unsafe ref struct GCObject
 
     public void Mark() => Epoch = CurrentEpoch;
 
+    /// <summary>
+    /// Claims the object for marking (M5): true exactly once per collection, whichever
+    /// thread wins the CAS on the epoch word. The stale value can be anything (older
+    /// epochs, zero), so the loop re-reads until it either observes the current epoch or
+    /// installs it.
+    /// </summary>
+    public bool TryMark()
+    {
+        ref var epoch = ref *((uint*)Unsafe.AsPointer(ref this) - 2);
+
+        while (true)
+        {
+            var current = Volatile.Read(ref epoch);
+
+            if (current == CurrentEpoch)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref epoch, CurrentEpoch, current) == current)
+            {
+                return true;
+            }
+        }
+    }
+
     public readonly uint ComputeSize()
     {
         var methodTable = MethodTable;

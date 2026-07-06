@@ -224,19 +224,24 @@ unsafe partial class GCHeap
 
         _markStack.Push((nint)root);
 
-        DrainMarkStack();
+        DrainMarkStack(_markStack, deferredCollectible: null);
     }
 
     /// <summary>
-    /// The transitive trace: marks every unmarked reachable object on the stack. Entries may
-    /// be raw field values (EnumerateObjectReferences pushes them unfiltered), so the pop
-    /// side does all the filtering.
+    /// The transitive trace: marks every unmarked reachable object on the stack. Entries
+    /// may be raw field values (EnumerateObjectReferences pushes them unfiltered), so the
+    /// pop side does all the filtering. Thread-safe for the parallel card scan (M5):
+    /// objects are claimed with a CAS before enumeration, LiveBytes accumulates with
+    /// interlocked adds, and the one EE call in the loop — the collectible
+    /// LoaderAllocator edge — is deferred to <paramref name="deferredCollectible"/> when
+    /// set, because worker threads must never call into the EE. Pass null on the GC
+    /// thread to take the edge inline.
     /// </summary>
-    private void DrainMarkStack()
+    private void DrainMarkStack(MarkStack stack, List<nint>? deferredCollectible)
     {
-        while (!_markStack.IsEmpty)
+        while (!stack.IsEmpty)
         {
-            var ptr = _markStack.Pop();
+            var ptr = stack.Pop();
             var o = (GCObject*)ptr;
 
             if (o->IsMarked())
@@ -263,30 +268,41 @@ unsafe partial class GCHeap
                 entry = _regionAllocator.GetEntry(entry->SpanStartIndex);
             }
 
-            o->EnumerateObjectReferences(_markStack);
+            if (!o->TryMark())
+            {
+                // Another worker claimed it and will enumerate it
+                continue;
+            }
+
+            o->EnumerateObjectReferences(stack);
 
             if (o->MethodTable->Collectible)
             {
                 // The type's managed LoaderAllocator must live as long as any instance —
                 // this edge is all that keeps a collectible assembly's MethodTables and JIT
                 // code alive while instances exist (missing-features 3.1)
-                var loaderAllocator = (GCObject*)_gcToClr.GetLoaderAllocatorObjectForGC(o);
-
-                if (loaderAllocator != null)
+                if (deferredCollectible is not null)
                 {
-                    _markStack.Push((nint)loaderAllocator);
+                    deferredCollectible.Add(ptr);
+                }
+                else
+                {
+                    var loaderAllocator = (GCObject*)_gcToClr.GetLoaderAllocatorObjectForGC(o);
+
+                    if (loaderAllocator != null)
+                    {
+                        stack.Push((nint)loaderAllocator);
+                    }
                 }
             }
 
-            o->Mark();
-
             var markedSize = (long)Align((nint)o->ComputeSize());
-            entry->LiveBytes = (int)Math.Min(int.MaxValue, entry->LiveBytes + markedSize);
+            Interlocked.Add(ref entry->LiveBytes, (int)Math.Min(markedSize, int.MaxValue / 2));
 
             if (GcStats.Enabled)
             {
-                GcStats.MarkedCount++;
-                GcStats.MarkedBytes += markedSize;
+                Interlocked.Increment(ref GcStats.MarkedCount);
+                Interlocked.Add(ref GcStats.MarkedBytes, markedSize);
             }
         }
     }
