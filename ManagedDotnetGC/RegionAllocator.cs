@@ -139,7 +139,10 @@ internal unsafe class RegionAllocator : IDisposable
 
     public int CarvedCount => _frontier;
 
-    public long CommittedRegionBytes { get; private set; }
+    // Field-backed so parallel sweep workers can adjust it with interlocked adds
+    private long _committedRegionBytes;
+
+    public long CommittedRegionBytes => Volatile.Read(ref _committedRegionBytes);
 
     public nint RegionBase(int index) => HeapBase + ((nint)index << Region.Shift);
 
@@ -432,7 +435,7 @@ internal unsafe class RegionAllocator : IDisposable
                 return false;
             }
 
-            CommittedRegionBytes += (long)count << Region.Shift;
+            _committedRegionBytes += (long)count << Region.Shift;
             _frontier = start + count;
 
             for (int i = 0; i < count; i++)
@@ -508,7 +511,7 @@ internal unsafe class RegionAllocator : IDisposable
                 }
 
                 entry->IsCommitted = 1;
-                CommittedRegionBytes += Region.Size;
+                _committedRegionBytes += Region.Size;
                 _pooledCommittedBytes += Region.Size;
             }
             else
@@ -562,7 +565,7 @@ internal unsafe class RegionAllocator : IDisposable
                 }
 
                 entry->IsCommitted = 1;
-                CommittedRegionBytes += Region.Size;
+                _committedRegionBytes += Region.Size;
             }
 
             return true;
@@ -579,7 +582,7 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         GetEntry(index)->IsCommitted = 1;
-        CommittedRegionBytes += Region.Size;
+        _committedRegionBytes += Region.Size;
         _frontier = index + 1;
         return true;
     }
@@ -596,10 +599,8 @@ internal unsafe class RegionAllocator : IDisposable
     /// returned total is therefore the young survivor (promoted) byte count, not whole-heap
     /// live: old objects are skipped by the mark (already marked) and never re-counted.
     /// </summary>
-    public long Sweep(bool youngOnly = false)
+    public long Sweep(bool youngOnly = false, GcWorkerPool? pool = null)
     {
-        long liveTotal = 0;
-
         // Memory pressure: within an eighth of the hard limit, stop stranding sub-window
         // holes — link everything carveable so the heap can run dense instead of dying
         _minLinkedHole = UnderMemoryPressure ? PressureMinLinkedHole : Region.MinLinkedHole;
@@ -608,7 +609,121 @@ internal unsafe class RegionAllocator : IDisposable
         _recycledHead = -1;
         _classHeads.AsSpan().Fill(-1);
 
-        for (int i = 0; i < _frontier; i++)
+        var frontier = _frontier;
+
+        if (pool is null)
+        {
+            var lists = NewSweepLists();
+            SweepRange(0, frontier, youngOnly, ref lists);
+            SpliceSweepLists(ref lists);
+            return lists.Live;
+        }
+
+        // Parallel (M5): regions are dispensed in chunks; every region is touched by
+        // exactly one worker, so object work needs no synchronization. Workers build
+        // their own intrusive lists (spliced under a lock at the end), push freed
+        // regions into the pool lock-free (MakeFree), and adjust the shared byte
+        // counters with interlocked adds (RecycleSpan).
+        var cursor = 0;
+        long liveTotal = 0;
+        var mergeLock = new Lock();
+
+        pool.Run(() =>
+        {
+            const int Chunk = 16;
+            var lists = NewSweepLists();
+
+            while (true)
+            {
+                var start = Interlocked.Add(ref cursor, Chunk) - Chunk;
+
+                if (start >= frontier)
+                {
+                    break;
+                }
+
+                SweepRange(start, Math.Min(start + Chunk, frontier), youngOnly, ref lists);
+            }
+
+            lock (mergeLock)
+            {
+                SpliceSweepLists(ref lists);
+                liveTotal += lists.Live;
+            }
+        });
+
+        return liveTotal;
+    }
+
+    /// <summary>Per-worker sweep accumulator: intrusive list heads/tails built over a
+    /// disjoint region subset, spliced into the shared lists once per worker.</summary>
+    private struct SweepLists
+    {
+        public int RecycledHead;
+        public int RecycledTail;
+        public fixed int ClassHeads[Region.ClassCount];
+        public fixed int ClassTails[Region.ClassCount];
+        public long Live;
+    }
+
+    private static SweepLists NewSweepLists()
+    {
+        var lists = default(SweepLists);
+        lists.RecycledHead = -1;
+        lists.RecycledTail = -1;
+
+        for (int c = 0; c < Region.ClassCount; c++)
+        {
+            lists.ClassHeads[c] = -1;
+            lists.ClassTails[c] = -1;
+        }
+
+        return lists;
+    }
+
+    private void LinkRecycled(ref SweepLists lists, int index)
+    {
+        GetEntry(index)->NextRecycled = lists.RecycledHead;
+        lists.RecycledHead = index;
+
+        if (lists.RecycledTail < 0)
+        {
+            lists.RecycledTail = index;
+        }
+    }
+
+    private void LinkClassList(ref SweepLists lists, int sizeClass, int index)
+    {
+        GetEntry(index)->NextInClassList = lists.ClassHeads[sizeClass];
+        lists.ClassHeads[sizeClass] = index;
+
+        if (lists.ClassTails[sizeClass] < 0)
+        {
+            lists.ClassTails[sizeClass] = index;
+        }
+    }
+
+    private void SpliceSweepLists(ref SweepLists lists)
+    {
+        if (lists.RecycledHead >= 0)
+        {
+            GetEntry(lists.RecycledTail)->NextRecycled = _recycledHead;
+            _recycledHead = lists.RecycledHead;
+        }
+
+        for (int c = 0; c < Region.ClassCount; c++)
+        {
+            if (lists.ClassHeads[c] >= 0)
+            {
+                GetEntry(lists.ClassTails[c])->NextInClassList = _classHeads[c];
+                _classHeads[c] = lists.ClassHeads[c];
+            }
+        }
+    }
+
+    private void SweepRange(int start, int end, bool youngOnly, ref SweepLists lists)
+    {
+        for (int i = start; i < end; i++)
         {
             var entry = GetEntry(i);
 
@@ -622,16 +737,14 @@ internal unsafe class RegionAllocator : IDisposable
                     case RegionKind.Bump:
                         if (entry->FirstHole != 0)
                         {
-                            entry->NextRecycled = _recycledHead;
-                            _recycledHead = i;
+                            LinkRecycled(ref lists, i);
                         }
                         break;
 
                     case RegionKind.SizeClass:
                         if ((entry->AllocatedBlocks & FullMask(entry->SizeClass)) != FullMask(entry->SizeClass))
                         {
-                            entry->NextInClassList = _classHeads[entry->SizeClass];
-                            _classHeads[entry->SizeClass] = i;
+                            LinkClassList(ref lists, entry->SizeClass, i);
                         }
                         break;
                 }
@@ -651,14 +764,14 @@ internal unsafe class RegionAllocator : IDisposable
                     }
                     else
                     {
-                        liveTotal += entry->LiveBytes;
-                        SweepBumpRegion(i);
+                        lists.Live += entry->LiveBytes;
+                        SweepBumpRegion(i, ref lists);
                     }
                     break;
 
                 case RegionKind.SizeClass:
-                    liveTotal += entry->LiveBytes;
-                    SweepSizeClassRegion(i);
+                    lists.Live += entry->LiveBytes;
+                    SweepSizeClassRegion(i, ref lists);
                     break;
 
                 case RegionKind.SpanStart:
@@ -668,15 +781,13 @@ internal unsafe class RegionAllocator : IDisposable
                     }
                     else
                     {
-                        liveTotal += entry->LiveBytes;
+                        lists.Live += entry->LiveBytes;
                         entry->LiveBytes = 0;
                         entry->Age = RegionAge.Old;
                     }
                     break;
             }
         }
-
-        return liveTotal;
     }
 
     /// <summary>
@@ -704,7 +815,7 @@ internal unsafe class RegionAllocator : IDisposable
         MakeFree(index);
     }
 
-    private void SweepBumpRegion(int index)
+    private void SweepBumpRegion(int index, ref SweepLists lists)
     {
         var entry = GetEntry(index);
 
@@ -750,8 +861,7 @@ internal unsafe class RegionAllocator : IDisposable
 
         if (entry->FirstHole != 0)
         {
-            entry->NextRecycled = _recycledHead;
-            _recycledHead = index;
+            LinkRecycled(ref lists, index);
         }
 
         entry->LiveBytes = 0;
@@ -787,7 +897,7 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private void SweepSizeClassRegion(int index)
+    private void SweepSizeClassRegion(int index, ref SweepLists lists)
     {
         var entry = GetEntry(index);
         var regionBase = RegionBase(index);
@@ -823,8 +933,7 @@ internal unsafe class RegionAllocator : IDisposable
         }
         else if ((entry->AllocatedBlocks & fullMask) != fullMask)
         {
-            entry->NextInClassList = _classHeads[sizeClass];
-            _classHeads[sizeClass] = index;
+            LinkClassList(ref lists, sizeClass, index);
         }
         else
         {
@@ -843,7 +952,7 @@ internal unsafe class RegionAllocator : IDisposable
         // their dead contents; the next carve zeroes what it hands out (M4 zero-at-carve).
         if (count >= 4 && _memory.Decommit(spanBase, spanBytes))
         {
-            CommittedRegionBytes -= spanBytes;
+            Interlocked.Add(ref _committedRegionBytes, -spanBytes); // parallel sweep workers race here
 
             for (int i = 0; i < count; i++)
             {
@@ -863,11 +972,14 @@ internal unsafe class RegionAllocator : IDisposable
         entry->Kind = RegionKind.Free;
         entry->LiveBytes = 0;
 
-        _pool[_poolCount++] = index;
+        // Lock-free push: parallel sweep workers free regions concurrently. Allocation
+        // never runs during a sweep (STW), so pushes only race with each other.
+        var slot = Interlocked.Increment(ref _poolCount) - 1;
+        _pool[slot] = index;
 
         if (entry->IsCommitted != 0)
         {
-            _pooledCommittedBytes += Region.Size;
+            Interlocked.Add(ref _pooledCommittedBytes, Region.Size);
         }
     }
 
@@ -888,7 +1000,7 @@ internal unsafe class RegionAllocator : IDisposable
             {
                 entry->IsCommitted = 0;
                 _pooledCommittedBytes -= Region.Size;
-                CommittedRegionBytes -= Region.Size;
+                _committedRegionBytes -= Region.Size;
             }
         }
     }
@@ -961,9 +1073,9 @@ internal unsafe class RegionAllocator : IDisposable
 
         if (GcStats.Enabled)
         {
-            // Callers all run under the alloc lock or STW, so plain adds are safe
-            GcStats.ZeroBytes += total;
-            GcStats.ZeroTicks += GcStats.Timestamp() - tStart;
+            // Callers include parallel sweep workers and post-lock window zeroing
+            Interlocked.Add(ref GcStats.ZeroBytes, total);
+            Interlocked.Add(ref GcStats.ZeroTicks, GcStats.Timestamp() - tStart);
         }
     }
 

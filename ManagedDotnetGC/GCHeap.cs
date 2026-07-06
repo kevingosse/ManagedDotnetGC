@@ -38,6 +38,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     // DOTNET_GCgen0size: latency knob capping the young allocation budget, 0 = uncapped
     private long _youngBudgetCap;
 
+    // Parallel collection workers (M5), null = serial. The threads belong to the GC dll's
+    // own runtime and never call into the EE.
+    private GcWorkerPool? _workerPool;
+
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
     private uint _currentEpoch = 1;
@@ -96,6 +100,24 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 Write($"Young budget cap: {gen0Size}");
                 _youngBudgetCap = gen0Size;
             }
+        }
+
+        // Parallel collection phases (M5): half the machine by default, DOTNET_GCHeapCount
+        // overrides (the standard knob for GC parallelism)
+        var participants = Math.Min(8, Environment.ProcessorCount / 2);
+
+        fixed (byte* privateKey = "GCHeapCount"u8)
+        fixed (byte* publicKey = "System.GC.HeapCount"u8)
+        {
+            if (_gcToClr.GetIntConfigValue(privateKey, publicKey, out var heapCount) && heapCount > 0)
+            {
+                participants = (int)Math.Min(heapCount, Environment.ProcessorCount);
+            }
+        }
+
+        if (participants > 1)
+        {
+            _workerPool = new GcWorkerPool(participants - 1);
         }
 
         // The Initialize contract wants real heap bounds and a non-null card table — debug
@@ -227,7 +249,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var zeroTicksBefore = GcStats.ZeroTicks;
 
             Write("Sweep phase");
-            var swept = _regionAllocator.Sweep(youngOnly: young);
+            var swept = _regionAllocator.Sweep(youngOnly: young, _workerPool);
 
             if (young)
             {

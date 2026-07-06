@@ -53,10 +53,17 @@ public unsafe class RegionAllocatorTests
 
     // ----- §3 window/plug arithmetic: the property test -----
 
-    [TestCase(1)]
-    [TestCase(2)]
-    [TestCase(3)]
-    public void RandomCarveSequences_KeepEveryRegionWalkable(int seed)
+    // A shared pool for the parallel variants: worker threads are process-lifetime
+    // (GcWorkerPool has no shutdown by design — the real GC never stops)
+    private static readonly GcWorkerPool ParallelPool = new(3);
+
+    [TestCase(1, false)]
+    [TestCase(2, false)]
+    [TestCase(3, false)]
+    [TestCase(1, true)]
+    [TestCase(2, true)]
+    [TestCase(3, true)]
+    public void RandomCarveSequences_KeepEveryRegionWalkable(int seed, bool parallelSweep)
     {
         var random = new Random(seed * 1000 + 123);
         var live = new Dictionary<nint, nint>(); // ref -> size
@@ -89,7 +96,7 @@ public unsafe class RegionAllocatorTests
                 }
             }
 
-            _allocator.Sweep();
+            _allocator.Sweep(youngOnly: false, parallelSweep ? ParallelPool : null);
             live = survivors;
 
             AssertAllBumpRegionsWalkable(live);
