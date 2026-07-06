@@ -5,24 +5,29 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph-ws.png"
 
-# ---- data (computed from experiments/results/perf-history.csv: median peak_ws_mb per
-# scenario, geomean of the 4 scenario medians, converted to GB by /1024) ----
+# ---- data (recomputed 2026-07-06 evening sitting: six milestones re-benched as -r2
+# labels alongside tonight's new M7 "mutator war" stage (label m7-stash2) so every
+# point shares one sitting; see experiments/results/2026-07-06-milestone-graph/summary.md.
+# median peak_ws_mb per scenario, geomean of the 4 scenario medians, converted to GB by /1024) ----
 milestones = [
-    ("first working\nallocator", 1.557),
-    ("generational", 6.887),
-    ("parallel\nmark & sweep", 6.971),
-    ("concurrent\nmarking", 6.964),
-    ("memory diet\n+ tuning", 2.509),
-    ("concurrent\nsweep", 2.434),
+    ("first working\nallocator", 1.551),
+    ("generational", 6.897),
+    ("parallel\nmark & sweep", 6.989),
+    ("concurrent\nmarking", 6.967),
+    ("memory diet\n+ tuning", 2.436),
+    ("concurrent\nsweep", 2.490),
+    ("faster\nallocation", 2.445),
 ]
 
 # (label, line y, explicit label y). DATAS discovery 2026-07-06: bare gcServer=1 is
-# adaptive (that is what held 1.64 GB); classic fixed heap-per-core costs 6.18 GB.
+# adaptive (that is what held 1.64ish GB); classic fixed heap-per-core costs ~6.1 GB.
+# 2026-07-06 evening refresh: values barely moved from the DATAS-discovery sitting, so
+# the same hand-picked label_y slots still keep everything clear (verified by re-render).
 stock_refs = [
-    ("Server GC (32 heaps)", 6.177, 5.60, "#6b6a63"),
-    ("Server GC (8 heaps)", 2.492, 3.10, "#3a3a37"),
-    ("Server GC (DATAS)", 1.635, 1.05, "#55544e"),
-    ("Workstation GC", 1.579, 0.55, "#9a988f"),
+    ("Server GC (32 heaps)", 6.129, 5.60, "#6b6a63"),
+    ("Server GC (8 heaps)", 2.515, 3.10, "#3a3a37"),
+    ("Server GC (DATAS)", 1.680, 1.05, "#55544e"),
+    ("Workstation GC", 1.582, 0.55, "#9a988f"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -73,11 +78,15 @@ for (label, val, dy, color) in stock_refs:
 ax.plot(xs, ys, color=MAIN_COLOR, linewidth=3.2, zorder=4, solid_capstyle="round")
 ax.scatter(xs, ys, s=110, color=MAIN_COLOR, zorder=5, edgecolors="white", linewidths=1.6)
 
-# value labels above each point (offset scaled to axis range)
+# value labels above each point (offset scaled to axis range). White halo bbox: the
+# last three points (memory diet+tuning, concurrent sweep, faster allocation) all sit
+# right at the Server GC (8 heaps) dashed line's height, so a plain text label would
+# get a strikethrough from the dashed line running behind it.
 label_offset = (ymax - ymin) * 0.045
 for x, y in zip(xs, ys):
     ax.annotate(f"{y:.1f} GB", (x, y), xytext=(0, 14), textcoords="offset points",
-                ha="center", va="bottom", fontsize=13.5, fontweight="bold", color=INK, zorder=6)
+                ha="center", va="bottom", fontsize=13.5, fontweight="bold", color=INK, zorder=6,
+                bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
 
 # x tick labels
 ax.set_xticks(xs)

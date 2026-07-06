@@ -9,19 +9,27 @@ OUT_DIR = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-grap
 SCENARIOS = ["soh", "lohmix", "pin", "pinheavy"]
 
 # (name, label, sha, gc-value-to-match)
+# 2026-07-06 evening: all six re-benched as "-r2" labels in the same sitting as the new
+# M7 "mutator war" stage (label m7-stash2) so every chart point shares one sitting —
+# see experiments/results/2026-07-06-milestone-graph/summary.md for the write-up.
 MILESTONES = [
-    ("M2 baseline",     "backfill-m2", "407cf59", "custom"),
-    ("M4 sticky gens",  "backfill-m4", "5db0ed9", "custom"),
-    ("M5 parallel",     "backfill-m5", "344ce8b", "custom"),
-    ("M6 concurrent",   "backfill-m6", "1aedac9", "custom"),
-    ("M7 tuning",       "backfill-m7", "7689ab1", "custom"),
-    ("M6.5 sweep-assist","m65s2-final", "765f680", "custom"),
+    ("M2 baseline",     "backfill-m2-r2", "407cf59", "custom"),
+    ("M4 sticky gens",  "backfill-m4-r2", "5db0ed9", "custom"),
+    ("M5 parallel",     "backfill-m5-r2", "344ce8b", "custom"),
+    ("M6 concurrent",   "backfill-m6-r2", "1aedac9", "custom"),
+    ("M7 tuning",       "backfill-m7-r2", "7689ab1", "custom"),
+    ("M6.5 sweep-assist","m65s2-final-r2", "765f680", "custom"),
+    ("faster allocation (M7 mutator war)", "m7-stash2", "e65fa79", "custom"),
 ]
 
+# Stock anchors also re-measured tonight in the same sitting (label m7-stash2-anchor),
+# replacing the older `svrgap` rows; four configs since the 2026-07-06 DATAS discovery
+# (bare gcServer=1 is adaptive-heap-count DATAS, not fixed-32 — that needs -HeapCount 32).
 STOCK_REFS = [
-    ("stock WKS",              "svrgap", "stock-wks"),
-    ("stock Server GC",        "svrgap", "stock-svr"),
-    ("stock Server GC (8 heaps)", "svrgap", "stock-svr-h8"),
+    ("Workstation GC",          "m7-stash2-anchor", "stock-wks"),
+    ("Server GC (DATAS)",       "m7-stash2-anchor", "stock-svr-datas"),
+    ("Server GC (8 heaps)",     "m7-stash2-anchor", "stock-svr-h8"),
+    ("Server GC (32 heaps)",    "m7-stash2-anchor", "stock-svr-h32"),
 ]
 
 def load_rows():

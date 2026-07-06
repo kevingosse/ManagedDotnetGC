@@ -5,24 +5,33 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph-nonum.png"
 
-# ---- data (computed by make_graph.py from experiments/results/perf-history.csv) ----
+# ---- data (recomputed 2026-07-06 evening sitting: six milestones re-benched as -r2
+# labels alongside tonight's new M7 "mutator war" stage (label m7-stash2) so every
+# point shares one sitting; see experiments/results/2026-07-06-milestone-graph/summary.md) ----
 milestones = [
-    ("first working\nallocator", 7.673),
-    ("generational", 5.379),
-    ("parallel\nmark & sweep", 2.104),
-    ("concurrent\nmarking", 1.926),
-    ("memory diet\n+ tuning", 1.794),
-    ("concurrent\nsweep", 1.438),
+    ("first working\nallocator", 8.054),
+    ("generational", 5.350),
+    ("parallel\nmark & sweep", 2.029),
+    ("concurrent\nmarking", 1.928),
+    ("memory diet\n+ tuning", 1.851),
+    ("concurrent\nsweep", 1.816),
+    ("faster\nallocation", 1.418),
 ]
 
 # (label, line y, explicit label y — slots picked to clear every dashed line and each
 # other; DATAS discovery 2026-07-06: bare gcServer=1 adapts heap count, fixed-32 is
-# its own config)
+# its own config. 2026-07-06 evening refresh for the same-sitting M7 "faster allocation"
+# stage add: the four values are clustered within 1.0s of each other (2.40/2.12/1.76/1.41),
+# and the real gaps between them (0.28/0.36/0.35) are too close to a safe label height to
+# stagger near their own lines without crossing a *different* line — so all four labels
+# are lifted into the empty band above the whole cluster (nothing else sits between
+# ~2.4s and 5.3s here) and stacked in real-value order, each >=0.35s clear of every
+# dashed line and >=0.5s clear of its neighbor label.
 stock_refs = [
-    ("Workstation GC", 2.276, 2.62, "#9a988f"),
-    ("Server GC (32 heaps)", 1.863, 2.07, "#6b6a63"),
-    ("Server GC (DATAS)", 1.704, 1.53, "#55544e"),
-    ("Server GC (8 heaps)", 1.347, 0.98, "#3a3a37"),
+    ("Workstation GC", 2.399, 4.25, "#9a988f"),
+    ("Server GC (32 heaps)", 1.759, 3.25, "#6b6a63"),
+    ("Server GC (DATAS)", 2.119, 3.75, "#55544e"),
+    ("Server GC (8 heaps)", 1.405, 2.75, "#3a3a37"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -69,11 +78,15 @@ for label, val, label_y, color in stock_refs:
 ax.plot(xs, ys, color=MAIN_COLOR, linewidth=3.2, zorder=4, solid_capstyle="round")
 ax.scatter(xs, ys, s=110, color=MAIN_COLOR, zorder=5, edgecolors="white", linewidths=1.6)
 
-# value labels above each point (offset scaled to axis range)
+# value labels above each point (offset scaled to axis range). White halo bbox: the
+# last two points (concurrent sweep, faster allocation) sit right where the Server GC
+# (32 heaps)/(8 heaps) dashed lines cross the plot, so a plain text label would get a
+# strikethrough from the dashed line running behind it.
 label_offset = (ymax - ymin) * 0.045
 for x, y in zip(xs, ys):
     ax.annotate(f"{y:.2f}s", (x, y), xytext=(0, 14), textcoords="offset points",
-                ha="center", va="bottom", fontsize=13.5, fontweight="bold", color=INK, zorder=6)
+                ha="center", va="bottom", fontsize=13.5, fontweight="bold", color=INK, zorder=6,
+                bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
 
 # x tick labels
 ax.set_xticks(xs)

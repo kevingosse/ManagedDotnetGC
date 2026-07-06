@@ -5,20 +5,24 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph.png"
 
-# ---- data (computed by make_graph.py from experiments/results/perf-history.csv) ----
+# ---- data (recomputed 2026-07-06 evening sitting: six milestones re-benched as -r2
+# labels alongside tonight's new M7 "mutator war" stage (label m7-stash2) so every
+# point on the chart shares one sitting; see experiments/results/2026-07-06-milestone-graph/summary.md) ----
 milestones = [
-    ("M2 baseline", 7.673),
-    ("M4 sticky gens", 5.379),
-    ("M5 parallel", 2.104),
-    ("M6 concurrent", 1.926),
-    ("M7 tuning", 1.794),
-    ("M6.5 sweep-assist", 1.438),
+    ("M2 baseline", 8.054),
+    ("M4 sticky gens", 5.350),
+    ("M5 parallel", 2.029),
+    ("M6 concurrent", 1.928),
+    ("M7 tuning", 1.851),
+    ("M6.5\nsweep-assist", 1.816),
+    ("faster\nallocation", 1.418),
 ]
 
 stock_refs = [
-    ("stock WKS", 2.276, "#9a988f"),
-    ("stock Server GC", 1.704, "#6b6a63"),
-    ("stock Server GC (8 heaps)", 1.347, "#3a3a37"),
+    ("stock WKS", 2.399, "#9a988f"),
+    ("stock Server GC (DATAS)", 2.119, "#55544e"),
+    ("stock Server GC (32 heaps)", 1.759, "#6b6a63"),
+    ("stock Server GC (8 heaps)", 1.405, "#3a3a37"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -41,28 +45,34 @@ xs = list(range(len(milestones)))
 ys = [m[1] for m in milestones]
 names = [m[0] for m in milestones]
 
-# extend xlim so reference-line labels have room on the right without colliding with the last point
-ax.set_xlim(-0.4, len(milestones) - 1 + 1.9)
+# extend xlim so reference-line labels have room on the right without colliding with the
+# last point (7th stage, "faster allocation," added 2026-07-06 evening pushed the last
+# point one slot right and the 4th stock ref crowds the same 1.4-2.4s band the last few
+# hero points sit in, so this needs more right-margin than the old 6-stage/3-ref chart)
+ax.set_xlim(-0.4, len(milestones) - 1 + 2.2)
 ymax = max(ys) * 1.14
 ymin = 0
 ax.set_ylim(ymin, ymax)
 
 # ---- reference lines (stock configs), drawn first so the hero line sits on top ----
-# The three reference values are clustered (2.28 / 1.70 / 1.35) — placing each label at
-# its exact y would overlap. Stagger label y-positions with a minimum gap and connect
-# each to its true line with a short leader.
-label_x = len(milestones) - 1 + 0.35
-line_end_x = len(milestones) - 1 + 0.20
-CLEARANCE = 0.27  # keeps each label clear of its own dashed line (no strikethrough)
-# The three values are clustered (2.28 / 1.70 / 1.35). The top two get room above their
-# own line; the bottom-most (lowest value) has open space below it down to y=0, so it
-# is labeled below instead — this keeps every label comfortably clear of every line
-# without needing an iterative stagger.
-sorted_refs = sorted(stock_refs, key=lambda r: -r[1])  # WKS, Server GC, Server GC (8 heaps)
-directions = ["above", "above", "below"]
+# Four reference values, clustered within 1.0s of each other (2.40 / 2.12 / 1.76 / 1.41)
+# — any near-own-line placement collides with a *different* reference's dashed line,
+# since the real gaps between them (0.28 / 0.36 / 0.35) are themselves close to the
+# clearance a label needs. So all four labels are lifted into the empty band above the
+# whole cluster (nothing else sits between ~2.4s and 5.3s at this x position) and
+# stacked in the same order as their real values, each >=0.35s clear of every dashed
+# line and >=0.5s clear of its neighbor label.
+label_x = len(milestones) - 1 + 0.65
+line_end_x = len(milestones) - 1 + 0.45
+stock_label_y = {
+    "stock WKS": 4.25,
+    "stock Server GC (DATAS)": 3.75,
+    "stock Server GC (32 heaps)": 3.25,
+    "stock Server GC (8 heaps)": 2.75,
+}
 
-for (label, val, color), direction in zip(sorted_refs, directions):
-    dy = val + CLEARANCE if direction == "above" else val - CLEARANCE
+for label, val, color in stock_refs:
+    dy = stock_label_y[label]
     ax.axhline(val, color=color, linestyle=(0, (6, 4)), linewidth=1.6, alpha=0.9, zorder=2)
     ax.plot([line_end_x, label_x - 0.05], [val, dy], color=color, linewidth=1.0,
             alpha=0.7, zorder=2, solid_capstyle="round")
@@ -73,15 +83,20 @@ for (label, val, color), direction in zip(sorted_refs, directions):
 ax.plot(xs, ys, color=MAIN_COLOR, linewidth=3.2, zorder=4, solid_capstyle="round")
 ax.scatter(xs, ys, s=110, color=MAIN_COLOR, zorder=5, edgecolors="white", linewidths=1.6)
 
-# value labels above each point (offset scaled to axis range)
+# value labels above each point (offset scaled to axis range). White halo bbox: the
+# last two points (M6.5 sweep-assist, faster allocation) sit right where the stock
+# Server GC (32 heaps)/(8 heaps) dashed lines cross the plot, so a plain text label
+# would get a strikethrough from the dashed line running behind it.
 label_offset = (ymax - ymin) * 0.045
 for x, y in zip(xs, ys):
     ax.annotate(f"{y:.2f}s", (x, y), xytext=(0, 14), textcoords="offset points",
-                ha="center", va="bottom", fontsize=13.5, fontweight="bold", color=INK, zorder=6)
+                ha="center", va="bottom", fontsize=13.5, fontweight="bold", color=INK, zorder=6,
+                bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
 
-# x tick labels
+# x tick labels (fontsize trimmed slightly from 12.5: 7 categories now share the same
+# width 6 used to, and two labels wrap to two lines to avoid crowding their neighbors)
 ax.set_xticks(xs)
-ax.set_xticklabels(names, fontsize=12.5, color=SECONDARY_INK)
+ax.set_xticklabels(names, fontsize=11.3, color=SECONDARY_INK)
 ax.tick_params(axis="x", length=0, pad=10)
 
 # y axis
