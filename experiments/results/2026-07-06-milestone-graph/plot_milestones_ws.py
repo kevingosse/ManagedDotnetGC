@@ -5,38 +5,38 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph-ws.png"
 
-# ---- data (recomputed 2026-07-07 sitting: all ten milestones — the eight from the
-# 2026-07-06 backfill plus the two new M8 stages — and all four stock anchors
-# re-benched fresh in ONE sitting; see
-# experiments/results/2026-07-06-milestone-graph/summary.md.
-# median peak_ws_mb per scenario, geomean of the 4 scenario medians, converted to GB by /1024) ----
+# ---- data (recomputed 2026-07-07 AFTERNOON sitting under the mixed-only protocol:
+# all eleven milestones and all four stock anchors re-benched fresh in ONE sitting
+# with `bench-gcperfsim.ps1 -Scenario mixed`; see summary.md.
+# median peak_ws_mb of the 'mixed' scenario, converted to GB by /1024) ----
 milestones = [
-    ("first working\nallocator", 1.550),
-    ("generational", 6.899),
-    ("parallel\nmark & sweep", 6.983),
-    ("concurrent\nmarking", 7.068),
-    ("memory diet\n+ tuning", 2.437),
-    ("concurrent\nsweep", 2.425),
-    ("faster\nallocation", 2.598),
-    ("sharded\nsupply", 2.423),
-    # M8 (2026-07-07 sitting): adaptive young-generation budget and SIMD zero-skip in
-    # the bitmap walks — both stay in the same ~2.4-2.5 GB band as the M7 stages.
-    ("adaptive\nnursery", 2.436),
-    ("vectorized\nbitmap skip", 2.485),
+    ("first working\nallocator", 1.341),
+    ("generational", 6.382),
+    ("parallel\nmark & sweep", 6.652),
+    ("concurrent\nmarking", 6.838),
+    ("memory diet\n+ tuning", 2.100),
+    ("concurrent\nsweep", 2.087),
+    ("faster\nallocation", 2.877),
+    ("sharded\nsupply", 1.956),
+    # M8 (2026-07-07): adaptive young-generation budget and SIMD zero-skip in the
+    # bitmap walks; M8.2 partitioned stack scanning. All in the ~2.0-2.5 GB band
+    # (peak WS bounces ±15% across runs on mixed — see fastalloc's 2.9).
+    ("adaptive\nnursery", 2.119),
+    ("vectorized\nbitmap skip", 2.131),
+    ("partitioned\nstack scan", 2.475),
 ]
 
 # (label, line y, explicit label y). DATAS discovery 2026-07-06: bare gcServer=1 is
-# adaptive (that is what held ~1.6-1.7 GB); classic fixed heap-per-core costs ~6.4 GB.
-# 2026-07-07 refresh: values shifted slightly from the 2026-07-06 sitting but stay in
-# the same bands, so the same hand-picked label_y slots keep everything clear (verified
-# by re-render).
+# adaptive; classic fixed heap-per-core costs ~7 GB. 2026-07-07 mixed refresh: the
+# low stock cluster moved up (mixed pins survivors, stock compacts less): wks 2.21 /
+# DATAS 2.34 / h8 2.57 now bracket the hero tail (1.96-2.48), so wks+DATAS labels
+# stay staggered BELOW their lines and h8 stays lifted above; h32 (6.96) keeps its
+# label in the open band under the M4-M6 spike.
 stock_refs = [
-    ("Server GC (32 heaps)", 6.366, 5.60, "#6b6a63"),
-    # label lifted 3.10 → 3.85 when the 8th stage landed: the new last point's own
-    # value label sits at the same height the 3.10 slot used
-    ("Server GC (8 heaps)", 2.490, 3.85, "#3a3a37"),
-    ("Server GC (DATAS)", 1.635, 1.05, "#55544e"),
-    ("Workstation GC", 1.576, 0.55, "#9a988f"),
+    ("Server GC (32 heaps)", 6.956, 5.60, "#6b6a63"),
+    ("Server GC (8 heaps)", 2.566, 3.85, "#3a3a37"),
+    ("Server GC (DATAS)", 2.344, 1.05, "#55544e"),
+    ("Workstation GC", 2.214, 0.45, "#9a988f"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -103,7 +103,7 @@ ax.set_xticklabels(names, fontsize=10.8, color=SECONDARY_INK)
 ax.tick_params(axis="x", length=0, pad=10)
 
 # y axis
-ax.set_ylabel("peak working set, GB (4-scenario geomean, lower is better)", fontsize=12,
+ax.set_ylabel("peak working set, GB (mixed scenario, lower is better)", fontsize=12,
               color=SECONDARY_INK, labelpad=10)
 ax.tick_params(axis="y", labelsize=11, colors=MUTED, length=0)
 for spine in ["top", "right", "left"]:
@@ -128,7 +128,8 @@ ax.text(-0.4, ymax * 0.99, "ManagedDotnetGC (C#)",
 fig.text(0.07, 0.93, "The same GC's memory: peak working set across milestones",
           fontsize=20, fontweight="bold", color=INK, ha="left", va="top")
 fig.text(0.07, 0.875,
-          "GCPerfSim, 4-scenario geometric mean of peak working set: soh, lohmix, pin, pinheavy",
+          "GCPerfSim, mixed workload: 95% ordinary / 5% pinned allocations — "
+          "all builds re-benchmarked same sitting, same machine, vs same-sitting stock anchors",
           fontsize=12.5, color=SECONDARY_INK, ha="left", va="top")
 
 # ---- small annotation ----

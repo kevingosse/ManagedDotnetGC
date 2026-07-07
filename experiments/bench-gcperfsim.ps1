@@ -172,3 +172,9 @@ foreach ($name in $scenarios.Keys) {
     $median = ($walls | Sort-Object)[[int](($walls.Count - 1) / 2)]
     "{0,-14} {1,-7} median_wall_s={2,-8} iters=({3})" -f $Label, $name, $median, ($walls -join ' ')
 }
+
+# Don't leak the GC env into the calling session: a leftover DOTNET_GCName makes the
+# NEXT dotnet invocation (publish included — the CLI is a .NET process) die instantly
+# with 0x8007007E, which silently turns worktree backfill loops into stale-dll benches
+# (bit three times on 2026-07-07)
+Remove-Item Env:DOTNET_GCName, Env:DOTNET_gcServer, Env:DOTNET_gcConcurrent, Env:DOTNET_GCHeapCount, Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCAllocShards, Env:DOTNET_GCDynamicAdaptationMode -ErrorAction SilentlyContinue

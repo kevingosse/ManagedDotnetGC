@@ -1,51 +1,45 @@
 import csv
-import math
 import statistics
-from collections import defaultdict
 
 CSV_PATH = r"E:\git\ManagedDotnetGC\experiments\results\perf-history.csv"
 OUT_DIR = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph"
 
-SCENARIOS = ["soh", "lohmix", "pin", "pinheavy"]
+# PROTOCOL (2026-07-07, milestone-graph-upkeep): the charts plot the single 'mixed'
+# scenario (95% ordinary / 5% pinned allocations, sohpi 20), NOT the 4-scenario
+# geomean — pin/pinheavy greatly advantage a non-moving GC and would flatter the
+# public artifact. The 5-scenario matrix keeps its separate role as the per-change
+# regression control.
+SCENARIO = "mixed"
 
 # (name, label, sha, gc-value-to-match)
-# 2026-07-07 sitting: every milestone (the eight from the 2026-07-06 backfill plus the
-# two new M8 stages) and all four stock anchors re-benched fresh in ONE sitting via
-# git worktree + Release publish + `bench-gcperfsim.ps1` — see summary.md write-up.
+# 2026-07-07 afternoon sitting: every milestone (ten from the morning backfill plus
+# M8.2 partitioned stack scan) and all four stock anchors re-benched fresh in ONE
+# sitting with -Scenario mixed via git worktree + Release publish +
+# `bench-gcperfsim.ps1` (HEAD copy) — see summary.md.
 MILESTONES = [
-    ("M2 baseline",     "m8-milestones-m2", "407cf59", "custom"),
-    ("M4 sticky gens",  "m8-milestones-m4", "5db0ed9", "custom"),
-    ("M5 parallel",     "m8-milestones-m5", "344ce8b", "custom"),
-    ("M6 concurrent",   "m8-milestones-m6", "1aedac9", "custom"),
-    ("M7 tuning",       "m8-milestones-m7", "7689ab1", "custom"),
-    # M6.5 sweep-assist: the previously-recorded sha 765f680 is a docs-only commit
-    # (`git show 765f680 --stat` touches only ROADMAP.md + results/*). Its direct
-    # parent 2a62c92 ("M6.5 stage 1: gated concurrent full-cycle sweep") *is* a code
-    # commit, but stage 1 ships DOTNET_GCConcurrentSweep default-OFF — bench-gcperfsim.ps1
-    # sets no such env var, so benching stage 1 would silently measure the OLD in-pause
-    # sweep, not the feature the milestone is named for. The "mutator sweep-assist" work
-    # and the default-on flip land one commit later, in d95dddb ("M6.5 stage 2: bitmap
-    # walks, mutator sweep-assist, concurrent sweep default-on") — same pattern as the
-    # M6/M7 corrections below (walk forward to the first commit that actually contains
-    # the named feature). Rebacked against d95dddb.
-    ("M6.5 sweep-assist","m8-milestones-m65", "d95dddb", "custom"),
-    ("faster allocation (M7 mutator war)", "m8-milestones-fasteralloc", "e65fa79", "custom"),
-    ("sharded supply (M7)", "m8-milestones-sharded", "98517ee", "custom"),
-    # M8 (2026-07-07 sitting): both SHAs verified as code-bearing commits (`git show
-    # --stat` shows ManagedDotnetGC/*.cs changes, not just docs/results).
-    ("Adaptive nursery", "m8-milestones-adaptive", "ceffbfc", "custom"),
-    ("Vectorized bitmap skip", "m8-milestones-vecbitmap", "68696ff", "custom"),
+    ("M2 baseline",     "mixed-m2",        "407cf59", "custom"),
+    ("M4 sticky gens",  "mixed-m4",        "5db0ed9", "custom"),
+    ("M5 parallel",     "mixed-m5",        "344ce8b", "custom"),
+    ("M6 concurrent",   "mixed-m6",        "1aedac9", "custom"),
+    ("M7 tuning",       "mixed-m7",        "7689ab1", "custom"),
+    # See summary.md SHA notes: M6/M7/M6.5 shas walk forward from docs-only commits
+    # to the first commit that actually contains the named feature.
+    ("M6.5 sweep-assist","mixed-m65",      "d95dddb", "custom"),
+    ("faster allocation (M7 mutator war)", "mixed-fastalloc", "e65fa79", "custom"),
+    ("sharded supply (M7)", "mixed-sharded", "98517ee", "custom"),
+    ("Adaptive nursery", "mixed-adaptive",  "ceffbfc", "custom"),
+    ("Vectorized bitmap skip", "mixed-vecbitmap", "68696ff", "custom"),
+    # M8.2 (2026-07-07): partitioned stack scanning across GC workers. Wall-neutral
+    # by design (the win is young-pause p50 -25% on web workloads); charted for
+    # continuity of the stage axis.
+    ("Partitioned stack scan", "mixed-partscan", "8b8bcbd", "custom"),
 ]
 
-# Stock anchors re-measured fresh in TODAY's (2026-07-07) sitting, same machine, same
-# sitting as every milestone row above — four configs since the 2026-07-06 DATAS
-# discovery (bare gcServer=1 is adaptive-heap-count DATAS, not fixed-32 — that needs
-# -HeapCount 32).
 STOCK_REFS = [
-    ("Workstation GC",          "stock-wks", "stock-wks"),
-    ("Server GC (DATAS)",       "stock-svr-datas", "stock-svr-datas"),
-    ("Server GC (8 heaps)",     "stock-svr-h8", "stock-svr-h8"),
-    ("Server GC (32 heaps)",    "stock-svr-h32", "stock-svr-h32"),
+    ("Workstation GC",          "mixed-stock-wks",   "stock-wks"),
+    ("Server GC (DATAS)",       "mixed-stock-datas", "stock-svr-datas"),
+    ("Server GC (8 heaps)",     "mixed-stock-h8",    "stock-svr-h8"),
+    ("Server GC (32 heaps)",    "mixed-stock-h32",   "stock-svr-h32"),
 ]
 
 METRICS = [
@@ -54,43 +48,25 @@ METRICS = [
 ]
 
 def load_rows():
-    rows = []
     with open(CSV_PATH, newline="") as f:
-        r = csv.DictReader(f)
-        for row in r:
-            rows.append(row)
-    return rows
+        return list(csv.DictReader(f))
 
-def median_by_scenario(rows, label, gc, metric):
-    out = {}
-    for scen in SCENARIOS:
-        vals = [float(r[metric]) for r in rows
-                 if r["label"] == label and r["gc"] == gc and r["scenario"] == scen]
-        if vals:
-            out[scen] = statistics.median(vals)
-    return out
-
-def geomean(values):
-    vals = [v for v in values if v is not None]
-    if not vals:
-        return None
-    logs = [math.log(v) for v in vals]
-    return math.exp(sum(logs) / len(logs))
+def median_metric(rows, label, gc, metric):
+    vals = [float(r[metric]) for r in rows
+            if r["label"] == label and r["gc"] == gc and r["scenario"] == SCENARIO]
+    return statistics.median(vals) if vals else None
 
 def compute(rows, entries, is_stock, metric):
     results = []
     for entry in entries:
         if is_stock:
             name, label, gc = entry
+            key = gc
         else:
             name, label, sha, gc = entry
-        med = median_by_scenario(rows, label, gc, metric)
-        gm = geomean(med.values())
-        missing = [s for s in SCENARIOS if s not in med]
-        if is_stock:
-            results.append((name, label, gc, med, gm, missing))
-        else:
-            results.append((name, label, sha, med, gm, missing))
+            key = sha
+        med = median_metric(rows, label, gc, metric)
+        results.append((name, label, key, med))
     return results
 
 def main():
@@ -105,84 +81,49 @@ def main():
 
     # ---- write summary.md ----
     lines = []
-    lines.append("# Milestone graph — computed geomeans (2026-07-07)\n")
-    lines.append("Every row in this file — all ten milestones (the eight from the 2026-07-06 backfill "
-                  "plus the two new M8 stages) and all four stock anchors — was benched TODAY "
-                  "(2026-07-07) in ONE sitting via git worktree + Release publish + "
-                  "`bench-gcperfsim.ps1`, same machine. Cross-sitting wall times are never comparable, "
-                  "so nothing here is reused from the 2026-07-06 backfill's numbers even where the "
-                  "milestone and sha are unchanged. Geomean = geometric mean of the 4 scenario medians "
-                  "(3 iterations each). Two metrics are tracked: wall_s (lower is better) and "
-                  "peak_ws_mb (lower is better; the memory companion — a wall-only view flatters "
+    lines.append("# Milestone graph — 'mixed' scenario medians (2026-07-07, afternoon sitting)\n")
+    lines.append("Every row in this file — all eleven milestones and all four stock anchors — was "
+                  "benched 2026-07-07 afternoon in ONE sitting via git worktree + Release publish + "
+                  "the HEAD copy of `bench-gcperfsim.ps1 -Scenario mixed`, same machine. Cross-sitting "
+                  "wall times are never comparable, so nothing is reused from earlier backfills. "
+                  "**Charted metric = median of 3 iterations of the single 'mixed' scenario** (95% "
+                  "ordinary / 5% pinned allocations): pin-dedicated scenarios greatly advantage this "
+                  "non-moving GC, so a geomean including them would flatter the public artifact "
+                  "(protocol change 2026-07-07). Two metrics are tracked: wall_s (lower is better) "
+                  "and peak_ws_mb (lower is better; the memory companion — a wall-only view flatters "
                   "memory-hungry collectors).\n")
 
-    lines.append("## SHA notes / corrections\n")
+    lines.append("## SHA notes / corrections (carried from the 2026-07-07 morning backfill)\n")
     lines.append("- M2 baseline, M4 sticky gens, M5 parallel: SHAs as given (407cf59, 5db0ed9, 344ce8b) "
                   "are themselves the code-landing commits — used as-is.\n")
-    lines.append("- **M6 concurrent**: the CSV's `m6s3-fairness` label records sha `b889921`, but that "
-                  "commit is a **docs-only** commit (\"ROADMAP reflects M6 stages 0-2 landed\") that "
-                  "chronologically **precedes** the actual \"M6 stage 3 default-on\" code "
-                  "(`1aedac9`, \"concurrent cycles default-on; free-region decommit leaves the "
-                  "pauses\") by ~47 minutes. Checking out `b889921` would silently drop the milestone's "
-                  "defining change. Backfilled against **`1aedac9`** instead.\n")
-    lines.append("- **M7 exchange+quantum**: likewise, the CSV's `m7-quantum` label records sha "
-                  "`79ce1dc` (\"docs: M7 memory exchange rate\"), which is an **ancestor** of "
-                  "`7689ab1` (\"M7: kill the drain-termination Sleep(1) quantum\") — i.e. it predates "
-                  "the quantum fix that gives the milestone its name (confirmed via `git diff --stat "
-                  "79ce1dc 7689ab1`: `GCHeap.Mark.cs` and the new `GCHeap.Concurrent.cs` pre-drain only "
-                  "land in `7689ab1`). Both `79ce1dc` and `1aedac9`/`b889921` bench UTC timestamps "
-                  "predate their own commit's timestamp, consistent with this repo's habit of "
-                  "benching against uncommitted local edits and committing afterward with a "
-                  "convenience `-Sha`. Backfilled against **`7689ab1`** instead, which is the first "
-                  "commit that actually contains the quantum fix.\n")
-    lines.append("- **M6.5 sweep-assist** (found during this 2026-07-07 sitting's SHA verification pass): "
-                  "the CSV's `m65s2-final` label records sha `765f680` (\"docs: M6.5 stage 1 results\"), "
-                  "which is itself docs-only. Its direct parent `2a62c92` (\"M6.5 stage 1: gated "
-                  "concurrent full-cycle sweep\") is a real code commit, but stage 1 ships "
-                  "`DOTNET_GCConcurrentSweep` **default-off** — `bench-gcperfsim.ps1` sets no such env "
-                  "var, so benching either `765f680` or `2a62c92` would silently measure the old "
-                  "in-pause sweep, not the feature the milestone is named for. The \"mutator "
-                  "sweep-assist\" work and the default-on flip land one commit later, in `d95dddb` "
-                  "(\"M6.5 stage 2: bitmap walks, mutator sweep-assist, concurrent sweep default-on\") "
-                  "— same pattern as the M6/M7 corrections above. Backfilled against **`d95dddb`** "
-                  "instead.\n")
-    lines.append("- **Adaptive nursery** (`ceffbfc`) and **Vectorized bitmap skip** (`68696ff`): both "
-                  "verified as code-bearing commits — `git show <sha> --stat` shows "
-                  "`ManagedDotnetGC/GCHeap*.cs` / `GCObject.cs` changes, not just docs/results.\n")
+    lines.append("- **M6 concurrent**: the CSV's original `m6s3-fairness` label recorded sha `b889921`, "
+                  "a **docs-only** commit that precedes the actual \"M6 stage 3 default-on\" code. "
+                  "Backfilled against **`1aedac9`** instead.\n")
+    lines.append("- **M7 exchange+quantum**: the original recorded sha `79ce1dc` (docs) predates the "
+                  "quantum fix that names the milestone. Backfilled against **`7689ab1`**.\n")
+    lines.append("- **M6.5 sweep-assist**: original sha `765f680` is docs-only and its parent ships the "
+                  "feature default-OFF; the mutator sweep-assist + default-on land in **`d95dddb`** — "
+                  "used instead.\n")
+    lines.append("- **Adaptive nursery** (`ceffbfc`), **Vectorized bitmap skip** (`68696ff`), "
+                  "**Partitioned stack scan** (`8b8bcbd`): all verified code-bearing commits.\n")
+    lines.append("- **Backfill integrity**: each milestone's publish output is timestamp-verified "
+                  "before benching (an earlier attempt this sitting silently re-benched a stale dll "
+                  "after a failed publish — those rows were purged from the archive).\n")
 
     for metric, metric_label, fmt in METRICS:
-        milestone_results = by_metric[metric]["milestones"]
-        stock_results = by_metric[metric]["stock"]
+        lines.append(f"\n## 'mixed' medians ({metric_label}) — milestones\n")
+        lines.append("| Milestone | sha used | mixed |")
+        lines.append("|---|---|---|")
+        for name, label, sha, med in by_metric[metric]["milestones"]:
+            med_str = fmt.format(med) if med is not None else "—"
+            lines.append(f"| {name} | `{sha}` | **{med_str}** |")
 
-        lines.append(f"\n## Per-scenario medians ({metric_label}) — milestones\n")
-        lines.append("| Milestone | sha used | soh | lohmix | pin | pinheavy | geomean |")
-        lines.append("|---|---|---|---|---|---|---|")
-        for name, label, sha, med, gm, missing in milestone_results:
-            cells = []
-            for s in SCENARIOS:
-                cells.append(fmt.format(med[s]) if s in med else "—")
-            note = f" (missing: {', '.join(missing)})" if missing else ""
-            gm_str = fmt.format(gm) if gm is not None else "—"
-            lines.append(f"| {name} | `{sha}` | {cells[0]} | {cells[1]} | {cells[2]} | {cells[3]} | "
-                          f"**{gm_str}**{note} |")
-
-        lines.append(f"\n## Per-scenario medians ({metric_label}) — stock anchors (today, fresh)\n")
-        lines.append("| Config | soh | lohmix | pin | pinheavy | geomean |")
-        lines.append("|---|---|---|---|---|---|")
-        for name, label, gc, med, gm, missing in stock_results:
-            cells = [fmt.format(med[s]) if s in med else "—" for s in SCENARIOS]
-            gm_str = fmt.format(gm) if gm is not None else "—"
-            lines.append(f"| {name} | {cells[0]} | {cells[1]} | {cells[2]} | {cells[3]} | **{gm_str}** |")
-
-    lines.append("\n## Footnotes\n")
-    for name, label, sha, med, gm, missing in by_metric["wall_s"]["milestones"]:
-        if missing:
-            lines.append(f"- **{name}** (`{sha}`): missing scenario(s) {', '.join(missing)} — "
-                          f"geomean computed from the scenarios available.")
-    lines.append("- M2 baseline predates the `pinheavy` scenario's existence in the archive's protocol "
-                  "(added 2026-07-06), but it ran anyway against the old GC build using the current "
-                  "`bench-gcperfsim.ps1`/GCPerfSim — it completed normally, so no scenario is actually "
-                  "missing in the final chart.")
+        lines.append(f"\n## 'mixed' medians ({metric_label}) — stock anchors (same sitting)\n")
+        lines.append("| Config | mixed |")
+        lines.append("|---|---|")
+        for name, label, gc, med in by_metric[metric]["stock"]:
+            med_str = fmt.format(med) if med is not None else "—"
+            lines.append(f"| {name} | **{med_str}** |")
 
     with open(f"{OUT_DIR}\\summary.md", "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -191,11 +132,11 @@ def main():
     for metric, metric_label, fmt in METRICS:
         print(f"=== {metric} ===")
         print("MILESTONES")
-        for name, label, sha, med, gm, missing in by_metric[metric]["milestones"]:
-            print(name, sha, gm, missing)
+        for name, label, sha, med in by_metric[metric]["milestones"]:
+            print(f"  {name!r}: {med}")
         print("STOCK")
-        for name, label, gc, med, gm, missing in by_metric[metric]["stock"]:
-            print(name, gm)
+        for name, label, gc, med in by_metric[metric]["stock"]:
+            print(f"  {name!r}: {med}")
 
 if __name__ == "__main__":
     main()

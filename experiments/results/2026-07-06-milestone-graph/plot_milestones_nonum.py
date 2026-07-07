@@ -5,41 +5,47 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph-nonum.png"
 
-# ---- data (recomputed 2026-07-07 sitting: all ten milestones — the eight from the
-# 2026-07-06 backfill plus the two new M8 stages — and all four stock anchors
-# re-benched fresh in ONE sitting; see
-# experiments/results/2026-07-06-milestone-graph/summary.md) ----
+# ---- data (recomputed 2026-07-07 AFTERNOON sitting under the mixed-only protocol:
+# all eleven milestones and all four stock anchors re-benched fresh in ONE sitting
+# with `bench-gcperfsim.ps1 -Scenario mixed`; see summary.md. Charted metric is the
+# single 'mixed' scenario (95% ordinary / 5% pinned allocations) — pin-dedicated
+# scenarios greatly advantage a non-moving GC, so a geomean including them would
+# flatter this public artifact.) ----
 milestones = [
-    ("first working\nallocator", 7.037),
-    ("generational", 5.089),
-    ("parallel\nmark & sweep", 1.887),
-    ("concurrent\nmarking", 1.826),
-    ("memory diet\n+ tuning", 1.743),
-    ("concurrent\nsweep", 1.467),
-    ("faster\nallocation", 1.366),
-    ("sharded\nsupply", 1.162),
-    # M8 (2026-07-07 sitting): adaptive young-generation budget (frequent-futile-cheap
+    ("first working\nallocator", 7.824),
+    ("generational", 5.201),
+    ("parallel\nmark & sweep", 1.811),
+    ("concurrent\nmarking", 1.809),
+    ("memory diet\n+ tuning", 1.783),
+    ("concurrent\nsweep", 1.427),
+    ("faster\nallocation", 1.382),
+    ("sharded\nsupply", 1.239),
+    # M8 (2026-07-07): adaptive young-generation budget (frequent-futile-cheap
     # boost) and SIMD zero-skip in the bitmap walks.
-    ("adaptive\nnursery", 1.176),
-    ("vectorized\nbitmap skip", 1.167),
+    ("adaptive\nnursery", 1.225),
+    ("vectorized\nbitmap skip", 1.146),
+    # M8.2 (2026-07-07): partitioned stack scanning — a young-pause milestone
+    # (roots p50 −70%, pause p50 −25% on web workloads); wall-neutral here, the
+    # +0.026s vs the previous stage is within mixed's ±4% iteration spread.
+    ("partitioned\nstack scan", 1.172),
 ]
 
 # (label, line y, explicit label y — slots picked to clear every dashed line and each
 # other; DATAS discovery 2026-07-06: bare gcServer=1 adapts heap count, fixed-32 is
-# its own config. 2026-07-07 refresh: the four stock values are clustered within 0.9s
-# of each other (2.25/1.82/1.75/1.37), and the real gaps between them are too close to
-# a safe label height to stagger near their own lines without crossing a *different*
-# line — so all four labels stay lifted into the empty band above the whole cluster
-# (nothing else sits between ~2.3s and 5.3s here) and stacked in real-value order, each
-# clear of every dashed line and of its neighbor label. The last three hero points
-# (sharded supply, adaptive nursery, vectorized bitmap skip) now sit BELOW every stock
-# reference line, including Server GC (8 heaps) — the tuned custom GC's cluster has
-# moved under the whole stock band.
+# its own config. 2026-07-07 mixed refresh: the four stock values are clustered within
+# 1.3s of each other (2.59/1.94/1.76/1.32), and the real gaps between them are too
+# close to a safe label height to stagger near their own lines without crossing a
+# *different* line — so all four labels stay lifted into the empty band above the
+# whole cluster (nothing else sits between ~2.6s and 5.2s here) and stacked in
+# real-value order, each clear of every dashed line and of its neighbor label. The
+# last four hero points (sharded supply onward) sit BELOW every stock reference line,
+# including Server GC (8 heaps) — the tuned custom GC's cluster has moved under the
+# whole stock band.
 stock_refs = [
-    ("Workstation GC", 2.245, 4.25, "#9a988f"),
-    ("Server GC (32 heaps)", 1.752, 3.25, "#6b6a63"),
-    ("Server GC (DATAS)", 1.818, 3.75, "#55544e"),
-    ("Server GC (8 heaps)", 1.365, 2.75, "#3a3a37"),
+    ("Workstation GC", 2.593, 4.55, "#9a988f"),
+    ("Server GC (DATAS)", 1.935, 4.05, "#55544e"),
+    ("Server GC (32 heaps)", 1.758, 3.55, "#6b6a63"),
+    ("Server GC (8 heaps)", 1.319, 3.05, "#3a3a37"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -102,7 +108,7 @@ ax.set_xticklabels(names, fontsize=10.8, color=SECONDARY_INK)
 ax.tick_params(axis="x", length=0, pad=10)
 
 # y axis
-ax.set_ylabel("wall seconds (4-scenario geomean, lower is better)", fontsize=12, color=SECONDARY_INK, labelpad=10)
+ax.set_ylabel("wall seconds (mixed scenario, lower is better)", fontsize=12, color=SECONDARY_INK, labelpad=10)
 ax.tick_params(axis="y", labelsize=11, colors=MUTED, length=0)
 for spine in ["top", "right", "left"]:
     ax.spines[spine].set_visible(False)
@@ -121,7 +127,8 @@ ax.text(-0.4, ys[0] + label_offset + (ymax - ymin) * 0.05, "ManagedDotnetGC (C#)
 fig.text(0.07, 0.93, "A .NET GC written in C#: wall time across milestones",
           fontsize=20, fontweight="bold", color=INK, ha="left", va="top")
 fig.text(0.07, 0.875,
-          "GCPerfSim, 4-scenario geometric mean: soh, lohmix, pin, pinheavy",
+          "GCPerfSim, mixed workload: 95% ordinary / 5% pinned allocations — "
+          "all builds re-benchmarked same sitting, same machine, vs same-sitting stock anchors",
           fontsize=12.5, color=SECONDARY_INK, ha="left", va="top")
 
 # ---- small annotation ----

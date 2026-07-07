@@ -135,3 +135,7 @@ foreach ($name in $endpoints.Keys) {
         Start-Sleep -Milliseconds 500
     }
 }
+
+# Don't leak the GC env into the calling session (see bench-gcperfsim.ps1: a leftover
+# DOTNET_GCName kills the next dotnet publish with 0x8007007E)
+Remove-Item Env:DOTNET_GCName, Env:DOTNET_gcServer, Env:DOTNET_gcConcurrent, Env:DOTNET_GCHeapCount, Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCStatsFile, Env:DOTNET_GCgen0size, Env:DOTNET_GCDynamicAdaptationMode -ErrorAction SilentlyContinue
