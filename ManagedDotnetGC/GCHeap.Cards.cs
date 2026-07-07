@@ -336,12 +336,21 @@ unsafe partial class GCHeap
         var endBit = (long)(end - heapBase) >> 3;
 
         var w = firstBit >> 6;
+        var wEnd = (endBit + 63) >> 6;
         var mask = ~0ul << (int)(firstBit & 63);
 
-        for (; w << 6 < endBit; w++)
+        for (; w < wEnd; w++)
         {
             var word = bitmap[w] & mask;
             mask = ulong.MaxValue;
+
+            if (word == 0)
+            {
+                // Dirty runs over hole-carved young extents have no marked objects at
+                // all — the common case on web runways — so the walk fast-forwards
+                w = GCObject.SkipZeroBitmapWords(bitmap, w + 1, wEnd) - 1;
+                continue;
+            }
 
             while (word != 0)
             {

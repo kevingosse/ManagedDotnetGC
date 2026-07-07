@@ -1,5 +1,6 @@
 ﻿using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
 
 namespace ManagedDotnetGC;
 
@@ -48,6 +49,38 @@ public unsafe ref struct GCObject
     /// </summary>
     internal static ulong* MarkBitmap;
     internal static nint MarkHeapBase;
+
+    /// <summary>
+    /// Index of the first non-zero bitmap word in [w, wEnd), or wEnd. The zero-skip fast
+    /// path for every bitmap walk over young space (M8): a hole-carved runway leaves the
+    /// slice under a dirty card run almost entirely clear, and the sweep's survivor walk
+    /// sees the same sparsity — one AVX2 test covers 16 words (8 KB of heap) instead of
+    /// one. Plain loads: callers on concurrent paths already tolerate missing a mark
+    /// that lands mid-walk (whoever marked the object traces it).
+    /// </summary>
+    internal static long SkipZeroBitmapWords(ulong* bitmap, long w, long wEnd)
+    {
+        if (Avx2.IsSupported)
+        {
+            for (; w + 16 <= wEnd; w += 16)
+            {
+                var acc = Avx2.Or(
+                    Avx2.Or(Avx.LoadVector256(bitmap + w), Avx.LoadVector256(bitmap + w + 4)),
+                    Avx2.Or(Avx.LoadVector256(bitmap + w + 8), Avx.LoadVector256(bitmap + w + 12)));
+
+                if (!Avx.TestZ(acc, acc))
+                {
+                    break;
+                }
+            }
+        }
+
+        for (; w < wEnd && bitmap[w] == 0; w++)
+        {
+        }
+
+        return w;
+    }
 
     public MethodTable* RawMethodTable;
     public uint Length;

@@ -1041,6 +1041,15 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             _starvationMuted = false;
         }
 
+        // Keep the full demand as the trigger threshold even where it looks futile.
+        // The boosted web runs fire ~1.5 starved fulls/s here with ~1.2 GB of holes
+        // free against 13 MB live, and blocking them (a futility gate demanding the
+        // full at least double free capacity: freeCapacity < (committed - live) / 2)
+        // measured RPS-neutral on TechEmpower but let every ramping GCPerfSim shape
+        // drift to the gate's self-disable bound of live + 2×demand committed — soh
+        // peak WS 2.1 → 2.56 GB, +17% past the stock-svr-h8 anchor (2026-07-07). The
+        // early starved fulls are what cap committed on ramps; web's recurring ones
+        // are the affordable side of that coin.
         _fullForStarvation = !_starvationMuted
             && freeCapacity < demand
             && committed >= _fullRatioPercent * Math.Max(Region.MinGCBudget, _lastLiveBytes) / 100;

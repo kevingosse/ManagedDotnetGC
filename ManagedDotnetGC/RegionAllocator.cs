@@ -1742,14 +1742,23 @@ internal unsafe class RegionAllocator : IDisposable
 
         var w = (long)(regionBase - heapBase) >> 9;
         var endBit = (long)(end - heapBase) >> 3;
+        var wEnd = (endBit + 63) >> 6;
 
         // Pre-header slot of the first unswept byte; a dead run's extent starts at the
         // slot before its first object ref (SPEC-M2 §3)
         var deadStart = regionBase;
 
-        for (; w << 6 < endBit; w++)
+        for (; w < wEnd; w++)
         {
             var word = bitmap[w];
+
+            if (word == 0)
+            {
+                // Survivors are sparse at smear density; the whole dead gap between two
+                // of them is zero words the vector skip crosses without touching plugs
+                w = GCObject.SkipZeroBitmapWords(bitmap, w + 1, wEnd) - 1;
+                continue;
+            }
 
             while (word != 0)
             {

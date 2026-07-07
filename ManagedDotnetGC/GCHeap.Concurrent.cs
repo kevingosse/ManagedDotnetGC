@@ -598,6 +598,15 @@ unsafe partial class GCHeap
         {
             var word = Volatile.Read(ref bitmap[w]);
 
+            if (word == 0)
+            {
+                // Plain vector loads are enough for the skip: a mark that lands after
+                // we read its word is traced by whoever marked the object (same
+                // argument as the walk missing a concurrently-marked object below)
+                w = (nint)(GCObject.SkipZeroBitmapWords(bitmap, w + 1, wEnd) - 1);
+                continue;
+            }
+
             while (word != 0)
             {
                 var bit = BitOperations.TrailingZeroCount(word);
