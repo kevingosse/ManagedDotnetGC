@@ -70,19 +70,32 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     // Adaptive nursery boost (M8, TechEmpower): max(64 MB, live) collects 100+ times a
     // second on web workloads (tiny live set, huge alloc rate), and each young pause has
-    // a fixed cost — stack scan over every Kestrel thread — that survivors don't explain:
-    // the 2026-07-07 fortunes run burned 55% of wall STW marking <1 MB per collection.
-    // A young collection that is both FREQUENT (interval below _boostGrowIntervalTicks)
-    // and FUTILE (survivors under 2% of the budget it closed out) was pure fixed cost, so
-    // the budget doubles; real survival (>8%) or a sparse cadence shrinks it back. The
-    // boost rides on top of ComputeBudget for young AND full paths — budget and the trim
-    // demand (2×budget) must move together or fulls flap the retention target and
-    // manufacture starved collections (the g256 queries run: 113 of 114 fulls starved).
-    // GCPerfSim shapes never engage it: their young survivors are far past 8%.
+    // a fixed cost — stack scan over every Kestrel thread — that survivors don't explain.
+    // A young collection that is FREQUENT (interval below 250 ms), CHEAP (pause so far
+    // under 10 ms) and LIGHT (survivor mass small enough that marking it is a fraction
+    // of that cheap pause) is pure fixed cost, so the budget doubles; heavy survival or
+    // a sparse cadence shrinks it back. The survivor gate is an ABSOLUTE mass, not a
+    // ratio to the budget: a ratio is self-referential and has two stable fixed points
+    // (the M9 bump-serve fix landed web workloads in the wrong one — 2.4 MB of constant
+    // in-flight survivors reads as 3.7% of a floor budget but 0.5% of a boosted one).
+    // GCPerfSim shapes stay excluded twice over: their young survivors are tens of MB
+    // and their young pauses mark real mass (25–73 ms, past the cheap gate).
+    // The boost rides on top of ComputeBudget for young AND full paths — budget and the
+    // trim demand must move together or fulls flap the retention target and manufacture
+    // starved collections (the g256 queries run: 113 of 114 fulls starved). The boost
+    // retains ×1 in the trim demand where the base retains ×2: the doubling bought
+    // allocate-through headroom for a concurrent cycle, sized when slow-path window
+    // discards made a cycle consume a whole budget of carve; honest carve volume
+    // consumes ~2% of that, and doubling a 448 MB boost would retain a gigabyte.
     private long _youngBudgetBoost;
     private long _lastYoungSurvivors;
     private long _lastYoungGcTimestamp;
     private const long BoostCapBytes = 448L * 1024 * 1024;
+
+    // Marking ~8 MB costs ~1-2 ms across the M5 worker pool — the survivor mass that
+    // still fits inside a "cheap" young pause. Grow below it, shrink past double it.
+    private const long BoostGrowSurvivorBytes = 8L * 1024 * 1024;
+    private const long BoostShrinkSurvivorBytes = 16L * 1024 * 1024;
 
     // Parallel collection workers (M5), null = serial. The threads belong to the GC dll's
     // own runtime and never call into the EE. Each participant gets its own mark stack
@@ -679,6 +692,23 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
                 }
             }
 
+            // Serve from the context's remaining window first, exactly like the EE
+            // fast path. Allocations that always enter the slow path (finalizable
+            // objects foremost — their JIT helper never inline-bumps) otherwise
+            // forfeit the whole window: fortunes measured 97% of handouts discarding
+            // a ~104 KB remainder for a ~70-byte request, carving and zeroing 20×
+            // the app's true allocation rate and burning the budget into 22 STW/s.
+            if (size <= Region.BumpMaxSize && acontext.alloc_ptr != 0)
+            {
+                var bumped = acontext.alloc_ptr;
+
+                if (acontext.alloc_limit - bumped >= Align(size))
+                {
+                    acontext.alloc_ptr = bumped + Align(size);
+                    return (GCObject*)bumped;
+                }
+            }
+
             // Three tiers per SPEC-M2 §4; the direct tiers leave the caller's context
             // alone (it may still serve small allocations from its remaining window)
             var obj = size <= Region.BumpMaxSize
@@ -756,6 +786,28 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private GCObject* AllocFromWindow(ref gc_alloc_context acontext, nint size)
     {
         var tStart = GcStats.Timestamp();
+
+        if (GcStats.Enabled)
+        {
+            // Handout forensics (M9 probe): fortunes carves ~20× the app's true
+            // allocation rate — classify why this thread is asking for a new window
+            if (acontext.alloc_ptr == 0)
+            {
+                Interlocked.Increment(ref GcStats.ColdHandoutCount);
+            }
+            else
+            {
+                var remainder = acontext.alloc_limit - acontext.alloc_ptr;
+                Interlocked.Add(ref GcStats.DiscardedBytes, remainder);
+
+                if (remainder >= size)
+                {
+                    Interlocked.Increment(ref GcStats.FittingDiscardCount);
+                }
+            }
+
+            Interlocked.Add(ref GcStats.RequestedBytes, size);
+        }
 
         // Plug the context's remainder to keep the heap walkable before replacing it
         FixAllocContext(ref acontext);
@@ -1022,13 +1074,12 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
         if (young && _youngBudgetCap == 0)
         {
-            // Frequent-futile-cheap detector (see _youngBudgetBoost). The interval is
-            // young-start-to-young-start wall time; _budget still holds the budget this
-            // collection just closed out, so survivors compare against the right base.
-            // All three grow gates are load-bearing: GCPerfSim's soh survival (~2% of
-            // allocated) sits exactly on a 2% futility threshold and boosted its WS 2 GB
-            // past the h8 anchor before the <1% + cheap-pause gates excluded it — its
-            // young pauses mark real survivors (25–73 ms), web's are fixed cost (2–5 ms).
+            // Frequent-cheap-light detector (see _youngBudgetBoost). The interval is
+            // young-start-to-young-start wall time. All three grow gates are
+            // load-bearing: GCPerfSim's soh shape boosted its WS 2 GB past the h8
+            // anchor before the survivor + cheap-pause gates excluded it — its young
+            // pauses mark real mass (25–73 ms), web's are fixed cost (2–5 ms) over
+            // a constant few MB of in-flight survivors.
             var now = Stopwatch.GetTimestamp();
             var interval = now - _lastYoungGcTimestamp;
             _lastYoungGcTimestamp = now;
@@ -1038,12 +1089,20 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             var cheapPause = pauseStart != 0
                 && now - pauseStart < Stopwatch.Frequency / 100;    // < 10 ms so far
 
-            if (growCadence && cheapPause && _lastYoungSurvivors < _budget / 100)
+            // The boost compensates fixed pause cost only where the live-proportional
+            // budget sits at its floor (tiny live set, huge alloc rate). A heap whose
+            // live set already buys it a big nursery gets its cadence from ComputeBudget;
+            // boosting it on top (the soak app: live 268→641 MB, cheap 3 ms pauses)
+            // would only trade WS for suspensions it isn't suffering.
+            var floorBound = Region.ComputeBudget(_lastLiveBytes) <= 2 * Region.MinGCBudget;
+
+            if (growCadence && cheapPause && floorBound
+                && _lastYoungSurvivors < BoostGrowSurvivorBytes)
             {
                 _youngBudgetBoost = Math.Min(BoostCapBytes,
                     Math.Max(Region.MinGCBudget, _youngBudgetBoost * 2));
             }
-            else if (sparseCadence || _lastYoungSurvivors > _budget / 50)
+            else if (sparseCadence || _lastYoungSurvivors > BoostShrinkSurvivorBytes)
             {
                 _youngBudgetBoost /= 2;
 
@@ -1082,7 +1141,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         // next collection, one for what mutators allocate through a concurrent cycle's
         // window (the v4 census measured ~a window of fresh commits per full — the
         // entire remaining ratchet — when fulls fired with holes already exhausted).
-        var demand = 2 * _budget;
+        // The adaptive boost retains ×1: doubling it too would retain a gigabyte of
+        // slack on boosted web heaps for a cycle window that honestly consumes ~12 MB
+        // (see _youngBudgetBoost). Boost is 0 whenever the controller is off, so
+        // every unboosted workload keeps the byte-identical historical demand.
+        var demand = 2 * _budget - _youngBudgetBoost;
 
         // Retain the same headroom in committed pool slack. The retention target and
         // the starvation demand must be one number: retaining less makes the trim

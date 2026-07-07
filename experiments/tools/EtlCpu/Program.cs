@@ -55,10 +55,18 @@ if (gcStatsOnly)
     var gcStarts = new Dictionary<string, int>();
     double suspendBegan = -1, totalStwMs = 0, maxStwMs = 0;
     int stws = 0;
+    long allocTicks = 0; double allocMB = 0;
     foreach (var ev in proc.EventsInProcess)
     {
         switch (ev.EventName)
         {
+            case "GC/AllocationTick":
+                // Fired by the GC every ~100 KB of allocation; AllocationAmount is the
+                // accumulated volume since the previous tick, so the sum is total
+                // object allocation (stock fires it; our standalone GC does not).
+                allocTicks++;
+                allocMB += Convert.ToDouble(ev.PayloadByName("AllocationAmount")) / 1048576.0;
+                break;
             case "GC/Start":
                 var key = $"gen{ev.PayloadByName("Depth")}/{ev.PayloadByName("Reason")}";
                 gcStarts[key] = gcStarts.GetValueOrDefault(key) + 1;
@@ -83,6 +91,8 @@ if (gcStatsOnly)
     Console.WriteLine($"STW episodes: {stws} ({stws / dur:F1}/s), total {totalStwMs:F0} ms ({100 * totalStwMs / 1000 / dur:F1}% of wall), mean {totalStwMs / Math.Max(1, stws):F2} ms, max {maxStwMs:F2} ms");
     foreach (var kv in gcStarts.OrderByDescending(kv => kv.Value))
         Console.WriteLine($"{kv.Value,8} ({kv.Value / dur:F1}/s)  GC/Start {kv.Key}");
+    if (allocTicks > 0)
+        Console.WriteLine($"AllocationTick: {allocTicks} ticks, {allocMB:F0} MB total ({allocMB / dur:F0} MB/s)");
     return 0;
 }
 
