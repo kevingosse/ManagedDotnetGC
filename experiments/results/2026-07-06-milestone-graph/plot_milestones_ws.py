@@ -5,38 +5,40 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph-ws.png"
 
-# ---- data (recomputed 2026-07-07 AFTERNOON sitting under the mixed-only protocol:
-# all eleven milestones and all four stock anchors re-benched fresh in ONE sitting
+# ---- data (recomputed 2026-07-07 BACKFILL sitting under the mixed-only protocol:
+# all thirteen milestones and all four stock anchors re-benched fresh in ONE sitting
 # with `bench-gcperfsim.ps1 -Scenario mixed`; see summary.md.
 # median peak_ws_mb of the 'mixed' scenario, converted to GB by /1024) ----
 milestones = [
-    ("first working\nallocator", 1.341),
-    ("generational", 6.382),
-    ("parallel\nmark & sweep", 6.652),
-    ("concurrent\nmarking", 6.838),
-    ("memory diet\n+ tuning", 2.100),
-    ("concurrent\nsweep", 2.087),
-    ("faster\nallocation", 2.877),
-    ("sharded\nsupply", 1.956),
+    ("first working\nallocator", 1.337),
+    ("generational", 6.398),
+    ("parallel\nmark & sweep", 6.612),
+    ("concurrent\nmarking", 6.660),
+    ("memory diet\n+ tuning", 2.099),
+    ("concurrent\nsweep", 2.348),
+    ("faster\nallocation", 2.135),
+    ("sharded\nsupply", 1.969),
     # M8 (2026-07-07): adaptive young-generation budget and SIMD zero-skip in the
-    # bitmap walks; M8.2 partitioned stack scanning. All in the ~2.0-2.5 GB band
-    # (peak WS bounces ±15% across runs on mixed — see fastalloc's 2.9).
-    ("adaptive\nnursery", 2.119),
-    ("vectorized\nbitmap skip", 2.131),
-    ("partitioned\nstack scan", 2.475),
+    # bitmap walks; M8.2 partitioned stack scanning; M8.3 zeroed-hole markers;
+    # M9 slow-path bump-serve. All in the ~2.0-2.4 GB band (peak WS bounces ±15%
+    # across runs on mixed — see vecbitmap's 2.4).
+    ("adaptive\nnursery", 1.951),
+    ("vectorized\nbitmap skip", 2.395),
+    ("partitioned\nstack scan", 1.972),
+    ("zeroed-hole\nmarkers", 1.971),
+    ("slow-path\nbump-serve", 1.946),
 ]
 
 # (label, line y, explicit label y). DATAS discovery 2026-07-06: bare gcServer=1 is
-# adaptive; classic fixed heap-per-core costs ~7 GB. 2026-07-07 mixed refresh: the
-# low stock cluster moved up (mixed pins survivors, stock compacts less): wks 2.21 /
-# DATAS 2.34 / h8 2.57 now bracket the hero tail (1.96-2.48), so wks+DATAS labels
-# stay staggered BELOW their lines and h8 stays lifted above; h32 (6.96) keeps its
-# label in the open band under the M4-M6 spike.
+# adaptive; classic fixed heap-per-core costs ~7 GB. 2026-07-07 backfill sitting: the
+# low stock cluster brackets the hero tail (1.95-2.40): wks 2.16 / DATAS 2.34 /
+# h8 2.55, so wks+DATAS labels stay staggered BELOW their lines and h8 stays lifted
+# above; h32 (6.95) keeps its label in the open band under the M4-M6 spike.
 stock_refs = [
-    ("Server GC (32 heaps)", 6.956, 5.60, "#6b6a63"),
-    ("Server GC (8 heaps)", 2.566, 3.85, "#3a3a37"),
-    ("Server GC (DATAS)", 2.344, 1.05, "#55544e"),
-    ("Workstation GC", 2.214, 0.45, "#9a988f"),
+    ("Server GC (32 heaps)", 6.949, 5.60, "#6b6a63"),
+    ("Server GC (8 heaps)", 2.549, 3.85, "#3a3a37"),
+    ("Server GC (DATAS)", 2.340, 1.05, "#55544e"),
+    ("Workstation GC", 2.163, 0.45, "#9a988f"),
 ]
 
 MAIN_COLOR = "#2a78d6"

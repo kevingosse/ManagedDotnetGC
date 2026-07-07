@@ -5,47 +5,54 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph-nonum.png"
 
-# ---- data (recomputed 2026-07-07 AFTERNOON sitting under the mixed-only protocol:
-# all eleven milestones and all four stock anchors re-benched fresh in ONE sitting
+# ---- data (recomputed 2026-07-07 BACKFILL sitting under the mixed-only protocol:
+# all thirteen milestones and all four stock anchors re-benched fresh in ONE sitting
 # with `bench-gcperfsim.ps1 -Scenario mixed`; see summary.md. Charted metric is the
 # single 'mixed' scenario (95% ordinary / 5% pinned allocations) — pin-dedicated
 # scenarios greatly advantage a non-moving GC, so a geomean including them would
 # flatter this public artifact.) ----
 milestones = [
-    ("first working\nallocator", 7.824),
-    ("generational", 5.201),
-    ("parallel\nmark & sweep", 1.811),
-    ("concurrent\nmarking", 1.809),
-    ("memory diet\n+ tuning", 1.783),
-    ("concurrent\nsweep", 1.427),
-    ("faster\nallocation", 1.382),
-    ("sharded\nsupply", 1.239),
+    ("first working\nallocator", 7.311),
+    ("generational", 5.289),
+    ("parallel\nmark & sweep", 1.801),
+    ("concurrent\nmarking", 1.870),
+    ("memory diet\n+ tuning", 1.801),
+    ("concurrent\nsweep", 1.400),
+    ("faster\nallocation", 1.421),
+    ("sharded\nsupply", 1.223),
     # M8 (2026-07-07): adaptive young-generation budget (frequent-futile-cheap
     # boost) and SIMD zero-skip in the bitmap walks.
-    ("adaptive\nnursery", 1.225),
-    ("vectorized\nbitmap skip", 1.146),
+    ("adaptive\nnursery", 1.181),
+    ("vectorized\nbitmap skip", 1.194),
     # M8.2 (2026-07-07): partitioned stack scanning — a young-pause milestone
-    # (roots p50 −70%, pause p50 −25% on web workloads); wall-neutral here, the
-    # +0.026s vs the previous stage is within mixed's ±4% iteration spread.
-    ("partitioned\nstack scan", 1.172),
+    # (roots p50 −70%, pause p50 −25% on web workloads); wall-neutral here.
+    # (Identical 1.194 median vs the previous stage is a checked coincidence:
+    # the raw iteration sets differ entirely — see summary.md.)
+    ("partitioned\nstack scan", 1.194),
+    # M8.3 (2026-07-07): per-hole zeroed markers kill the sweep's zeroer-work
+    # forfeit; wall-neutral on mixed (the win is on the web workload).
+    ("zeroed-hole\nmarkers", 1.234),
+    # M9 (2026-07-07): slow-path bump-serve — 20x carve inflation was the
+    # suspension-frequency mechanism; best mixed wall of the series.
+    ("slow-path\nbump-serve", 1.104),
 ]
 
 # (label, line y, explicit label y — slots picked to clear every dashed line and each
 # other; DATAS discovery 2026-07-06: bare gcServer=1 adapts heap count, fixed-32 is
-# its own config. 2026-07-07 mixed refresh: the four stock values are clustered within
-# 1.3s of each other (2.59/1.94/1.76/1.32), and the real gaps between them are too
-# close to a safe label height to stagger near their own lines without crossing a
-# *different* line — so all four labels stay lifted into the empty band above the
-# whole cluster (nothing else sits between ~2.6s and 5.2s here) and stacked in
-# real-value order, each clear of every dashed line and of its neighbor label. The
-# last four hero points (sharded supply onward) sit BELOW every stock reference line,
-# including Server GC (8 heaps) — the tuned custom GC's cluster has moved under the
-# whole stock band.
+# its own config. 2026-07-07 backfill sitting: the four stock values are clustered
+# within 1.3s of each other (2.60/1.97/1.83/1.34) — note h32 (1.97) now sits ABOVE
+# DATAS (1.83), the reverse of the afternoon sitting; label stack re-ordered to keep
+# real-value order. The real gaps between them are too close to a safe label height
+# to stagger near their own lines without crossing a *different* line — so all four
+# labels stay lifted into the empty band above the whole cluster (nothing else sits
+# between ~2.6s and 5.3s here) and stacked in real-value order, each clear of every
+# dashed line and of its neighbor label. The last six hero points (sharded supply
+# onward) sit BELOW every stock reference line, including Server GC (8 heaps).
 stock_refs = [
-    ("Workstation GC", 2.593, 4.55, "#9a988f"),
-    ("Server GC (DATAS)", 1.935, 4.05, "#55544e"),
-    ("Server GC (32 heaps)", 1.758, 3.55, "#6b6a63"),
-    ("Server GC (8 heaps)", 1.319, 3.05, "#3a3a37"),
+    ("Workstation GC", 2.595, 4.55, "#9a988f"),
+    ("Server GC (32 heaps)", 1.970, 4.05, "#6b6a63"),
+    ("Server GC (DATAS)", 1.827, 3.55, "#55544e"),
+    ("Server GC (8 heaps)", 1.338, 3.05, "#3a3a37"),
 ]
 
 MAIN_COLOR = "#2a78d6"

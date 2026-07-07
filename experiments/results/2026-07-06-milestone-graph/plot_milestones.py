@@ -5,28 +5,31 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph.png"
 
-# ---- data (recomputed 2026-07-06 evening sitting: six milestones re-benched as -r2
-# labels alongside tonight's new M7 "mutator war" stage (label m7-stash2) so every
-# point on the chart shares one sitting; see experiments/results/2026-07-06-milestone-graph/summary.md) ----
+# ---- data (recomputed 2026-07-07 BACKFILL sitting under the mixed-only protocol:
+# all thirteen milestones and all four stock anchors re-benched fresh in ONE sitting
+# with `bench-gcperfsim.ps1 -Scenario mixed`; see summary.md. This is the
+# M-numbered variant of milestone-graph-nonum.png — same data, internal naming.) ----
 milestones = [
-    ("M2\nbaseline", 8.054),
-    ("M4\nsticky gens", 5.350),
-    ("M5 parallel", 2.029),
-    ("M6 concurrent", 1.928),
-    ("M7 tuning", 1.851),
-    ("M6.5\nsweep-assist", 1.816),
-    ("faster\nallocation", 1.418),
-    # Second sitting of 2026-07-06 (late evening). Drift-checked via re-run anchors:
-    # WKS/h8 ran +2.7-2.9% SLOWER than the earlier sitting, so this point is
-    # conservative against the reference lines below (same-sitting ratio vs h8: 0.849).
-    ("sharded\nsupply", 1.227),
+    ("M2\nbaseline", 7.311),
+    ("M4\nsticky gens", 5.289),
+    ("M5 parallel", 1.801),
+    ("M6 concurrent", 1.870),
+    ("M7 tuning", 1.801),
+    ("M6.5\nsweep-assist", 1.400),
+    ("faster\nallocation", 1.421),
+    ("sharded\nsupply", 1.223),
+    ("adaptive\nnursery", 1.181),
+    ("vectorized\nbitmap skip", 1.194),
+    ("partitioned\nstack scan", 1.194),
+    ("zeroed-hole\nmarkers", 1.234),
+    ("slow-path\nbump-serve", 1.104),
 ]
 
 stock_refs = [
-    ("stock WKS", 2.399, "#9a988f"),
-    ("stock Server GC (DATAS)", 2.119, "#55544e"),
-    ("stock Server GC (32 heaps)", 1.759, "#6b6a63"),
-    ("stock Server GC (8 heaps)", 1.405, "#3a3a37"),
+    ("Workstation GC", 2.595, "#9a988f"),
+    ("Server GC (32 heaps)", 1.970, "#6b6a63"),
+    ("Server GC (DATAS)", 1.827, "#55544e"),
+    ("Server GC (8 heaps)", 1.338, "#3a3a37"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -40,9 +43,9 @@ available = {f.name for f in fm.fontManager.ttflist}
 font_family = next((f for f in preferred if f in available), "DejaVu Sans")
 plt.rcParams["font.family"] = font_family
 
-fig_w, fig_h, dpi = 12.0, 6.75, 100
+fig_w, fig_h, dpi = 15.0, 6.75, 100
 fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor="white")
-ax = fig.add_axes([0.07, 0.13, 0.78, 0.66])  # leave room for title block + right-edge ref labels
+ax = fig.add_axes([0.055, 0.13, 0.82, 0.66])  # leave room for title block + right-edge ref labels
 ax.set_facecolor("white")
 
 xs = list(range(len(milestones)))
@@ -69,10 +72,10 @@ ax.set_ylim(ymin, ymax)
 label_x = len(milestones) - 1 + 0.65
 line_end_x = len(milestones) - 1 + 0.45
 stock_label_y = {
-    "stock WKS": 4.25,
-    "stock Server GC (DATAS)": 3.75,
-    "stock Server GC (32 heaps)": 3.25,
-    "stock Server GC (8 heaps)": 2.75,
+    "Workstation GC": 4.25,
+    "Server GC (32 heaps)": 3.75,
+    "Server GC (DATAS)": 3.25,
+    "Server GC (8 heaps)": 2.75,
 }
 
 for label, val, color in stock_refs:
@@ -104,7 +107,7 @@ ax.set_xticklabels(names, fontsize=11.3, color=SECONDARY_INK)
 ax.tick_params(axis="x", length=0, pad=10)
 
 # y axis
-ax.set_ylabel("wall seconds (4-scenario geomean, lower is better)", fontsize=12, color=SECONDARY_INK, labelpad=10)
+ax.set_ylabel("wall seconds (mixed scenario, lower is better)", fontsize=12, color=SECONDARY_INK, labelpad=10)
 ax.tick_params(axis="y", labelsize=11, colors=MUTED, length=0)
 for spine in ["top", "right", "left"]:
     ax.spines[spine].set_visible(False)
@@ -123,12 +126,12 @@ ax.text(-0.4, ys[0] + label_offset + (ymax - ymin) * 0.05, "ManagedDotnetGC (C#)
 fig.text(0.07, 0.93, "A .NET GC written in C#: wall time across milestones",
           fontsize=20, fontweight="bold", color=INK, ha="left", va="top")
 fig.text(0.07, 0.875,
-          "GCPerfSim, 4-scenario geometric mean — all builds re-benchmarked same day, same machine, "
-          "vs same-day stock anchors",
+          "GCPerfSim, mixed workload: 95% ordinary / 5% pinned allocations — "
+          "all builds re-benchmarked same sitting, same machine, vs same-sitting stock anchors",
           fontsize=12.5, color=SECONDARY_INK, ha="left", va="top")
 
 # ---- small annotation ----
-fig.text(0.965, 0.03, "48h of work, 2026-07-05/06", fontsize=10, color=MUTED,
+fig.text(0.965, 0.03, "72h of work, 2026-07-05/06/07", fontsize=10, color=MUTED,
           ha="right", va="bottom", style="italic")
 
 fig.savefig(OUT_PNG, dpi=dpi, facecolor="white")

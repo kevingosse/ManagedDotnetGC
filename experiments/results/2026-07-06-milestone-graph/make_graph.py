@@ -12,34 +12,39 @@ OUT_DIR = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-grap
 SCENARIO = "mixed"
 
 # (name, label, sha, gc-value-to-match)
-# 2026-07-07 afternoon sitting: every milestone (ten from the morning backfill plus
-# M8.2 partitioned stack scan) and all four stock anchors re-benched fresh in ONE
+# 2026-07-07 backfill sitting: all thirteen milestones (eleven carried forward plus
+# the two new M8.3/M9 stages) and all four stock anchors re-benched fresh in ONE
 # sitting with -Scenario mixed via git worktree + Release publish +
-# `bench-gcperfsim.ps1` (HEAD copy) — see summary.md.
+# `bench-gcperfsim.ps1` (HEAD copy) — see summary.md. Labels: msg3-<N>.
 MILESTONES = [
-    ("M2 baseline",     "mixed-m2",        "407cf59", "custom"),
-    ("M4 sticky gens",  "mixed-m4",        "5db0ed9", "custom"),
-    ("M5 parallel",     "mixed-m5",        "344ce8b", "custom"),
-    ("M6 concurrent",   "mixed-m6",        "1aedac9", "custom"),
-    ("M7 tuning",       "mixed-m7",        "7689ab1", "custom"),
+    ("M2 baseline",     "msg3-1",  "407cf59", "custom"),
+    ("M4 sticky gens",  "msg3-2",  "5db0ed9", "custom"),
+    ("M5 parallel",     "msg3-3",  "344ce8b", "custom"),
+    ("M6 concurrent",   "msg3-4",  "1aedac9", "custom"),
+    ("M7 tuning",       "msg3-5",  "7689ab1", "custom"),
     # See summary.md SHA notes: M6/M7/M6.5 shas walk forward from docs-only commits
     # to the first commit that actually contains the named feature.
-    ("M6.5 sweep-assist","mixed-m65",      "d95dddb", "custom"),
-    ("faster allocation (M7 mutator war)", "mixed-fastalloc", "e65fa79", "custom"),
-    ("sharded supply (M7)", "mixed-sharded", "98517ee", "custom"),
-    ("Adaptive nursery", "mixed-adaptive",  "ceffbfc", "custom"),
-    ("Vectorized bitmap skip", "mixed-vecbitmap", "68696ff", "custom"),
+    ("M6.5 sweep-assist","msg3-6",  "d95dddb", "custom"),
+    ("faster allocation (M7 mutator war)", "msg3-7", "e65fa79", "custom"),
+    ("sharded supply (M7)", "msg3-8", "98517ee", "custom"),
+    ("Adaptive nursery", "msg3-9",  "ceffbfc", "custom"),
+    ("Vectorized bitmap skip", "msg3-10", "68696ff", "custom"),
     # M8.2 (2026-07-07): partitioned stack scanning across GC workers. Wall-neutral
     # by design (the win is young-pause p50 -25% on web workloads); charted for
     # continuity of the stage axis.
-    ("Partitioned stack scan", "mixed-partscan", "8b8bcbd", "custom"),
+    ("Partitioned stack scan", "msg3-11", "8b8bcbd", "custom"),
+    # M8.3 (2026-07-07): per-hole zeroed markers kill the sweep's zeroer-work forfeit.
+    ("Zeroed-hole markers", "msg3-12", "8868c22", "custom"),
+    # M9 (2026-07-07): slow-path bump-serve — 20x carve inflation was the
+    # suspension-frequency mechanism.
+    ("Slow-path bump-serve", "msg3-13", "6b6b106", "custom"),
 ]
 
 STOCK_REFS = [
-    ("Workstation GC",          "mixed-stock-wks",   "stock-wks"),
-    ("Server GC (DATAS)",       "mixed-stock-datas", "stock-svr-datas"),
-    ("Server GC (8 heaps)",     "mixed-stock-h8",    "stock-svr-h8"),
-    ("Server GC (32 heaps)",    "mixed-stock-h32",   "stock-svr-h32"),
+    ("Workstation GC",          "msg3-stock-wks",   "stock-wks"),
+    ("Server GC (DATAS)",       "msg3-stock-svr",   "stock-svr-datas"),
+    ("Server GC (8 heaps)",     "msg3-stock-h8",    "stock-svr-h8"),
+    ("Server GC (32 heaps)",    "msg3-stock-h32",   "stock-svr-h32"),
 ]
 
 METRICS = [
@@ -81,11 +86,13 @@ def main():
 
     # ---- write summary.md ----
     lines = []
-    lines.append("# Milestone graph — 'mixed' scenario medians (2026-07-07, afternoon sitting)\n")
-    lines.append("Every row in this file — all eleven milestones and all four stock anchors — was "
-                  "benched 2026-07-07 afternoon in ONE sitting via git worktree + Release publish + "
+    lines.append("# Milestone graph — 'mixed' scenario medians (2026-07-07, backfill sitting)\n")
+    lines.append("Every row in this file — all thirteen milestones and all four stock anchors — was "
+                  "benched 2026-07-07 in ONE sitting via git worktree + Release publish + "
                   "the HEAD copy of `bench-gcperfsim.ps1 -Scenario mixed`, same machine. Cross-sitting "
-                  "wall times are never comparable, so nothing is reused from earlier backfills. "
+                  "wall times are never comparable, so nothing is reused from earlier backfills — this "
+                  "sitting supersedes the 2026-07-07 afternoon sitting's numbers wholesale, including "
+                  "the eleven milestones it repeats. "
                   "**Charted metric = median of 3 iterations of the single 'mixed' scenario** (95% "
                   "ordinary / 5% pinned allocations): pin-dedicated scenarios greatly advantage this "
                   "non-moving GC, so a geomean including them would flatter the public artifact "
@@ -106,9 +113,16 @@ def main():
                   "used instead.\n")
     lines.append("- **Adaptive nursery** (`ceffbfc`), **Vectorized bitmap skip** (`68696ff`), "
                   "**Partitioned stack scan** (`8b8bcbd`): all verified code-bearing commits.\n")
+    lines.append("- **Zeroed-hole markers** (`8868c22`, M8.3) and **Slow-path bump-serve** (`6b6b106`, "
+                  "M9) — new rows added this sitting: both are themselves the code-landing commits, "
+                  "pre-verified per the backfill brief, used as-is.\n")
     lines.append("- **Backfill integrity**: each milestone's publish output is timestamp-verified "
-                  "before benching (an earlier attempt this sitting silently re-benched a stale dll "
-                  "after a failed publish — those rows were purged from the archive).\n")
+                  "before benching (an earlier attempt silently re-benched a stale dll "
+                  "after a failed publish — those rows were purged from the archive). This sitting's "
+                  "stale-dll check flagged identical 1.194 s wall medians at Vectorized bitmap skip and "
+                  "Partitioned stack scan; the raw iteration sets differ entirely "
+                  "(1.175/1.194/1.269 vs 1.150/1.280/1.194, distinct GC counts and sim_s), so it is a "
+                  "genuine coincidence of overlapping medians, not a stale build.\n")
 
     for metric, metric_label, fmt in METRICS:
         lines.append(f"\n## 'mixed' medians ({metric_label}) — milestones\n")
