@@ -68,18 +68,43 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     // DOTNET_GCgen0size: latency knob overriding the young allocation budget, 0 = adaptive
     private long _youngBudgetCap;
 
-    // Adaptive nursery boost (M8, TechEmpower): max(64 MB, live) collects 100+ times a
-    // second on web workloads (tiny live set, huge alloc rate), and each young pause has
-    // a fixed cost — stack scan over every Kestrel thread — that survivors don't explain.
-    // A young collection that is FREQUENT (interval below 250 ms), CHEAP (pause so far
-    // under 10 ms) and LIGHT (survivor mass small enough that marking it is a fraction
-    // of that cheap pause) is pure fixed cost, so the budget doubles; heavy survival or
-    // a sparse cadence shrinks it back. The survivor gate is an ABSOLUTE mass, not a
-    // ratio to the budget: a ratio is self-referential and has two stable fixed points
-    // (the M9 bump-serve fix landed web workloads in the wrong one — 2.4 MB of constant
-    // in-flight survivors reads as 3.7% of a floor budget but 0.5% of a boosted one).
-    // GCPerfSim shapes stay excluded twice over: their young survivors are tens of MB
-    // and their young pauses mark real mass (25–73 ms, past the cheap gate).
+    // Adaptive nursery boost (M8, TechEmpower; M9.2, OrchardCore): max(64 MB, live)
+    // collects 100+ times a second on web workloads (tiny live set, huge alloc rate),
+    // and each young pause has a fixed cost — stack scan, card scan over mid-life
+    // state — that survivors don't explain. A young collection that is FREQUENT
+    // (interval below 250 ms) on a floor-bound heap doubles the budget; a sparse
+    // cadence shrinks it back.
+    //
+    // What keeps the boost off heavy-survival shapes is a PROBE: every grow records
+    // the survivor mass that justified it (_boostSurvivorAnchor), and any young
+    // collection whose survivors exceed anchor×1.5 + 8 MB halves the boost and mutes
+    // growth for 30 s. Survivor mass that is concurrency-bound (in-flight request
+    // state: TechEmpower 2.7 MB, OrchardCore 18 MB — measured invariant from a 64 to
+    // a 256 MB budget) passes at every level; allocation-proportional mass (GCPerfSim
+    // shapes, tens of MB that scale with the nursery) follows the doubled budget and
+    // reverts the grow one collection later. The gate compares the workload's response
+    // to the controller's own move — d(survivors)/d(budget) — which is budget-
+    // independent, so it has ONE fixed point per workload. Both static calibrations it
+    // replaces had failure modes: a ratio-to-budget gate is self-referential with two
+    // stable fixed points (the M9 bump-serve scar), and absolute gates (8/16 MB mass,
+    // 10 ms cheap pause — calibrated on TechEmpower) read OrchardCore backwards: its
+    // 18 MB of invariant survivors tripped the 16 MB shrink on 661/976 collections and
+    // its 12 ms fixed-cost pause failed the cheap gate, pinning the budget at the
+    // floor for 10 young/s + 1.6 promoted-fulls/s ≈ 15% of wall STW. There is no
+    // pause-length gate anymore for the same reason: once survivor invariance holds,
+    // a bigger budget buys the SAME per-pause cost fewer times — an expensive fixed
+    // pause is a reason to grow, not to block.
+    //
+    // The boost compensates fixed pause cost only where the live-proportional budget
+    // sits at its floor (tiny live set, huge alloc rate). The floor bound reads
+    // DURABLE live (_liveAtLastFull, what the last full traced), not sticky live:
+    // sticky live is inflated by young promotion, and a floor-pinned budget is itself
+    // what manufactures that promotion (OrchardCore: durable live never passed 80 MB
+    // while promotion pushed the sticky budget to 191 MB — the gate locked out the
+    // exact heap it was built for). A heap whose durable live already buys it a big
+    // nursery gets its cadence from ComputeBudget; boosting it on top (the soak app:
+    // live 268→641 MB) would only trade WS for suspensions it isn't suffering.
+    //
     // The boost rides on top of ComputeBudget for young AND full paths — budget and the
     // trim demand must move together or fulls flap the retention target and manufacture
     // starved collections (the g256 queries run: 113 of 114 fulls starved). The boost
@@ -96,10 +121,14 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     // (2×256); the boost path retains 2×base + boost = 320 MB for the same budget.
     private const long BoostCapBytes = 192L * 1024 * 1024;
 
-    // Marking ~8 MB costs ~1-2 ms across the M5 worker pool — the survivor mass that
-    // still fits inside a "cheap" young pause. Grow below it, shrink past double it.
-    private const long BoostGrowSurvivorBytes = 8L * 1024 * 1024;
-    private const long BoostShrinkSurvivorBytes = 16L * 1024 * 1024;
+    // The probe state: survivors measured at the last grow, and the growth-mute
+    // deadline (Stopwatch ticks) set when a violation walks the boost back. 8 MB of
+    // slack keeps tiny anchors (fortunes 2.7 MB) from tripping on request bursts —
+    // the violation threshold there lands at ~12 MB, where the old absolute shrink
+    // gate sat at 16.
+    private long _boostSurvivorAnchor;
+    private long _boostGrowMuteUntil;
+    private const long BoostSurvivorSlackBytes = 8L * 1024 * 1024;
 
     // Parallel collection workers (M5), null = serial. The threads belong to the GC dll's
     // own runtime and never call into the EE. Each participant gets its own mark stack
@@ -524,10 +553,6 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             GcStats.BeginCollection();
             var tStart = GcStats.Timestamp();
 
-            // Not GcStats.Timestamp(): the adaptive boost's cheap-pause gate must work
-            // with stats disabled (Timestamp() returns 0 then)
-            var pauseStart = Stopwatch.GetTimestamp();
-
             _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
 
             // The background zeroer is not an EE thread, so SuspendEE does not park it:
@@ -563,7 +588,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             var tSwept = GcStats.Timestamp();
 
-            ApplyBudget(young, pauseStart);
+            ApplyBudget(young);
 
             var gcNumber = _gcCount;
             Interlocked.Increment(ref _gcCount);
@@ -1068,52 +1093,55 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     }
 
     /// <summary>Post-sweep budget/trim/trigger policy (SPEC-M2 §8.3), shared like
-    /// <see cref="SweepAndAccount"/>. <paramref name="pauseStart"/> (a Stopwatch
-    /// timestamp taken before SuspendEE, 0 when unavailable) feeds the adaptive boost's
-    /// cheap-pause gate; the concurrent full path passes 0 — fulls never adjust the
-    /// boost, they only inherit it.</summary>
-    private void ApplyBudget(bool young, long pauseStart = 0)
+    /// <see cref="SweepAndAccount"/>. Only young collections adjust the adaptive
+    /// boost; the concurrent full path inherits it.</summary>
+    private void ApplyBudget(bool young)
     {
         _allocatedSinceGC = 0;
 
         if (young && _youngBudgetCap == 0)
         {
-            // Frequent-cheap-light detector (see _youngBudgetBoost). The interval is
-            // young-start-to-young-start wall time. All three grow gates are
-            // load-bearing: GCPerfSim's soh shape boosted its WS 2 GB past the h8
-            // anchor before the survivor + cheap-pause gates excluded it — its young
-            // pauses mark real mass (25–73 ms), web's are fixed cost (2–5 ms) over
-            // a constant few MB of in-flight survivors.
+            // Probe-and-anchor detector (see _youngBudgetBoost). The interval is
+            // young-start-to-young-start wall time; the timestamp is Stopwatch, not
+            // GcStats.Timestamp() (0 with stats disabled).
             var now = Stopwatch.GetTimestamp();
             var interval = now - _lastYoungGcTimestamp;
             _lastYoungGcTimestamp = now;
 
             var growCadence = interval < Stopwatch.Frequency / 4;   // < 250 ms
             var sparseCadence = interval > Stopwatch.Frequency;     // > 1 s
-            var cheapPause = pauseStart != 0
-                && now - pauseStart < Stopwatch.Frequency / 100;    // < 10 ms so far
 
-            // The boost compensates fixed pause cost only where the live-proportional
-            // budget sits at its floor (tiny live set, huge alloc rate). A heap whose
-            // live set already buys it a big nursery gets its cadence from ComputeBudget;
-            // boosting it on top (the soak app: live 268→641 MB, cheap 3 ms pauses)
-            // would only trade WS for suspensions it isn't suffering.
-            var floorBound = Region.ComputeBudget(_lastLiveBytes) <= 2 * Region.MinGCBudget;
+            // Survivors followed the budget past the anchored mass (or the workload
+            // shifted under a standing boost): allocation-proportional survival, the
+            // shape the boost must not feed. Walk it back — repeated violations decay
+            // it to zero within a few collections — and hold off probing long enough
+            // that a heavy phase costs one oversized cycle per mute, not one per grow.
+            var violation = _lastYoungSurvivors >
+                _boostSurvivorAnchor + _boostSurvivorAnchor / 2 + BoostSurvivorSlackBytes;
 
-            if (growCadence && cheapPause && floorBound
-                && _lastYoungSurvivors < BoostGrowSurvivorBytes)
+            if (_youngBudgetBoost > 0 && violation)
             {
+                _youngBudgetBoost /= 2;
+                _boostGrowMuteUntil = now + 30 * Stopwatch.Frequency;
+            }
+            else if (sparseCadence)
+            {
+                _youngBudgetBoost /= 2;
+            }
+            else if (growCadence && now >= _boostGrowMuteUntil
+                && _youngBudgetBoost < BoostCapBytes
+                && Region.ComputeBudget(_liveAtLastFull) <= 2 * Region.MinGCBudget)
+            {
+                // The grow IS the probe: anchor what the current budget survives,
+                // double, and let the violation branch judge the response.
+                _boostSurvivorAnchor = _lastYoungSurvivors;
                 _youngBudgetBoost = Math.Min(BoostCapBytes,
                     Math.Max(Region.MinGCBudget, _youngBudgetBoost * 2));
             }
-            else if (sparseCadence || _lastYoungSurvivors > BoostShrinkSurvivorBytes)
-            {
-                _youngBudgetBoost /= 2;
 
-                if (_youngBudgetBoost < Region.MinGCBudget)
-                {
-                    _youngBudgetBoost = 0;
-                }
+            if (_youngBudgetBoost < Region.MinGCBudget)
+            {
+                _youngBudgetBoost = 0;
             }
         }
 
