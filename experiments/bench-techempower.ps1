@@ -21,7 +21,9 @@ param(
     [int]$Iterations = 3,
     [switch]$ServerGC,
     [int]$HeapCount = 0,
-    [string[]]$Endpoint = @()     # subset; empty = all
+    [string[]]$Endpoint = @(),    # subset; empty = all
+    [string]$StatsDir = "",       # custom GC only: write DOTNET_GCStatsFile per endpoint
+    [int]$Gen0MB = 0              # DOTNET_GCgen0size override (0 = unset)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,7 +46,8 @@ $env:ConnectionString = 'Server=localhost;Database=hello_world;User Id=benchmark
 $env:Database = 'postgresql'
 $env:ASPNETCORE_URLS = $base
 $env:DOTNET_gcConservative = '0'
-Remove-Item Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCStatsFile, Env:DOTNET_GCAllocShards, Env:DOTNET_GCHeapCount, Env:DOTNET_GCDynamicAdaptationMode -ErrorAction SilentlyContinue
+Remove-Item Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCStatsFile, Env:DOTNET_GCAllocShards, Env:DOTNET_GCHeapCount, Env:DOTNET_GCDynamicAdaptationMode, Env:DOTNET_GCgen0size -ErrorAction SilentlyContinue
+if ($Gen0MB -gt 0) { $env:DOTNET_GCgen0size = '{0:x}' -f ($Gen0MB * 1MB) }
 
 if ($GcDll) {
     foreach ($attempt in 1..20) {
@@ -78,6 +81,9 @@ foreach ($name in $endpoints.Keys) {
     if ($Endpoint.Count -gt 0 -and $Endpoint -notcontains $name) { continue }
 
     # Fresh app process per endpoint so working-set numbers are per-endpoint
+    if ($StatsDir) {
+        $env:DOTNET_GCStatsFile = Join-Path $StatsDir "gcstats-$Label-$name.csv"
+    }
     $p = Start-Process dotnet -ArgumentList "$appDir\Mvc.dll" -WorkingDirectory $appDir -PassThru -RedirectStandardOutput "$env:TEMP\tfb-app-$name.txt"
     try {
         foreach ($attempt in 1..60) {

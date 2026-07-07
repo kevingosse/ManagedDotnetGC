@@ -1,5 +1,6 @@
 ﻿using ManagedDotnetGC.Dac;
 using NativeObjects;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -64,8 +65,24 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     // 250. Below the gate, growing the heap is cheaper than extra full collections.
     private long _fullRatioPercent = 250;
 
-    // DOTNET_GCgen0size: latency knob capping the young allocation budget, 0 = uncapped
+    // DOTNET_GCgen0size: latency knob overriding the young allocation budget, 0 = adaptive
     private long _youngBudgetCap;
+
+    // Adaptive nursery boost (M8, TechEmpower): max(64 MB, live) collects 100+ times a
+    // second on web workloads (tiny live set, huge alloc rate), and each young pause has
+    // a fixed cost — stack scan over every Kestrel thread — that survivors don't explain:
+    // the 2026-07-07 fortunes run burned 55% of wall STW marking <1 MB per collection.
+    // A young collection that is both FREQUENT (interval below _boostGrowIntervalTicks)
+    // and FUTILE (survivors under 2% of the budget it closed out) was pure fixed cost, so
+    // the budget doubles; real survival (>8%) or a sparse cadence shrinks it back. The
+    // boost rides on top of ComputeBudget for young AND full paths — budget and the trim
+    // demand (2×budget) must move together or fulls flap the retention target and
+    // manufacture starved collections (the g256 queries run: 113 of 114 fulls starved).
+    // GCPerfSim shapes never engage it: their young survivors are far past 8%.
+    private long _youngBudgetBoost;
+    private long _lastYoungSurvivors;
+    private long _lastYoungGcTimestamp;
+    private const long BoostCapBytes = 448L * 1024 * 1024;
 
     // Parallel collection workers (M5), null = serial. The threads belong to the GC dll's
     // own runtime and never call into the EE. Each participant gets its own mark stack
@@ -434,6 +451,10 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             GcStats.BeginCollection();
             var tStart = GcStats.Timestamp();
 
+            // Not GcStats.Timestamp(): the adaptive boost's cheap-pause gate must work
+            // with stats disabled (Timestamp() returns 0 then)
+            var pauseStart = Stopwatch.GetTimestamp();
+
             _gcToClr.SuspendEE(SUSPEND_REASON.SUSPEND_FOR_GC);
 
             // The background zeroer is not an EE thread, so SuspendEE does not park it:
@@ -469,7 +490,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
             var tSwept = GcStats.Timestamp();
 
-            ApplyBudget(young);
+            ApplyBudget(young, pauseStart);
 
             var gcNumber = _gcCount;
             Interlocked.Increment(ref _gcCount);
@@ -893,6 +914,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         {
             _promotedSinceFull += swept;
             _lastLiveBytes = _liveAtLastFull + _promotedSinceFull;
+            _lastYoungSurvivors = swept;
         }
         else
         {
@@ -906,19 +928,57 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     }
 
     /// <summary>Post-sweep budget/trim/trigger policy (SPEC-M2 §8.3), shared like
-    /// <see cref="SweepAndAccount"/>.</summary>
-    private void ApplyBudget(bool young)
+    /// <see cref="SweepAndAccount"/>. <paramref name="pauseStart"/> (a Stopwatch
+    /// timestamp taken before SuspendEE, 0 when unavailable) feeds the adaptive boost's
+    /// cheap-pause gate; the concurrent full path passes 0 — fulls never adjust the
+    /// boost, they only inherit it.</summary>
+    private void ApplyBudget(bool young, long pauseStart = 0)
     {
-        // SPEC-M2 §8.3: the heap converges to ≈ 2× live. A configured gen0 size caps
-        // the young budget instead: young pauses scale with the nursery while total
-        // work per allocated byte does not, so DOTNET_GCgen0size trades throughput
-        // (~+12% wall on soh at live/4) for young pauses in proportion (73 → 25 ms p50)
         _allocatedSinceGC = 0;
-        _budget = Region.ComputeBudget(_lastLiveBytes);
+
+        if (young && _youngBudgetCap == 0)
+        {
+            // Frequent-futile-cheap detector (see _youngBudgetBoost). The interval is
+            // young-start-to-young-start wall time; _budget still holds the budget this
+            // collection just closed out, so survivors compare against the right base.
+            // All three grow gates are load-bearing: GCPerfSim's soh survival (~2% of
+            // allocated) sits exactly on a 2% futility threshold and boosted its WS 2 GB
+            // past the h8 anchor before the <1% + cheap-pause gates excluded it — its
+            // young pauses mark real survivors (25–73 ms), web's are fixed cost (2–5 ms).
+            var now = Stopwatch.GetTimestamp();
+            var interval = now - _lastYoungGcTimestamp;
+            _lastYoungGcTimestamp = now;
+
+            var growCadence = interval < Stopwatch.Frequency / 4;   // < 250 ms
+            var sparseCadence = interval > Stopwatch.Frequency;     // > 1 s
+            var cheapPause = pauseStart != 0
+                && now - pauseStart < Stopwatch.Frequency / 100;    // < 10 ms so far
+
+            if (growCadence && cheapPause && _lastYoungSurvivors < _budget / 100)
+            {
+                _youngBudgetBoost = Math.Min(BoostCapBytes,
+                    Math.Max(Region.MinGCBudget, _youngBudgetBoost * 2));
+            }
+            else if (sparseCadence || _lastYoungSurvivors > _budget / 50)
+            {
+                _youngBudgetBoost /= 2;
+
+                if (_youngBudgetBoost < Region.MinGCBudget)
+                {
+                    _youngBudgetBoost = 0;
+                }
+            }
+        }
+
+        // SPEC-M2 §8.3: the heap converges to ≈ 2× live. A configured gen0 size overrides
+        // the young budget instead: young pauses scale with the nursery while total work
+        // per allocated byte does not, so DOTNET_GCgen0size trades throughput
+        // (~+12% wall on soh at live/4) for young pauses in proportion (73 → 25 ms p50)
+        _budget = Region.ComputeBudget(_lastLiveBytes) + _youngBudgetBoost;
 
         if (young && _youngBudgetCap > 0)
         {
-            _budget = Math.Min(_budget, Math.Max(Region.MinGCBudget, _youngBudgetCap));
+            _budget = Math.Max(Region.MinGCBudget, _youngBudgetCap);
         }
     }
 
