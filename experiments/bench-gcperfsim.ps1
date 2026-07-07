@@ -50,6 +50,9 @@ $scenarios = [ordered]@{
     'lohmix'   = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -lohar 50 -lohsr 100000-2000000 -lohsi 50 -tk time'
     'pin'      = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -sohpi 100 -tk time'
     'pinheavy' = '-tc 4 -tagb 20 -tlgb 1 -sohsi 50 -sohsr 100-4000 -sohpi 10 -tk time'
+    # mixed (added 2026-07-07): realistic light pinning inside one workload — 1 in 20
+    # survivors pinned (95/5 mix), instead of dedicating whole scenarios to pinning.
+    'mixed'    = '-tc 4 -tagb 20 -tlgb 0.5 -sohsi 50 -sohsr 100-4000 -sohpi 20 -tk time'
 }
 
 if ($GcDll) {
