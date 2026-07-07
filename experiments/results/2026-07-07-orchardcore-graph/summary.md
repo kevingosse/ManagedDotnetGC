@@ -1,22 +1,26 @@
 # OrchardCore blog homepage — chart data (2026-07-07)
 
-Medians, blog homepage (`/`), 128 connections, same-sitting 2026-07-07 evening (GC dll =
-M9.1/`70be506`). Source rows: `experiments/results/orchard-history.csv`, labels
-`oc-custom-1`/`oc-custom-2`, `oc-stockwks-1`, `oc-stockh8-1`/`oc-stockh8-2`, endpoint=`home`.
+Medians, blog homepage (`/`), 128 connections, same-sitting 2026-07-07 late evening (GC dll =
+M9.2/`edd5b82`, probe controller). Source rows: `experiments/results/orchard-history.csv`,
+labels `m9.2-probe`, `m9.2-probe-b2`, `m9.1-old-ab`, `m9.2-anchor-h8`, `m9.2-anchor-datas`,
+endpoint=`home`.
 
 | GC | rps | p50 ms | p99 ms | peak WS MB |
 |---|---:|---:|---:|---:|
 | stock-wks | 1694 | 67 | 222 | 400 |
-| custom (ManagedDotnetGC M9.1) | 4940 | 24 | 64 | 985 |
-| stock-svr-h8 | 5236 | 18 | 172 | 950 |
-| stock-svr-datas | 5421 | 18 | 77 | 462 |
+| custom (ManagedDotnetGC M9.2, probe controller) | 5266 | 19.6 | 71 | ~1250 |
+| stock-svr-h8 | 4992 | 19.6 | 172 | 930 |
+| stock-svr-datas | 5482 | 19.0 | 62 | 460 |
 
-DATAS row: 3 iterations from ~25 min later in the same sitting; DATAS is the .NET 10 server
-default. Its p99 iterations were 60/77/172 — episodic spikes, so single-window tail comparisons
-are noisy (see the analysis .md).
+p99 values are the median of same-sitting iterations. stock-wks is carried over unchanged
+from the earlier (morning) sitting — it was not re-run in this session.
+
+Headline: this is the first real-app result where the custom GC's throughput lands above
+pinned stock Server GC at 8 heaps — 5266 vs 4992 rps, 1.055x. The old-controller (M9.1)
+comparison anchor is row `m9.1-old-ab`.
 
 Chart: `orchardcore-home.png` — grouped bar chart, two panels (throughput rps, p99 latency ms),
 custom bar highlighted in the hero blue used throughout the milestone charts.
 
-For the full analysis (reading, the excluded single-post endpoint, repro steps), see
-`experiments/results/2026-07-07-orchardcore.md`.
+For the full analysis and repro steps, see
+`experiments/results/2026-07-07-m9.2-probe-controller.md`.

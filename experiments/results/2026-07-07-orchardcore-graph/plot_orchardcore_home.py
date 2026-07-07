@@ -5,19 +5,18 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-07-orchardcore-graph\orchardcore-home.png"
 
-# ---- data (medians, blog homepage, 128 connections, same-sitting 2026-07-07 evening;
-# GC dll = M9.1/70be506; source rows in experiments/results/orchard-history.csv,
-# labels oc-custom-1/2, oc-stockwks-1, oc-stockh8-1/2, endpoint=home. See
-# experiments/results/2026-07-07-orchardcore.md for the full analysis. Style matches
-# plot_fortunes_rps.py / plot_fortunes_ws.py in ../2026-07-07-fortunes-milestone-graph/.) ----
+# ---- data (medians, blog homepage, 128 connections, same-sitting 2026-07-07 late
+# evening; GC dll = M9.2/edd5b82 (probe controller); source rows in
+# experiments/results/orchard-history.csv, labels m9.2-probe, m9.2-probe-b2,
+# m9.1-old-ab, m9.2-anchor-h8, m9.2-anchor-datas, endpoint=home. See
+# experiments/results/2026-07-07-m9.2-probe-controller.md for the full analysis.
+# Style matches plot_fortunes_rps.py / plot_fortunes_ws.py in
+# ../2026-07-07-fortunes-milestone-graph/.) ----
 configs = [
     ("Workstation GC\n(stock)", 1694, 222, 400, "#9a988f"),
-    ("ManagedDotnetGC\n(custom, M9.1)", 4940, 64, 985, "#2a78d6"),
-    ("Server GC\n(8 heaps, stock)", 5236, 172, 950, "#3a3a37"),
-    # DATAS (the .NET 10 server default): 3 iters from ~25 min later in the same
-    # sitting; p99 iters 60/77/172 — episodic spikes, single-window tail comparisons
-    # are noisy (see the .md).
-    ("Server GC\n(DATAS, stock)", 5421, 77, 462, "#55544e"),
+    ("ManagedDotnetGC\n(custom, M9.2)", 5266, 71, 1250, "#2a78d6"),
+    ("Server GC\n(8 heaps, stock)", 4992, 172, 930, "#3a3a37"),
+    ("Server GC\n(DATAS, stock)", 5482, 62, 460, "#55544e"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -95,10 +94,11 @@ fig.text(0.065, 0.885,
 
 # ---- footnote: peak working set + methodology (two lines to fit the fig width) ----
 fig.text(0.065, 0.02,
-          "Peak working set: custom 985 MB, Server GC (8 heaps) 950 MB, Workstation GC 400 MB. "
-          "Medians of 6 iterations, 128 conns, same sitting.\n"
-          "DATAS WS 462 MB; DATAS is the .NET 10 server default. DATAS p99 iters 60/77/172 — "
-          "episodic spikes, single-window tail comparisons are noisy (see the .md).",
+          "Peak working set: custom ~1250 MB, Server GC (8 heaps) 930 MB, Workstation GC 400 MB, "
+          "Server GC (DATAS) 460 MB.\n"
+          "Medians of same-sitting iterations, 128 conns. Custom is M9.2/edd5b82 (probe "
+          "controller); first real-app result above pinned stock-h8 (1.055x). Workstation GC "
+          "bar carried over from the morning sitting.",
           fontsize=10, color=MUTED, ha="left", va="bottom", style="italic")
 
 fig.savefig(OUT_PNG, dpi=dpi, facecolor="white")
