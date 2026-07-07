@@ -26,8 +26,21 @@ unsafe partial class GCHeap
         var t0 = GcStats.Timestamp();
 
         Write("Scan roots");
-        var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
-        _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, condemned, 2, &scanContext);
+
+        if (_workerPool is not null)
+        {
+            // Partitioned stack scan (M8.2, stock's ScanContext.thread_number scheme):
+            // participants call GcScanRoots concurrently and each stack-scans the
+            // round-robin share IsThreadUsingAllocationContextHeap deals it. Young marks
+            // trace their share in the same fan-out; buffered full marks leave the
+            // stacks filled for ParallelDrainMark.
+            PartitionedScanRoots(condemned, drain: young);
+        }
+        else
+        {
+            var scanRootsCallback = (delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
+            _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, condemned, 2, &scanContext);
+        }
 
         var t1 = GcStats.Timestamp();
 
@@ -266,11 +279,79 @@ unsafe partial class GCHeap
             return;
         }
 
+        if (_partitionedRootScan)
+        {
+            // M8.2: the context is the scanning participant's own, so the push is
+            // single-threaded per stack; the trace runs in the same fan-out (young)
+            // or in ParallelDrainMark (buffered full marks)
+            _cardScanStacks![context->thread_number].Push((nint)root);
+            return;
+        }
+
         _markStack.Push((nint)root);
 
         if (!_bufferMarkRoots)
         {
             DrainMarkStack(_markStack, deferredCollectible: null);
+        }
+    }
+
+    /// <summary>
+    /// Runs GcScanRoots once per participant, concurrently (M8.2). The EE walks its full
+    /// thread list for every call and consults IsThreadUsingAllocationContextHeap per
+    /// thread, so each participant stack-scans the share dealt to its thread_number —
+    /// stock server GC's partitioning scheme (gcenv.ee.cpp GcScanRoots). Worker threads
+    /// are foreign to the target EE exactly like stock's server GC threads (raw utility
+    /// threads with no EE Thread object; ScanStackRoots' precondition explicitly admits
+    /// scanners the EE has never seen), and this is the one sanctioned exception to the
+    /// workers-never-call-the-EE rule. The collecting thread's own stack may land on a
+    /// worker: it stays preemptive for the whole collection, so its managed frames sit
+    /// frozen below its transition frame like any blocked mutator's.
+    ///
+    /// With <paramref name="drain"/> (young marks) participants trace their shares in
+    /// the same fan-out, balancing tails through the share queue, and the deferred
+    /// collectible edges run on the GC thread afterwards. Without it (buffered full
+    /// marks) the roots wait on the participant stacks for ParallelDrainMark.
+    /// </summary>
+    private void PartitionedScanRoots(int condemned, bool drain)
+    {
+        var stacks = _cardScanStacks!;
+        var share = _markShareQueue!;
+        var participants = stacks.Length;
+
+        Array.Clear(_rootScanCursors!);
+        Array.Clear(_rootScanClaims!);
+        _rootScanParticipants = participants;
+        _partitionedRootScan = true;
+
+        var scanRootsCallback = (IntPtr)(delegate* unmanaged<GCObject**, ScanContext*, uint, void>)&ScanRootsCallback;
+        var workerId = -1;
+        var idle = 0;
+
+        _workerPool!.Run(() =>
+        {
+            var id = Interlocked.Increment(ref workerId);
+
+            ScanContext scanContext = default;
+            scanContext.promotion = true;
+            scanContext.thread_number = id;
+            scanContext.thread_count = participants;
+            scanContext._unused1 = GCHandle.ToIntPtr(_handle);
+
+            _gcToClr.GcScanRoots(scanRootsCallback, condemned, 2, &scanContext);
+
+            if (drain)
+            {
+                DrainWithSharing(stacks[id], _cardScanDeferred![id], share, ref idle, participants);
+            }
+        });
+
+        _partitionedRootScan = false;
+        _rootScanParticipants = 1;
+
+        if (drain)
+        {
+            ProcessDeferredCollectible();
         }
     }
 
@@ -300,60 +381,77 @@ unsafe partial class GCHeap
         _workerPool!.Run(() =>
         {
             var id = Interlocked.Increment(ref workerId);
-            var stack = stacks[id];
-            var deferred = _cardScanDeferred![id];
+            DrainWithSharing(stacks[id], _cardScanDeferred![id], share, ref idle, participants);
+        });
 
-            while (true)
+        ProcessDeferredCollectible();
+    }
+
+    /// <summary>
+    /// One participant's trace loop: drain the own stack (donating excess to the share
+    /// queue), refill from the queue, and idle in the termination protocol when both run
+    /// dry — when every participant is idle at once, no one holds work that could refill
+    /// the queue, and the phase is over. A participant that enters late (M8.2: still
+    /// inside its GcScanRoots call while others already drain) simply hasn't idled yet,
+    /// so the termination check cannot trip before its roots are traced.
+    /// </summary>
+    private void DrainWithSharing(MarkStack stack, List<nint> deferred, MarkShareQueue share, ref int idle, int participants)
+    {
+        while (true)
+        {
+            DrainMarkStack(stack, deferred, share);
+
+            if (share.TakeInto(stack, TakeChunk) > 0)
             {
-                DrainMarkStack(stack, deferred, share);
+                continue;
+            }
 
-                if (share.TakeInto(stack, TakeChunk) > 0)
+            Interlocked.Increment(ref idle);
+
+            var spin = new SpinWait();
+            var working = false;
+
+            while (!working)
+            {
+                if (Volatile.Read(ref idle) == participants)
                 {
+                    return;
+                }
+
+                if (!share.IsEmpty)
+                {
+                    // Leave idle before taking so the termination check can't trip
+                    // while this worker holds work
+                    Interlocked.Decrement(ref idle);
+
+                    if (share.TakeInto(stack, TakeChunk) > 0)
+                    {
+                        working = true;
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref idle);
+                    }
+
                     continue;
                 }
 
-                Interlocked.Increment(ref idle);
-
-                var spin = new SpinWait();
-                var working = false;
-
-                while (!working)
-                {
-                    if (Volatile.Read(ref idle) == participants)
-                    {
-                        return;
-                    }
-
-                    if (!share.IsEmpty)
-                    {
-                        // Leave idle before taking so the termination check can't trip
-                        // while this worker holds work
-                        Interlocked.Decrement(ref idle);
-
-                        if (share.TakeInto(stack, TakeChunk) > 0)
-                        {
-                            working = true;
-                        }
-                        else
-                        {
-                            Interlocked.Increment(ref idle);
-                        }
-
-                        continue;
-                    }
-
-                    // Never Sleep(1): its ~15.6 ms timer quantum became the entire cost
-                    // of the remark drain (drain2 measured 15 ms marking ONE object) and
-                    // one quantum per pre-drain pass — any worker idle for >~50 µs slept
-                    // through the join. Yield/Sleep(0) still hand the core to runnable
-                    // mutators during a concurrent window.
-                    spin.SpinOnce(sleep1Threshold: -1);
-                }
+                // Never Sleep(1): its ~15.6 ms timer quantum became the entire cost
+                // of the remark drain (drain2 measured 15 ms marking ONE object) and
+                // one quantum per pre-drain pass — any worker idle for >~50 µs slept
+                // through the join. Yield/Sleep(0) still hand the core to runnable
+                // mutators during a concurrent window.
+                spin.SpinOnce(sleep1Threshold: -1);
             }
-        });
+        }
+    }
 
-        // The deferred collectible edges call into the EE, so only the GC thread takes
-        // them; anything they reach traces inline (and further collectible edges too)
+    /// <summary>
+    /// The deferred collectible edges call into the EE, so only the GC thread takes
+    /// them; anything they reach traces inline (and further collectible edges too).
+    /// </summary>
+    private void ProcessDeferredCollectible()
+    {
         foreach (var deferred in _cardScanDeferred!)
         {
             foreach (var ptr in deferred)

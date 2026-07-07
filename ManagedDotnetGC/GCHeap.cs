@@ -101,6 +101,20 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     // dropped at buffer time instead of paying the drain round-trip to discover them.
     private bool _skipMarkedRootBuffering;
 
+    // Partitioned root scan (M8.2): while a fan-out is in flight, every participant is
+    // inside its own GcScanRoots call and IsThreadUsingAllocationContextHeap deals the
+    // EE's threads across them; ScanRoots routes each reported root to the scanning
+    // participant's stack. 1 participant = any single call scans every thread (the
+    // serial paths and everything outside a scan window).
+    private int _rootScanParticipants = 1;
+    private int[]? _rootScanCursors;
+    private int[]? _rootScanClaims;
+    private bool _partitionedRootScan;
+
+    // One cache line per participant's deal cursor (ints): the cursors are hot in
+    // distinct participants' EE loops at the same time
+    private const int RootScanCursorStride = 16;
+
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
 
@@ -299,6 +313,8 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             _markShareQueue = new MarkShareQueue();
             _cardScanStacks = new MarkStack[participants];
             _cardScanDeferred = new List<nint>[participants];
+            _rootScanCursors = new int[participants * RootScanCursorStride];
+            _rootScanClaims = new int[1024];
 
             for (int i = 0; i < participants; i++)
             {
@@ -554,7 +570,35 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
 
     public bool IsThreadUsingAllocationContextHeap(gc_alloc_context* acontext, int thread_number)
     {
-        return true;
+        // Partitioned root scan (M8.2): the EE's GcScanRoots loop — the predicate's only
+        // call site (gcenv.ee.cpp) — walks the full thread list for every scanning call
+        // and asks, per thread, whether it belongs to sc->thread_number. Under suspension
+        // the list order is identical for every participant, so a per-participant cursor
+        // assigns each thread a stable list position, and the first participant to CAS
+        // the position's claim slot scans that thread. First-come claiming balances by
+        // COST, not count: the loop scans a claimed thread before advancing, so a
+        // participant stuck on a deep request stack simply stops claiming while the
+        // others sweep ahead (round-robin by count measured 3x per-thread cost skew on
+        // fortunes — a few threads carry deep MVC/EF stacks, most are parked and cheap).
+        var participants = _rootScanParticipants;
+
+        if (participants == 1)
+        {
+            return true;
+        }
+
+        ref var cursor = ref _rootScanCursors![thread_number * RootScanCursorStride];
+        var position = cursor++;
+        var claims = _rootScanClaims!;
+
+        if (position >= claims.Length)
+        {
+            // More threads than claim slots: fall back to a static round-robin deal
+            return position % participants == thread_number;
+        }
+
+        return claims[position] == 0
+            && Interlocked.CompareExchange(ref claims[position], thread_number + 1, 0) == 0;
     }
 
     public GCObject* Alloc(ref gc_alloc_context acontext, nint size, GC_ALLOC_FLAGS flags)

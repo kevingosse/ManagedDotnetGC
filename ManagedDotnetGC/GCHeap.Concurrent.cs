@@ -308,7 +308,19 @@ unsafe partial class GCHeap
         _bufferMarkRoots = true;
         _skipMarkedRootBuffering = skipMarked;
 
-        _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, condemned, 2, scanContext);
+        if (_workerPool is not null)
+        {
+            // Partitioned stack scan (M8.2): the participants fill their own stacks and
+            // ParallelDrainMark traces from there — same round-robin deal as the inline
+            // paths. Both pauses benefit; the skip-marked filter applies at push time
+            // on the scanning participant.
+            PartitionedScanRoots(condemned, drain: false);
+        }
+        else
+        {
+            _gcToClr.GcScanRoots((IntPtr)scanRootsCallback, condemned, 2, scanContext);
+        }
+
         MarkFReachableQueues();
         ScanHandles();
 

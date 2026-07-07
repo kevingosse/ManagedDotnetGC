@@ -50,8 +50,11 @@ Remove-Item Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCStatsFile, Env:DOTNET_GCAll
 if ($Gen0MB -gt 0) { $env:DOTNET_GCgen0size = '{0:x}' -f ($Gen0MB * 1MB) }
 
 if ($GcDll) {
+    # Always deploy under the loaded name: a -GcDll not literally named
+    # ManagedDotnetGC.dll otherwise lands beside a stale copy that silently wins
+    # (2026-07-07: three "A/B" runs benched the same old dll)
     foreach ($attempt in 1..20) {
-        try { Copy-Item $GcDll $appDir -Force -ErrorAction Stop; break }
+        try { Copy-Item $GcDll (Join-Path $appDir 'ManagedDotnetGC.dll') -Force -ErrorAction Stop; break }
         catch { if ($attempt -eq 20) { throw }; Start-Sleep -Milliseconds 500 }
     }
     $env:DOTNET_GCName = 'ManagedDotnetGC.dll'
