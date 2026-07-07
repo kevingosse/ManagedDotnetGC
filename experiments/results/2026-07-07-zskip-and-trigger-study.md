@@ -61,10 +61,22 @@ boost cap; buying TechEmpower RPS with WS is the overfit we're avoiding.
 | pinheavy | 1.62 / 4350 | 1.187 / 3945 | **1.120** / 4407 |
 | mixed | 1.30 / 2660 | 1.244 / 1973 | **1.149** / 1996 |
 
-Wall improves 6–10% on four of five (pin flat), WS at anchor levels. soh is now
-~12% faster than tuned stock-svr-h8 with less memory. The two rejected trigger
-variants are also archived in perf-history.csv (m8zskip = zskip+1×budget,
-m8futility = zskip+futility gate) — their WS columns are the rejection.
+Wall improves 6–10% on four of five (pin flat), WS at anchor levels — **but see
+the correction below**. The two rejected trigger variants are also archived in
+perf-history.csv (m8zskip = zskip+1×budget, m8futility = zskip+futility gate) —
+their WS columns are the rejection.
+
+**CORRECTION (same-sitting backfill, commit 72af640):** the m8adaptive2 anchor
+rows above are from an earlier sitting; the milestone backfill agent re-benched
+ceffbfc and 68696ff back-to-back in one sitting and got 4-scenario geomeans of
+1.176 → 1.167 — the honest zero-skip wall gain is **~0.8%**, not 6–10% (the rest
+was sitting drift; the three same-sitting variants this morning all landed at
+1.15–1.19 regardless of trigger). Still shipped on its merits: web cards_us −13%
+(same-sitting), WS neutral, and it removes scalar bitmap walking from three hot
+paths. The WS-based trigger rejections are unaffected (those were same-sitting
+A/Bs: 2.0 vs 4.2 vs 2.56 GB soh peaks under identical conditions).
+SCAR for future sessions: **never compare GCPerfSim walls across sittings** —
+drift is ±5%, larger than most single-change effects.
 
 ## TechEmpower (256 conns, 3×15 s, anchors stock-svr-h8 90.0k/8.85k/986)
 
