@@ -117,7 +117,7 @@ unsafe partial class GCHeap
     [UnmanagedCallersOnly]
     private static void WeakPtrScanCallback(GCObject** obj, nint extraInfo, nint lp1, nint lp2)
     {
-        var gcHeap = (GCHeap)GCHandle.FromIntPtr(lp1).Target!;
+        var gcHeap = s_instance;
 
         var o = *obj;
 
@@ -135,9 +135,7 @@ unsafe partial class GCHeap
     [UnmanagedCallersOnly]
     private static void ScanRootsCallback(GCObject** obj, ScanContext* context, uint flags)
     {
-        var handle = GCHandle.FromIntPtr(context->_unused1);
-        var gcHeap = (GCHeap)handle.Target!;
-        gcHeap.ScanRoots(*obj, context, (GcCallFlags)flags);
+        s_instance.ScanRoots(*obj, context, (GcCallFlags)flags);
     }
 
     private void ScanForFinalization()

@@ -104,10 +104,17 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private GCHandle _handle;
     private readonly MarkStack _markStack = new();
 
+    // The process has exactly one GCHeap (standalone GC contract). The per-root EE
+    // callbacks (ScanRootsCallback fires once per reported stack slot — thousands per
+    // young pause) resolve the instance through this static instead of paying
+    // GCHandle.FromIntPtr(...).Target per invocation.
+    private static GCHeap s_instance = null!;
+
     private readonly NativeAllocator _nativeAllocator;
 
     public GCHeap(IGCToCLRInvoker gcToClr)
     {
+        s_instance = this;
         _handle = GCHandle.Alloc(this);
         _gcToClr = gcToClr;
         _gcLock = new GcAwareLock(gcToClr);
@@ -1045,9 +1052,7 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     [UnmanagedCallersOnly]
     private static void FixAllocContextCallback(gc_alloc_context* acontext, IntPtr arg)
     {
-        var handle = GCHandle.FromIntPtr(arg);
-        var gcHeap = (GCHeap)handle.Target!;
-        gcHeap.FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
+        s_instance.FixAllocContext(ref Unsafe.AsRef<gc_alloc_context>(acontext));
     }
 
     private void FixAllocContexts()
