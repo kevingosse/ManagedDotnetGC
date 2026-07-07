@@ -95,8 +95,25 @@ wzero (inline zeroing at carve) is ~10–12 s. Candidates, in expected-value ord
    partitions stack scanning across GC threads via ScanContext.thread_number.
 4. Card scan at 550–600 regions per young GC; zero-skip bitmap (Vector256) still undone.
 
-## Validation
+## Validation (all same sitting)
 
-- unit 70/70 ✔ (Debug)
-- bench-gcperfsim soh + mixed: (pending)
-- suite / soak: (pending)
+- unit 70/70 ✔
+- GCPerfSim full matrix at anchor: soh 1.239 clean (anchor 1.241), mixed 1.244 (1.239),
+  lohmix 1.178 (1.181, WS better — no ratcheted run), pin 1.223 (1.315, faster; two
+  iters +~400 MB WS, within pin-family spread), pinheavy 1.187 (1.177, WS lower) ✔
+- TechEmpower updates: 955–970 rps ≈ 0.97× h8 (was 0.91×), p99 at parity ✔
+- 2-min soak, 32 workers: 6.32M requests, 0 errors, young p50 3.22 ms / p99 5.48 —
+  identical to the M7 soak record. **Boost never engaged** (budget_mb ≈ live_mb all
+  run): the soak app's live set grows 268 → 641 MB, so the futility gate blocks growth —
+  its WS ramp (1.85 → 2.45 GB) is live-growth × 2×-live convergence, pre-existing ✔
+- Soak side-finding: 88/97 soak fulls are "starved" with boost=0 (pre-existing M7
+  exchange-rate behavior, full p99 42 ms) — same lever as the retention work below.
+
+## Next
+
+1. Retention/trim: committed scales with demand = 2×budget; queries evidence says leaner
+   committed is worth RPS (cards+sweep track committed — Sweep walks 0..frontier even
+   youngOnly) and web WS 1.5–1.8 GB vs h8 700 MB is the remaining bad axis.
+2. Young pause fixed cost: per-root GCHandle.FromIntPtr in ScanRootsCallback, young root
+   scan serial on the GC thread (stock partitions across GC threads), card scan
+   550–600 regions/young.

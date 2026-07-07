@@ -56,3 +56,6 @@ utc,sha,label,endpoint,gc,iter,conns,dur_s,rps,lat_mean_ms,lat_p50_ms,lat_p90_ms
 2026-07-07T08:22:27,f176cff,m8adaptive2,queries,custom,1,256,15,6612,38.67,37.53,48.14,61.93,0,1614.0,1608.7
 2026-07-07T08:22:43,f176cff,m8adaptive2,queries,custom,2,256,15,6605,38.70,37.52,48.29,60.78,0,1608.0,1606.6
 2026-07-07T08:22:58,f176cff,m8adaptive2,queries,custom,3,256,15,6434,39.74,38.57,49.67,62.24,0,1606.0,1605.8
+2026-07-07T08:26:02,ceffbfc,m8adaptive2,updates,custom,1,256,15,950,266.78,265.82,291.59,314.14,0,1547.8,1539.8
+2026-07-07T08:26:17,ceffbfc,m8adaptive2,updates,custom,2,256,15,970,261.74,262.05,286.42,306.04,0,1549.2,1548.2
+2026-07-07T08:26:32,ceffbfc,m8adaptive2,updates,custom,3,256,15,955,265.81,263.65,293.37,340.32,0,1547.8,1547.3
