@@ -14,23 +14,32 @@ inline WS sampler, interleaved A/B/A). 128 connections, blog homepage (`/`).
 | stock-wks | 1694 | 67 ms | 222 ms | ~400 MB |
 | **custom** | **4940** | **24 ms** | **64 ms** | ~985 MB |
 | stock-svr-h8 | 5236 | 18 ms | **172 ms** | ~950 MB |
+| stock-svr-datas (3 iters, later same sitting) | 5421 | 18 ms | 77 ms (60/77/172) | **462 MB** |
 
 60 s sustained (1 iter each, interleaved): custom 4823 rps / p99 91 ms / 1013 MB;
-stock-h8 5009 rps / p99 185 ms / 933 MB → 0.96×, p99 2×.
+stock-h8 5009 rps / p99 185 ms / 933 MB → 0.96×, p99 2×. DATAS 60 s (added on
+Kevin's question, ~25 min later): 5337 rps / p99 63 ms / 463 MB.
 
 ## Reading
 
 - **Throughput ratio replicates TechEmpower exactly (0.94×)** — the M9.1 profile's
   diffuse-scheduler-tax diagnosis transfers unchanged to a real app. Nothing about a
   10× heavier request (Razor + YesSql + CMS pipeline vs raw fortunes) changed the gap.
-- **The tail flips in our favor on a real app: p99 64 ms vs 172 ms.** Stock server GC
-  spikes p99 ≥170 ms in 4 of 6 iterations (and 185 ms over the 60 s run) — the
-  episodic-gen2 signature on a heap holding real mid-life state (content items, YesSql
-  session caches). Our small frequent pauses keep p99 flat at 60–67 ms. This was
-  invisible on TechEmpower fortunes (trivial live set, ~10 ms p99 both sides): it is
-  exactly the [[snapshot-collector-design]] / M6 win-axis showing up unprompted, and
-  the first workload where the no-compaction architecture WINS on a user-visible
-  metric rather than tying.
+- **The tail flips in our favor vs PINNED h8: p99 64 ms vs 172 ms.** Stock-h8 spikes
+  p99 ≥170 ms in 4 of 6 iterations (and 185 ms over the 60 s run) — the episodic-gen2
+  signature on a heap holding real mid-life state (content items, YesSql session
+  caches). Our small frequent pauses keep p99 flat at 60–67 ms. Invisible on
+  TechEmpower fortunes (trivial live set, ~10 ms p99 both sides); it is the
+  [[snapshot-collector-design]] / M6 win-axis showing up unprompted.
+- **BUT: DATAS (the actual .NET 10 server default) is the strongest stock config here
+  and reopens every axis.** vs DATAS we are 0.91× rps at 2.1× the WS, and the tail
+  advantage is NOT established: DATAS 15 s iters still show the episodic spike
+  (60/77/172) but its single 60 s window came in at 63 ms vs our 91 ms. Single windows
+  are too noisy for a tail verdict — the h8-vs-DATAS spread (185 vs 63 over 60 s)
+  shows the spikes are episodic. **Open question, needs replicated long runs (e.g.
+  5×60 s interleaved + p99.9): does DATAS's smaller heap (fewer gen2s? cheaper ones?)
+  genuinely dodge the mid-life tail, or did one window get lucky?** Until answered,
+  the honest claim is: we beat pinned-h8 tails, we match-ish DATAS, at 2× its memory.
 - **Workstation GC (1-heap default) collapses: 2.9× slower than us** at the same task.
   Only fair to note ASP.NET defaults to server GC.
 - WS: parity with server-h8 (~1 GB both). The boost controller behaves on a real app
