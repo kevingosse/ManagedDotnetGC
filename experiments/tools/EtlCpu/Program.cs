@@ -16,6 +16,7 @@ var symDirs = new List<string>();
 var matches = new List<string>();
 string? callersOf = null;
 string gcModule = "manageddotnetgc";
+bool gcStatsOnly = false;
 
 for (int i = 1; i < args.Length; i++)
 {
@@ -28,6 +29,7 @@ for (int i = 1; i < args.Length; i++)
         case "--callers": callersOf = args[++i]; break;
         case "--match": matches.Add(args[++i]); break;
         case "--gcmodule": gcModule = args[++i]; break;
+        case "--gcstats": gcStatsOnly = true; break;
         default: Console.Error.WriteLine($"unknown arg {args[i]}"); return 1;
     }
 }
@@ -45,6 +47,44 @@ var proc = pid != 0
     : traceLog.Processes.Where(p => string.Equals(p.Name, procName, StringComparison.OrdinalIgnoreCase))
         .OrderByDescending(p => p.CPUMSec).First();
 Console.WriteLine($"\ntarget: {proc.Name} pid={proc.ProcessID} cpu={proc.CPUMSec:F0}ms");
+
+if (gcStatsOnly)
+{
+    // Suspension accounting from the EE-fired events (present for standalone GCs too):
+    // every SuspendEEStart→RestartEEStop pair is one stop-the-world episode.
+    var gcStarts = new Dictionary<string, int>();
+    double suspendBegan = -1, totalStwMs = 0, maxStwMs = 0;
+    int stws = 0;
+    foreach (var ev in proc.EventsInProcess)
+    {
+        switch (ev.EventName)
+        {
+            case "GC/Start":
+                var key = $"gen{ev.PayloadByName("Depth")}/{ev.PayloadByName("Reason")}";
+                gcStarts[key] = gcStarts.GetValueOrDefault(key) + 1;
+                break;
+            case "GC/SuspendEEStart":
+                suspendBegan = ev.TimeStampRelativeMSec;
+                break;
+            case "GC/RestartEEStop":
+                if (suspendBegan >= 0)
+                {
+                    var ms = ev.TimeStampRelativeMSec - suspendBegan;
+                    totalStwMs += ms;
+                    if (ms > maxStwMs) maxStwMs = ms;
+                    stws++;
+                    suspendBegan = -1;
+                }
+                break;
+        }
+    }
+    var dur = traceLog.SessionDuration.TotalSeconds;
+    Console.WriteLine($"\n== GC suspension stats ({dur:F1}s trace) ==");
+    Console.WriteLine($"STW episodes: {stws} ({stws / dur:F1}/s), total {totalStwMs:F0} ms ({100 * totalStwMs / 1000 / dur:F1}% of wall), mean {totalStwMs / Math.Max(1, stws):F2} ms, max {maxStwMs:F2} ms");
+    foreach (var kv in gcStarts.OrderByDescending(kv => kv.Value))
+        Console.WriteLine($"{kv.Value,8} ({kv.Value / dur:F1}/s)  GC/Start {kv.Key}");
+    return 0;
+}
 
 // Pass 1: exclusive samples per module; collect module files for symbol lookup
 var modSamples = new Dictionary<string, long>();

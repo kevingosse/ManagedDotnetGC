@@ -139,16 +139,28 @@ Round 1's cleanest negative result: removing the entire background NT firehose
 +20–25% per-request cost on all app code has another mechanism. Next-session
 diagnostics, in order:
 
-1. **Young-GC suspension frequency**: count GC/suspension events in the two kept
-   ETLs (`E:\git\tfb\profiles\{custom,stock-h8}-fortunes.etl`) — if we run 5–10×
-   stock's gen0 rate, every suspension's ring transitions + cache/scheduler
-   refill on 24 loaded threads is a per-request multiplier no pause-length work
-   fixes. The nursery-curve datum (+6% RPS per budget doubling) already points
-   here.
-2. Concurrent mark/sweep cache streaming (workers walk the live heap every cycle
-   at LLC-hostile stride while mutators run).
-3. If (1) dominates: the lever is fewer young GCs per unit work at bounded WS —
-   e.g. survivor-density-aware budget growth, not the flat 448 MB cap.
+1. **Young-GC suspension frequency — MEASURED, same session (`EtlCpu --gcstats`,
+   SuspendEEStart→RestartEEStop pairs, EE-fired so present for both GCs):**
+
+   | | custom | stock-svr-h8 |
+   |---|---|---|
+   | STW episodes | 474 (**16.4/s**) | 34 (**1.2/s**, all gen0/AllocSmall) |
+   | total STW | 1137 ms (3.9% of wall) | 77 ms (0.3%) |
+   | mean / max | 2.40 / 4.01 ms | 2.25 / 3.83 ms |
+
+   Our pauses are as short as stock's — and we take **14× as many**. The direct
+   STW share explains only ~3.6 points of the gap; the rest of the flat tax is
+   the indirect cost of parking 24 loaded threads 16×/s (ring transitions,
+   run-queue churn, per-thread cache refill after every restart). This also
+   explains why M8.2's −25% pause p50 bought almost no RPS.
+2. Therefore the next mechanism is **fewer young collections per unit work at
+   bounded WS**, not shorter ones: stock's effective nursery turns over ~14×
+   less often at comparable footprint. Candidates: suspension-rate as a
+   first-class adaptive-nursery signal (target a GCs/s ceiling, not just
+   futility), decommit-aware large nurseries (young regions are transient — a
+   big budget whose regions decommit at sweep bounds WS), or partial young
+   collections. Revisit [[adaptive-nursery-design]]'s grow gates with this datum.
+3. Still queued behind (1): concurrent mark/sweep cache streaming.
 
 ## Files
 
