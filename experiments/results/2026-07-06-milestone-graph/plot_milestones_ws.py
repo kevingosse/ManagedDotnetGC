@@ -5,35 +5,38 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph-ws.png"
 
-# ---- data (recomputed 2026-07-06 evening sitting: six milestones re-benched as -r2
-# labels alongside tonight's new M7 "mutator war" stage (label m7-stash2) so every
-# point shares one sitting; see experiments/results/2026-07-06-milestone-graph/summary.md.
+# ---- data (recomputed 2026-07-07 sitting: all ten milestones — the eight from the
+# 2026-07-06 backfill plus the two new M8 stages — and all four stock anchors
+# re-benched fresh in ONE sitting; see
+# experiments/results/2026-07-06-milestone-graph/summary.md.
 # median peak_ws_mb per scenario, geomean of the 4 scenario medians, converted to GB by /1024) ----
 milestones = [
-    ("first working\nallocator", 1.551),
-    ("generational", 6.897),
-    ("parallel\nmark & sweep", 6.989),
-    ("concurrent\nmarking", 6.967),
-    ("memory diet\n+ tuning", 2.436),
-    ("concurrent\nsweep", 2.490),
-    ("faster\nallocation", 2.445),
-    # Second sitting of 2026-07-06 (late evening): median peaks 1985/2549/2001/4219 MB.
-    # Same-sitting h8 anchor re-ran at 2.530 GB geomean, so the point stays below the
-    # tuned config on the memory axis too (lohmix's bimodal peak is the open item).
-    ("sharded\nsupply", 2.497),
+    ("first working\nallocator", 1.550),
+    ("generational", 6.899),
+    ("parallel\nmark & sweep", 6.983),
+    ("concurrent\nmarking", 7.068),
+    ("memory diet\n+ tuning", 2.437),
+    ("concurrent\nsweep", 2.425),
+    ("faster\nallocation", 2.598),
+    ("sharded\nsupply", 2.423),
+    # M8 (2026-07-07 sitting): adaptive young-generation budget and SIMD zero-skip in
+    # the bitmap walks — both stay in the same ~2.4-2.5 GB band as the M7 stages.
+    ("adaptive\nnursery", 2.436),
+    ("vectorized\nbitmap skip", 2.485),
 ]
 
 # (label, line y, explicit label y). DATAS discovery 2026-07-06: bare gcServer=1 is
-# adaptive (that is what held 1.64ish GB); classic fixed heap-per-core costs ~6.1 GB.
-# 2026-07-06 evening refresh: values barely moved from the DATAS-discovery sitting, so
-# the same hand-picked label_y slots still keep everything clear (verified by re-render).
+# adaptive (that is what held ~1.6-1.7 GB); classic fixed heap-per-core costs ~6.4 GB.
+# 2026-07-07 refresh: values shifted slightly from the 2026-07-06 sitting but stay in
+# the same bands, so the same hand-picked label_y slots keep everything clear (verified
+# by re-render).
 stock_refs = [
-    ("Server GC (32 heaps)", 6.129, 5.60, "#6b6a63"),
+    ("Server GC (32 heaps)", 6.366, 5.60, "#6b6a63"),
     # label lifted 3.10 → 3.85 when the 8th stage landed: the new last point's own
     # value label sits at the same height the 3.10 slot used
-    ("Server GC (8 heaps)", 2.515, 3.85, "#3a3a37"),
-    ("Server GC (DATAS)", 1.680, 1.05, "#55544e"),
-    ("Workstation GC", 1.582, 0.55, "#9a988f"),
+    ("Server GC (8 heaps)", 2.490, 3.85, "#3a3a37"),
+    ("Server GC (DATAS)", 1.635, 1.05, "#55544e"),
+    ("Workstation GC", 1.576, 0.55, "#9a988f"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -47,9 +50,9 @@ available = {f.name for f in fm.fontManager.ttflist}
 font_family = next((f for f in preferred if f in available), "DejaVu Sans")
 plt.rcParams["font.family"] = font_family
 
-fig_w, fig_h, dpi = 12.0, 6.75, 100
+fig_w, fig_h, dpi = 15.0, 6.75, 100
 fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor="white")
-ax = fig.add_axes([0.07, 0.13, 0.78, 0.66])  # leave room for title block + right-edge ref labels
+ax = fig.add_axes([0.055, 0.13, 0.82, 0.66])  # leave room for title block + right-edge ref labels
 ax.set_facecolor("white")
 
 xs = list(range(len(milestones)))
@@ -96,7 +99,7 @@ for x, y in zip(xs, ys):
 
 # x tick labels
 ax.set_xticks(xs)
-ax.set_xticklabels(names, fontsize=12.5, color=SECONDARY_INK)
+ax.set_xticklabels(names, fontsize=10.8, color=SECONDARY_INK)
 ax.tick_params(axis="x", length=0, pad=10)
 
 # y axis
@@ -129,7 +132,7 @@ fig.text(0.07, 0.875,
           fontsize=12.5, color=SECONDARY_INK, ha="left", va="top")
 
 # ---- small annotation ----
-fig.text(0.965, 0.03, "48h of work, 2026-07-05/06", fontsize=10, color=MUTED,
+fig.text(0.965, 0.03, "72h of work, 2026-07-05/06/07", fontsize=10, color=MUTED,
           ha="right", va="bottom", style="italic")
 
 fig.savefig(OUT_PNG, dpi=dpi, facecolor="white")

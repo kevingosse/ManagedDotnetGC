@@ -5,36 +5,41 @@ import matplotlib.font_manager as fm
 
 OUT_PNG = r"E:\git\ManagedDotnetGC\experiments\results\2026-07-06-milestone-graph\milestone-graph-nonum.png"
 
-# ---- data (recomputed 2026-07-06 evening sitting: six milestones re-benched as -r2
-# labels alongside tonight's new M7 "mutator war" stage (label m7-stash2) so every
-# point shares one sitting; see experiments/results/2026-07-06-milestone-graph/summary.md) ----
+# ---- data (recomputed 2026-07-07 sitting: all ten milestones — the eight from the
+# 2026-07-06 backfill plus the two new M8 stages — and all four stock anchors
+# re-benched fresh in ONE sitting; see
+# experiments/results/2026-07-06-milestone-graph/summary.md) ----
 milestones = [
-    ("first working\nallocator", 8.054),
-    ("generational", 5.350),
-    ("parallel\nmark & sweep", 2.029),
-    ("concurrent\nmarking", 1.928),
-    ("memory diet\n+ tuning", 1.851),
-    ("concurrent\nsweep", 1.816),
-    ("faster\nallocation", 1.418),
-    # Second sitting of 2026-07-06 (late evening); anchors re-run, +2.7-2.9% slower
-    # machine, so the point is conservative vs the earlier sitting's reference lines
-    ("sharded\nsupply", 1.227),
+    ("first working\nallocator", 7.037),
+    ("generational", 5.089),
+    ("parallel\nmark & sweep", 1.887),
+    ("concurrent\nmarking", 1.826),
+    ("memory diet\n+ tuning", 1.743),
+    ("concurrent\nsweep", 1.467),
+    ("faster\nallocation", 1.366),
+    ("sharded\nsupply", 1.162),
+    # M8 (2026-07-07 sitting): adaptive young-generation budget (frequent-futile-cheap
+    # boost) and SIMD zero-skip in the bitmap walks.
+    ("adaptive\nnursery", 1.176),
+    ("vectorized\nbitmap skip", 1.167),
 ]
 
 # (label, line y, explicit label y — slots picked to clear every dashed line and each
 # other; DATAS discovery 2026-07-06: bare gcServer=1 adapts heap count, fixed-32 is
-# its own config. 2026-07-06 evening refresh for the same-sitting M7 "faster allocation"
-# stage add: the four values are clustered within 1.0s of each other (2.40/2.12/1.76/1.41),
-# and the real gaps between them (0.28/0.36/0.35) are too close to a safe label height to
-# stagger near their own lines without crossing a *different* line — so all four labels
-# are lifted into the empty band above the whole cluster (nothing else sits between
-# ~2.4s and 5.3s here) and stacked in real-value order, each >=0.35s clear of every
-# dashed line and >=0.5s clear of its neighbor label.
+# its own config. 2026-07-07 refresh: the four stock values are clustered within 0.9s
+# of each other (2.25/1.82/1.75/1.37), and the real gaps between them are too close to
+# a safe label height to stagger near their own lines without crossing a *different*
+# line — so all four labels stay lifted into the empty band above the whole cluster
+# (nothing else sits between ~2.3s and 5.3s here) and stacked in real-value order, each
+# clear of every dashed line and of its neighbor label. The last three hero points
+# (sharded supply, adaptive nursery, vectorized bitmap skip) now sit BELOW every stock
+# reference line, including Server GC (8 heaps) — the tuned custom GC's cluster has
+# moved under the whole stock band.
 stock_refs = [
-    ("Workstation GC", 2.399, 4.25, "#9a988f"),
-    ("Server GC (32 heaps)", 1.759, 3.25, "#6b6a63"),
-    ("Server GC (DATAS)", 2.119, 3.75, "#55544e"),
-    ("Server GC (8 heaps)", 1.405, 2.75, "#3a3a37"),
+    ("Workstation GC", 2.245, 4.25, "#9a988f"),
+    ("Server GC (32 heaps)", 1.752, 3.25, "#6b6a63"),
+    ("Server GC (DATAS)", 1.818, 3.75, "#55544e"),
+    ("Server GC (8 heaps)", 1.365, 2.75, "#3a3a37"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -48,9 +53,9 @@ available = {f.name for f in fm.fontManager.ttflist}
 font_family = next((f for f in preferred if f in available), "DejaVu Sans")
 plt.rcParams["font.family"] = font_family
 
-fig_w, fig_h, dpi = 12.0, 6.75, 100
+fig_w, fig_h, dpi = 15.0, 6.75, 100
 fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor="white")
-ax = fig.add_axes([0.07, 0.13, 0.78, 0.66])  # leave room for title block + right-edge ref labels
+ax = fig.add_axes([0.055, 0.13, 0.82, 0.66])  # leave room for title block + right-edge ref labels
 ax.set_facecolor("white")
 
 xs = list(range(len(milestones)))
@@ -93,7 +98,7 @@ for x, y in zip(xs, ys):
 
 # x tick labels
 ax.set_xticks(xs)
-ax.set_xticklabels(names, fontsize=12.5, color=SECONDARY_INK)
+ax.set_xticklabels(names, fontsize=10.8, color=SECONDARY_INK)
 ax.tick_params(axis="x", length=0, pad=10)
 
 # y axis
@@ -120,7 +125,7 @@ fig.text(0.07, 0.875,
           fontsize=12.5, color=SECONDARY_INK, ha="left", va="top")
 
 # ---- small annotation ----
-fig.text(0.965, 0.03, "48h of work, 2026-07-05/06", fontsize=10, color=MUTED,
+fig.text(0.965, 0.03, "72h of work, 2026-07-05/06/07", fontsize=10, color=MUTED,
           ha="right", va="bottom", style="italic")
 
 fig.savefig(OUT_PNG, dpi=dpi, facecolor="white")
