@@ -22,6 +22,13 @@ namespace ManagedDotnetGC;
 /// </summary>
 internal sealed class GcRegionZeroer
 {
+    /// <summary>DOTNET_GCHoleZero=0 turns hole pre-zeroing off (carves zero inline).
+    /// The 2026-07-07 web-workload profile caught the sweep invalidating every reopened
+    /// region's HolesZeroedFlag every young cycle, so this loop re-zeroed ~4× the
+    /// allocation volume — a continuous NT-store stream that taxed every mutator's
+    /// memory system for pre-zeroed holes mostly invalidated before consumption.</summary>
+    public static bool HoleZeroingEnabled = true;
+
     private readonly RegionAllocator _regionAllocator;
     private readonly GcAwareLock _reservoirLock;
     private readonly GcAwareLock _poolLock;
@@ -60,7 +67,7 @@ internal sealed class GcRegionZeroer
 
             // Holes first: the hole-first carve policy consumes them before any pooled
             // region, so pre-zeroing there pays off soonest (and covers most windows)
-            while (TryZeroHoleRegion())
+            while (HoleZeroingEnabled && TryZeroHoleRegion())
             {
             }
 
@@ -157,7 +164,7 @@ internal sealed class GcRegionZeroer
         // No locks held: the region is out of the pool, so carves cannot hand it out and
         // TrimPool cannot decommit it from under the memset (a checked-out pool region is
         // invisible to sweeps, so unlike the hole path this may straddle a collection)
-        RegionAllocator.ZeroWindow(regionBase, Region.Size);
+        RegionAllocator.ZeroBackground(regionBase, Region.Size);
 
         lock (_regionAllocator.ZeroerGate)
         {

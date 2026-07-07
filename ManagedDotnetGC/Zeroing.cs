@@ -25,6 +25,25 @@ internal static unsafe class Zeroing
     /// type safety, and NT-store bugs would smear like the card-lookback incident).</summary>
     public static bool Enabled = true;
 
+    /// <summary>DOTNET_GCCarveTemporal=1: mutator-inline carve zeroing uses temporal
+    /// stores. NT stores invalidate the very lines the mutator is about to write —
+    /// temporal zeroing of an imminently-allocated window doubles as a prefetch (the
+    /// stock GC's adjust_limit_clr model). Background zeroing stays non-temporal
+    /// either way. (M8.3 web-workload profile.)</summary>
+    public static bool CarveTemporal = false;
+
+    /// <summary>Zeroing for memory the calling thread is about to allocate from.</summary>
+    public static void ClearCarve(nint start, nint length)
+    {
+        if (CarveTemporal)
+        {
+            ClearTemporal(start, length);
+            return;
+        }
+
+        Clear(start, length);
+    }
+
     public static void Clear(nint start, nint length)
     {
         if (length < NonTemporalThreshold || !HwSupported || !Enabled)

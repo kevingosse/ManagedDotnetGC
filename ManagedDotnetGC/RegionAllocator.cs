@@ -66,6 +66,27 @@ internal unsafe class RegionAllocator : IDisposable
     // Set once at startup, needed to write plugs when carving holes and sweeping
     private MethodTable* _freeObjectMethodTable;
 
+    /// <summary>Per-hole zeroed-body marker (M8.3), stored in the free plug's padding
+    /// word at ref+12 (between the 4-byte Length and the ref+16 link — inside the
+    /// 32-byte prefix every zeroed-hole consumer preserves). Value semantics: marker
+    /// set ⟹ the hole body beyond the 32-byte prefix is zero. Every plug writer must
+    /// initialize this word (the padding is stale memory otherwise); only
+    /// <see cref="ZeroCheckedOutHoleBodies"/> sets it, and <see cref="ClosePlug"/>
+    /// inherits it across sweeps when the rebuilt extent is byte-identical to the plug
+    /// it re-covers — the fix for the sweep invalidating every reopened region's
+    /// pre-zeroed holes every young cycle (2026-07-07 web profile: the zeroer re-zeroed
+    /// ~4× the allocation volume).</summary>
+    internal const uint ZeroedHoleMarker = 0x5EED_ED01;
+
+    /// <summary>DOTNET_GCHoleMarkerInherit=0 disables marker inheritance across sweeps
+    /// (every rebuilt hole is treated as dirty, restoring the pre-M8.3 re-zero-everything
+    /// behavior) — bisect insurance: a false inherited marker is a type-safety smear.</summary>
+    internal static bool HoleMarkerInheritance = true;
+
+    internal static uint HoleMarker(nint holeRef) => *(uint*)(holeRef + IntPtr.Size + sizeof(uint));
+
+    internal static void SetHoleMarker(nint holeRef, uint value) => *(uint*)(holeRef + IntPtr.Size + sizeof(uint)) = value;
+
     // DOTNET_GCHeapHardLimit: cap on committed region bytes, 0 = none
     private long _hardLimit;
 
@@ -604,6 +625,9 @@ internal unsafe class RegionAllocator : IDisposable
 
                 if (extent >= needed)
                 {
+                    // Read before any plug/prefix writes below can touch it (M8.3)
+                    var holeWasZero = HoleMarker(holeRef) == ZeroedHoleMarker;
+
                     if (entry->Age == RegionAge.Old)
                     {
                         // Young objects are about to land among old survivors: the region
@@ -643,6 +667,9 @@ internal unsafe class RegionAllocator : IDisposable
                         var remainder = (GCObject*)(remainderStart + IntPtr.Size);
                         remainder->RawMethodTable = _freeObjectMethodTable;
                         remainder->Length = (uint)(extent - length - 3 * IntPtr.Size);
+                        // The remainder body inherits the source hole's zeroed-ness;
+                        // its own 32-byte prefix is written here either way (M8.3)
+                        SetHoleMarker(remainderStart + IntPtr.Size, holeWasZero ? ZeroedHoleMarker : 0);
 
                         if (extent - length >= _minLinkedHole)
                         {
@@ -654,10 +681,11 @@ internal unsafe class RegionAllocator : IDisposable
                         // else: a sub-window remainder floats until the next full collection
                     }
 
-                    if ((entry->BumpFlags & RegionEntry.HolesZeroedFlag) != 0)
+                    if (holeWasZero)
                     {
-                        // Pre-zeroed hole body (M7): only the plug's preheader, header and
-                        // link bytes at the window start are stale
+                        // Pre-zeroed hole body (M7, per-hole since M8.3): only the plug's
+                        // preheader, header, marker and link bytes at the window start
+                        // are stale
                         new Span<byte>((void*)window, 4 * IntPtr.Size).Clear();
                         needsZero = false;
                     }
@@ -1233,6 +1261,8 @@ internal unsafe class RegionAllocator : IDisposable
                 var plug = (GCObject*)(entry->Cursor + IntPtr.Size);
                 plug->RawMethodTable = _freeObjectMethodTable;
                 plug->Length = (uint)(tail - 3 * IntPtr.Size);
+                // Sealed tails cover never-carved (possibly stale) memory (M8.3)
+                SetHoleMarker(entry->Cursor + IntPtr.Size, 0);
                 entry->Cursor = dataEnd;
             }
         }
@@ -1724,8 +1754,10 @@ internal unsafe class RegionAllocator : IDisposable
         entry->HoleBytes = 0;
         entry->NextRecycled = -1;
 
-        // The rebuilt holes cover freshly dead objects: their bodies are dirty again
-        entry->BumpFlags &= unchecked((byte)~RegionEntry.HolesZeroedFlag);
+        // Every linked hole that inherits its zeroed marker keeps the region's flag
+        // alive (M8.3); only holes covering freshly dead bytes reset it — the sweep no
+        // longer forfeits the zeroer's work on regions where nothing new died
+        var allLinkedHolesZero = true;
 
         var regionBase = RegionBase(index);
         var end = entry->Cursor;
@@ -1778,7 +1810,7 @@ internal unsafe class RegionAllocator : IDisposable
                 if (ptr - IntPtr.Size > deadStart)
                 {
                     // The extent ends at the live object's pre-header slot
-                    ClosePlug(entry, index, deadStart, ptr - IntPtr.Size);
+                    ClosePlug(entry, index, deadStart, ptr - IntPtr.Size, ref allLinkedHolesZero);
                 }
 
                 deadStart = next - IntPtr.Size;
@@ -1789,7 +1821,16 @@ internal unsafe class RegionAllocator : IDisposable
         // never-materialized pre-header slot remains — not a dead extent
         if (end - deadStart > IntPtr.Size)
         {
-            ClosePlug(entry, index, deadStart, end);
+            ClosePlug(entry, index, deadStart, end, ref allLinkedHolesZero);
+        }
+
+        if (allLinkedHolesZero)
+        {
+            entry->BumpFlags |= RegionEntry.HolesZeroedFlag;
+        }
+        else
+        {
+            entry->BumpFlags &= unchecked((byte)~RegionEntry.HolesZeroedFlag);
         }
 
         if (entry->FirstHole != 0)
@@ -1809,13 +1850,27 @@ internal unsafe class RegionAllocator : IDisposable
     /// exactly the bytes handed out, outside the pause. The extent's mark bits are clear
     /// by construction: everything under it just swept as dead.
     /// </summary>
-    private void ClosePlug(RegionEntry* entry, int regionIndex, nint start, nint end)
+    private void ClosePlug(RegionEntry* entry, int regionIndex, nint start, nint end, ref bool allLinkedHolesZero)
     {
         var extent = end - start;
 
         var plug = (GCObject*)(start + IntPtr.Size);
+
+        // Inherit the zeroed-body marker (M8.3) when this extent is byte-identical to
+        // the marked plug it re-covers — same start (the free MT sits exactly at
+        // start+8) and same length. Nothing writes a linked hole's body between sweeps
+        // (zero-at-carve consumers unlink and re-plug, changing the extent), and any
+        // new death coalesces into a different extent, so an exact match means the
+        // body is still zero. The read precedes the overwrite below.
+        var stillZero = HoleMarkerInheritance
+            && extent >= 4 * IntPtr.Size
+            && plug->RawMethodTable == _freeObjectMethodTable
+            && plug->Length == (uint)(extent - 3 * IntPtr.Size)
+            && HoleMarker(start + IntPtr.Size) == ZeroedHoleMarker;
+
         plug->RawMethodTable = _freeObjectMethodTable;
         plug->Length = (uint)(extent - 3 * IntPtr.Size);
+        SetHoleMarker(start + IntPtr.Size, stillZero ? ZeroedHoleMarker : 0);
 
         if (extent >= _minLinkedHole)
         {
@@ -1823,6 +1878,11 @@ internal unsafe class RegionAllocator : IDisposable
             *(nint*)(start + 3 * IntPtr.Size) = entry->FirstHole;
             entry->FirstHole = start + IntPtr.Size;
             entry->HoleBytes += (int)extent;
+
+            if (!stillZero)
+            {
+                allLinkedHolesZero = false;
+            }
         }
     }
 
@@ -1971,7 +2031,13 @@ internal unsafe class RegionAllocator : IDisposable
         }
 
         // Top-down: LIFO carves consume the top first, so zeroing there pays off soonest;
-        // the pre-zeroed prefix the zeroer builds up is skipped on each pass
+        // the pre-zeroed prefix the zeroer builds up is skipped on each pass. The float
+        // is CAPPED (M8.3): once the hole pass stopped eating every kick, an unbounded
+        // pool pass zeroed the whole pool each cycle — touching (and keeping resident)
+        // pages the trim wants cold, for regions often decommitted before any carve.
+        // Pops consume the zeroed prefix, so the float refills exactly with demand.
+        var skipped = 0;
+
         for (int i = _poolCount - 1; i >= 0; i--)
         {
             var entry = GetEntry(_pool[i]);
@@ -1985,10 +2051,19 @@ internal unsafe class RegionAllocator : IDisposable
                 regionBase = RegionBase(index);
                 return true;
             }
+
+            if (++skipped >= ZeroedPoolFloat)
+            {
+                return false; // the next ZeroedPoolFloat carves are already covered
+            }
         }
 
         return false;
     }
+
+    /// <summary>Cap on the pre-zeroed prefix the background zeroer maintains at the pool
+    /// top (M8.3): 32 regions = 64 MB of carve runway per collection cycle.</summary>
+    private const int ZeroedPoolFloat = 32;
 
     /// <summary>Returns a checked-out region to the pool top, pre-zeroed: the next carve
     /// hands its memory out with no zeroing debt. Caller must hold <see cref="ZeroerGate"/>
@@ -2049,8 +2124,16 @@ internal unsafe class RegionAllocator : IDisposable
     {
         for (var holeRef = GetEntry(index)->FirstHole; holeRef != 0; holeRef = *(nint*)(holeRef + 2 * IntPtr.Size))
         {
+            if (HoleMarker(holeRef) == ZeroedHoleMarker)
+            {
+                // Still zero from a previous pass (M8.3): the sweep only resets markers
+                // on holes covering freshly dead bytes
+                continue;
+            }
+
             // Hole extent is [ref - 8, ref + 16 + Length); the body starts after the link
             ZeroMemory(holeRef + 3 * IntPtr.Size, (nint)((GCObject*)holeRef)->Length - IntPtr.Size);
+            SetHoleMarker(holeRef, ZeroedHoleMarker);
         }
     }
 
@@ -2171,8 +2254,13 @@ internal unsafe class RegionAllocator : IDisposable
     /// <summary>Zeroes a recycled window or block extent before first use (M4
     /// zero-at-carve). Called by the allocation path after releasing the allocation lock:
     /// the memory is private to the requesting thread by then, and concurrent carves zero
-    /// in parallel.</summary>
-    public static void ZeroWindow(nint window, nint length) => ZeroMemory(window, length);
+    /// in parallel. Honors <see cref="Zeroing.CarveTemporal"/> — the caller allocates
+    /// from this memory next.</summary>
+    public static void ZeroWindow(nint window, nint length) => ZeroMemory(window, length, carve: true);
+
+    /// <summary>Zeroing for the background zeroer: always non-temporal — nothing reads
+    /// this memory soon, so cache-bypassing stores are strictly right here.</summary>
+    public static void ZeroBackground(nint start, nint length) => ZeroMemory(start, length);
 
     /// <summary>
     /// Zeroes the stale members of a just-carved span, called by the allocating thread
@@ -2209,11 +2297,18 @@ internal unsafe class RegionAllocator : IDisposable
         }
     }
 
-    private static void ZeroMemory(nint start, nint length)
+    private static void ZeroMemory(nint start, nint length, bool carve = false)
     {
         var tStart = GcStats.Timestamp();
 
-        Zeroing.Clear(start, length);
+        if (carve)
+        {
+            Zeroing.ClearCarve(start, length);
+        }
+        else
+        {
+            Zeroing.Clear(start, length);
+        }
 
         if (GcStats.Enabled)
         {

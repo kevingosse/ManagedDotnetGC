@@ -267,6 +267,39 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
             }
         }
 
+        // Background hole pre-zeroing (M8.3 web profile): default-on; =0 stops the
+        // zeroer's hole pass so carves zero inline, for A/B runs — see GcRegionZeroer
+        fixed (byte* privateKey = "GCHoleZero"u8)
+        fixed (byte* publicKey = "System.GC.HoleZero"u8)
+        {
+            if (_gcToClr.GetBooleanConfigValue(privateKey, publicKey, out var holeZero))
+            {
+                GcRegionZeroer.HoleZeroingEnabled = holeZero;
+            }
+        }
+
+        // Zeroed-hole marker inheritance across sweeps (M8.3): default-on; =0 restores
+        // re-zero-everything sweeps for bisects — see RegionAllocator.ZeroedHoleMarker
+        fixed (byte* privateKey = "GCHoleMarkerInherit"u8)
+        fixed (byte* publicKey = "System.GC.HoleMarkerInherit"u8)
+        {
+            if (_gcToClr.GetBooleanConfigValue(privateKey, publicKey, out var holeMarkerInherit))
+            {
+                RegionAllocator.HoleMarkerInheritance = holeMarkerInherit;
+            }
+        }
+
+        // Temporal zeroing for mutator-inline carves (M8.3 web profile): default-off;
+        // =1 makes zero-at-carve double as a prefetch of the imminent allocations
+        fixed (byte* privateKey = "GCCarveTemporal"u8)
+        fixed (byte* publicKey = "System.GC.CarveTemporal"u8)
+        {
+            if (_gcToClr.GetBooleanConfigValue(privateKey, publicKey, out var carveTemporal))
+            {
+                Zeroing.CarveTemporal = carveTemporal;
+            }
+        }
+
         // Concurrent full-cycle sweep (M6.5): default-on since stage 2 (mutator
         // sweep-assist); =0 forces the in-pause sweep for A/B runs
         fixed (byte* privateKey = "GCConcurrentSweep"u8)
@@ -1136,6 +1169,13 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
         var freeObject = (GCObject*)address;
         freeObject->RawMethodTable = _freeObjectMethodTable;
         freeObject->Length = length;
+
+        if (length >= 2 * IntPtr.Size)
+        {
+            // Every free-plug writer initializes the padding word the per-hole
+            // zeroed-body marker lives in — it is stale memory otherwise (M8.3)
+            RegionAllocator.SetHoleMarker(address, 0);
+        }
     }
 
     private IEnumerable<IntPtr> WalkHeapObjects()
