@@ -90,7 +90,11 @@ internal unsafe partial class GCHeap : Interfaces.IGCHeap
     private long _youngBudgetBoost;
     private long _lastYoungSurvivors;
     private long _lastYoungGcTimestamp;
-    private const long BoostCapBytes = 448L * 1024 * 1024;
+    // 192 MB lands the boosted budget at 256 MB (floor base 64 + boost): the M9
+    // residual-gap A/B held fortunes/queries RPS flat from 512 down to a 256 MB
+    // nursery while fortunes WS fell 983→660 MB even at fixed-budget retention
+    // (2×256); the boost path retains 2×base + boost = 320 MB for the same budget.
+    private const long BoostCapBytes = 192L * 1024 * 1024;
 
     // Marking ~8 MB costs ~1-2 ms across the M5 worker pool — the survivor mass that
     // still fits inside a "cheap" young pause. Grow below it, shrink past double it.

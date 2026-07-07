@@ -1487,3 +1487,4 @@ utc,sha,label,scenario,gc,iter,wall_s,sim_s,peak_ws_mb,gc_counts,final_heap_mb,a
 2026-07-07T14:18:44,9d0d683,msg3-stock-h32,mixed,stock-svr-h32,1,1.588,1.5032224,7097.9,7/2/1,4515.0,4694.4
 2026-07-07T14:18:46,9d0d683,msg3-stock-h32,mixed,stock-svr-h32,2,2.172,2.0784723,7125.0,7/2/1,4533.6,4709.6
 2026-07-07T14:18:48,9d0d683,msg3-stock-h32,mixed,stock-svr-h32,3,1.97,1.8686812,7116.2,7/2/1,4538.2,4794.3
+2026-07-07T17:03:07,f2d2993,m9r-cap192-smoke,mixed,custom,1,1.158,1.0339433,2130.8,42/42/42,266.9,1742.0
