@@ -27,6 +27,9 @@ milestones = [
     ("partitioned\nstack scan", 1.972),
     ("zeroed-hole\nmarkers", 1.971),
     ("slow-path\nbump-serve", 1.946),
+    # M9.1 (2026-07-07, sha 70be506, label m9r-cap192-smoke): boost cap 448->192 MB;
+    # median peak_ws_mb 2130.8 / 1024 (smoke sitting: iters 2130.8, 2005.2, 2266.9).
+    ("boost cap\n192 MB", 2.081),
 ]
 
 # (label, line y, explicit label y). DATAS discovery 2026-07-06: bare gcServer=1 is

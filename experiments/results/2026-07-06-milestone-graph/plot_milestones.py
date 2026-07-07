@@ -23,6 +23,7 @@ milestones = [
     ("partitioned\nstack scan", 1.194),
     ("zeroed-hole\nmarkers", 1.234),
     ("slow-path\nbump-serve", 1.104),
+    ("boost cap\n192 MB", 1.164),
 ]
 
 stock_refs = [

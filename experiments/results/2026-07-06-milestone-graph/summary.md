@@ -16,6 +16,8 @@ Every row in this file — all thirteen milestones and all four stock anchors �
 
 - **Zeroed-hole markers** (`8868c22`, M8.3) and **Slow-path bump-serve** (`6b6b106`, M9) — new rows added this sitting: both are themselves the code-landing commits, pre-verified per the backfill brief, used as-is.
 
+- **Boost cap 192 MB** (`70be506`, M9.1) — added later the same day (2026-07-07 evening) from the `m9r-cap192-smoke` label, a lighter 3-iteration smoke check run alongside the M9.1 web-workload sitting rather than a full re-benched backfill row; kept in this table/chart anyway since 'mixed' is wall-neutral by construction here (the M9.1 win is on the web workload) and the smoke iterations (1.158/1.164/1.228 wall, 2130.8/2005.2/2266.9 MB) are internally consistent with the series.
+
 - **Backfill integrity**: each milestone's publish output is timestamp-verified before benching (an earlier attempt silently re-benched a stale dll after a failed publish — those rows were purged from the archive). This sitting's stale-dll check flagged identical 1.194 s wall medians at Vectorized bitmap skip and Partitioned stack scan; the raw iteration sets differ entirely (1.175/1.194/1.269 vs 1.150/1.280/1.194, distinct GC counts and sim_s), so it is a genuine coincidence of overlapping medians, not a stale build.
 
 
@@ -36,6 +38,7 @@ Every row in this file — all thirteen milestones and all four stock anchors �
 | Partitioned stack scan | `8b8bcbd` | **1.194** |
 | Zeroed-hole markers | `8868c22` | **1.234** |
 | Slow-path bump-serve | `6b6b106` | **1.104** |
+| Boost cap 192 MB | `70be506` | **1.164** |
 
 ## 'mixed' medians (wall seconds) — stock anchors (same sitting)
 
@@ -63,6 +66,7 @@ Every row in this file — all thirteen milestones and all four stock anchors �
 | Partitioned stack scan | `8b8bcbd` | **2019.6** |
 | Zeroed-hole markers | `8868c22` | **2018.3** |
 | Slow-path bump-serve | `6b6b106` | **1993.0** |
+| Boost cap 192 MB | `70be506` | **2130.8** |
 
 ## 'mixed' medians (peak working-set MB) — stock anchors (same sitting)
 

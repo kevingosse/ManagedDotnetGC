@@ -35,6 +35,11 @@ milestones = [
     # M9 (2026-07-07): slow-path bump-serve — 20x carve inflation was the
     # suspension-frequency mechanism; best mixed wall of the series.
     ("slow-path\nbump-serve", 1.104),
+    # M9.1 (2026-07-07, sha 70be506, label m9r-cap192-smoke): boost cap 448->192 MB
+    # — the web-workload residual-gap profile found the larger boost bought no rps,
+    # so it's capped; wall-neutral here as expected (smoke sitting: iters 1.158,
+    # 1.164, 1.228 — median 1.164).
+    ("boost cap\n192 MB", 1.164),
 ]
 
 # (label, line y, explicit label y — slots picked to clear every dashed line and each

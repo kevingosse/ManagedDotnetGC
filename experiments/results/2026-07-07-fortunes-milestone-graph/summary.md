@@ -48,6 +48,7 @@ outright under load.
 | 11 | Partitioned stack scan | `8b8bcbd` | **72,137** | **1,262** | clean |
 | 12 | Zeroed-hole markers | `8868c22` | **71,749** | **1,198** | clean |
 | 13 | Slow-path bump-serve | `6b6b106` | **80,595** | **990** | clean |
+| 14 | Boost cap 192 MB | `70be506` | **80,408** | **683** | separate same-day sitting (label `m9r-cap192`); own stock-svr-h8 anchor 83,798 rps / 731 MB (label `m9r-stockh8`) — not comparable to the stock cluster above |
 
 ### Error annotations (no failed stages)
 
@@ -77,8 +78,15 @@ outright under load.
   (wks). The adaptive nursery bought its throughput with the series' working-set peak
   (1.6 GB); M9 clawed ~270 MB of that back while also gaining rps. Only Server GC
   (32 heaps) (2.1 GB) is hungrier.
+- **M9.1 boost cap 192 MB** (`70be506`, separate same-day sitting): a residual-gap
+  profile found the 448 MB boost bought no rps (nursery size was RPS-flat down to a
+  256 MB budget), so it's capped at 192. Rps is unchanged (80,408, 0.998× the M9
+  stage) while WS drops another 307 MB to 683 — below that sitting's own stock-svr-h8
+  anchor (731 MB), at 0.96× its rps (83,798).
 
 Machine state: normal desktop background; Docker Desktop (Linux engine) running the
 Postgres container during all rows, including the stock anchors. Raw rows (labels
 `msf-1`…`msf-13`, `msf-2-retry`, `msf-8-retry`, `msf-stock-*`) in
-`experiments/results/techempower-history.csv`.
+`experiments/results/techempower-history.csv`; M9.1's own row (label `m9r-cap192`,
+`m9r-stockh8`) is a separate later sitting the same day, kept apart from the
+`msf-*` backfill per the cross-sitting drift caveat above.

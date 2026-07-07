@@ -26,6 +26,12 @@ milestones = [
     ("zeroed-hole\nmarkers", 1198),
     # M9 slow-path bump-serve claws ~270 MB of that back while ALSO gaining RPS.
     ("slow-path\nbump-serve", 990),
+    # M9.1 boost cap 192 MB (2026-07-07, separate same-day sitting, sha 70be506,
+    # label m9r-cap192 in techempower-history.csv): the 448 MB boost bought no RPS,
+    # so it's capped — WS drops another ~300 MB, now below that sitting's own
+    # stock-h8 anchor (731 MB, not the 726 MB in the cluster above — a different
+    # sitting).
+    ("boost cap\n192 MB", 683),
 ]
 
 # (label, line y, explicit label y). Unlike the wall/RPS charts the four anchors are

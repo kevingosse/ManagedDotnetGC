@@ -32,6 +32,13 @@ milestones = [
     # M9 slow-path bump-serve: kills the 20x carve inflation that drove
     # suspension frequency — first stage past Workstation GC and Server GC (32 heaps).
     ("slow-path\nbump-serve", 80595),
+    # M9.1 boost cap 192 MB (2026-07-07, separate same-day sitting, sha 70be506,
+    # label m9r-cap192 in techempower-history.csv): residual-gap profile found the
+    # 448 MB boost bought no RPS, so it's capped. This point and its own stock-h8
+    # anchor (83,798 — NOT the 88,057 cluster above, a different sitting) come from
+    # that later sitting; rps is plotted on the hero line as reported (80,408) rather
+    # than re-normalized against the earlier cluster.
+    ("boost cap\n192 MB", 80408),
 ]
 
 # (label, line y, explicit label y). The four stock anchors are clustered within
@@ -87,14 +94,23 @@ for label, val, label_y, color in stock_refs:
 ax.plot(xs, ys, color=MAIN_COLOR, linewidth=3.2, zorder=4, solid_capstyle="round")
 ax.scatter(xs, ys, s=110, color=MAIN_COLOR, zorder=5, edgecolors="white", linewidths=1.6)
 
-# value labels above each point. White halo bbox: the last hero point (80.6k) sits
-# right at the Server GC (32 heaps) dashed line, so a plain label would get a
-# strikethrough from the dashed line running behind it.
+# value labels above each point. White halo bbox: several hero points (80.6k, 80.4k)
+# sit right at the Server GC (32 heaps) dashed line, so a plain label would get a
+# strikethrough from the dashed line running behind it. The last two points (M9
+# 80.6k, M9.1 80.4k) are one x-unit apart at nearly the same height, so an "above"
+# label on both collides — M9.1's label drops BELOW its point instead, into the
+# wide-open band between the hero tail and the M8-stage points.
 label_offset = (ymax - ymin) * 0.045
+last_x = xs[-1]
 for x, y in zip(xs, ys):
-    ax.annotate(f"{y/1000:.1f}k", (x, y), xytext=(0, 14), textcoords="offset points",
-                ha="center", va="bottom", fontsize=13.5, fontweight="bold", color=INK, zorder=6,
-                bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
+    if x == last_x:
+        ax.annotate(f"{y/1000:.1f}k", (x, y), xytext=(0, -18), textcoords="offset points",
+                    ha="center", va="top", fontsize=13.5, fontweight="bold", color=INK, zorder=6,
+                    bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
+    else:
+        ax.annotate(f"{y/1000:.1f}k", (x, y), xytext=(0, 14), textcoords="offset points",
+                    ha="center", va="bottom", fontsize=13.5, fontweight="bold", color=INK, zorder=6,
+                    bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
 
 # x tick labels
 ax.set_xticks(xs)
