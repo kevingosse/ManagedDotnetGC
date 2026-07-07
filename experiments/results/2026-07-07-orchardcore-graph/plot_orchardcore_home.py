@@ -14,6 +14,10 @@ configs = [
     ("Workstation GC\n(stock)", 1694, 222, 400, "#9a988f"),
     ("ManagedDotnetGC\n(custom, M9.1)", 4940, 64, 985, "#2a78d6"),
     ("Server GC\n(8 heaps, stock)", 5236, 172, 950, "#3a3a37"),
+    # DATAS (the .NET 10 server default): 3 iters from ~25 min later in the same
+    # sitting; p99 iters 60/77/172 — episodic spikes, single-window tail comparisons
+    # are noisy (see the .md).
+    ("Server GC\n(DATAS, stock)", 5421, 77, 462, "#55544e"),
 ]
 
 MAIN_COLOR = "#2a78d6"
@@ -89,10 +93,12 @@ fig.text(0.065, 0.885,
           "YesSql per request — 128 connections, blog homepage (/)",
           fontsize=12, color=SECONDARY_INK, ha="left", va="top")
 
-# ---- footnote: peak working set + methodology ----
-fig.text(0.065, 0.035,
+# ---- footnote: peak working set + methodology (two lines to fit the fig width) ----
+fig.text(0.065, 0.02,
           "Peak working set: custom 985 MB, Server GC (8 heaps) 950 MB, Workstation GC 400 MB. "
-          "Medians of 6 iterations, 128 conns, same sitting.",
+          "Medians of 6 iterations, 128 conns, same sitting.\n"
+          "DATAS WS 462 MB; DATAS is the .NET 10 server default. DATAS p99 iters 60/77/172 — "
+          "episodic spikes, single-window tail comparisons are noisy (see the .md).",
           fontsize=10, color=MUTED, ha="left", va="bottom", style="italic")
 
 fig.savefig(OUT_PNG, dpi=dpi, facecolor="white")

@@ -9,6 +9,11 @@ M9.1/`70be506`). Source rows: `experiments/results/orchard-history.csv`, labels
 | stock-wks | 1694 | 67 | 222 | 400 |
 | custom (ManagedDotnetGC M9.1) | 4940 | 24 | 64 | 985 |
 | stock-svr-h8 | 5236 | 18 | 172 | 950 |
+| stock-svr-datas | 5421 | 18 | 77 | 462 |
+
+DATAS row: 3 iterations from ~25 min later in the same sitting; DATAS is the .NET 10 server
+default. Its p99 iterations were 60/77/172 — episodic spikes, so single-window tail comparisons
+are noisy (see the analysis .md).
 
 Chart: `orchardcore-home.png` — grouped bar chart, two panels (throughput rps, p99 latency ms),
 custom bar highlighted in the hero blue used throughout the milestone charts.
