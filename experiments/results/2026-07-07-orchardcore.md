@@ -53,6 +53,32 @@ smells like SQLite write contention or a lock convoy on the content-item path, n
 signal. Future: rerun the post endpoint with Postgres or diagnose the write; until
 then only the homepage differentiates GCs.
 
+## The bottleneck, measured (gcstats, added same evening on Kevin's question)
+
+NOT the TechEmpower scheduler tax. Per-collection stats (-StatsDir) under load:
+**~15% of wall is STW.** 976 young GCs (~10/s) at p50 12.3 ms + 236 fulls (1.6/s,
+217 'promoted') at p50 33 ms. Young pause breakdown: **roots 5.4 ms** (deep
+Razor/DI/middleware stacks — 11× the TFB post-partition floor of 469 µs) +
+**cards 4.3 ms** (real old→young graph, ~253 card regions of mid-life content
+objects) + sweep 1.6 ms.
+
+Why 10 young GCs/s: **the boost controller has this workload backwards.** In-flight
+survivor mass is concurrency-bound (~18-19 MB regardless of interval — confirmed:
+same marked_mb at 64 MB and 256 MB budgets), but 18 MB > the 16 MB shrink gate
+(fires on 661/976 GCs) and 12 ms > the 10 ms cheap-pause gate — so the boost can
+never grow and keeps collapsing the budget to 64-137 MB. A bigger budget marks the
+same mass fewer times AND promotes less (fewer 'promoted' fulls); the gates,
+calibrated on TFB's 2.4 MB in-flight, do the opposite here.
+
+Confirmation with contamination: -Gen0MB 256 (controller off) → young 976→395,
+RPS +7% (4550→4881 stats-run-to-stats-run), p50 27→22 ms — DESPITE unleashing the
+known fixed-gen0size scar (demand=2×budget=512 that this heap can't retain →
+393 starved fulls, ~3/s). The +7% survived a full-cycle storm; the proper fix is
+controller recalibration (grow gates for concurrency-bound survivor mass — rate- or
+live-relative, not absolute; rethink the 10 ms cheap gate, which blocks growth
+exactly when a real app needs it most), whose boost path moves demand correctly.
+Next-session item #1.
+
 ## Repro
 
 ```

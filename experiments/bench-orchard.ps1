@@ -23,7 +23,8 @@ param(
     [string]$StatsDir = "",
     [string]$AppDir = 'E:\git\oc-bench\publish',
     [string]$AppDll = 'OcBench.dll',
-    [string]$PostPath = '/blog/post-1'   # sample post created by the Blog recipe
+    [string]$PostPath = '/blog/post-1',  # sample post created by the Blog recipe
+    [int]$Gen0MB = 0                     # DOTNET_GCgen0size override (0 = unset)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,6 +44,7 @@ $env:ASPNETCORE_URLS = $base
 $env:ASPNETCORE_ENVIRONMENT = 'Production'
 $env:DOTNET_gcConservative = '0'
 Remove-Item Env:DOTNET_GCHeapHardLimit, Env:DOTNET_GCStatsFile, Env:DOTNET_GCAllocShards, Env:DOTNET_GCHeapCount, Env:DOTNET_GCDynamicAdaptationMode, Env:DOTNET_GCgen0size -ErrorAction SilentlyContinue
+if ($Gen0MB -gt 0) { $env:DOTNET_GCgen0size = '{0:x}' -f ($Gen0MB * 1MB) }
 
 if ($GcDll) {
     # Deploy under the loaded name (bench-techempower.ps1 scar: any other filename
