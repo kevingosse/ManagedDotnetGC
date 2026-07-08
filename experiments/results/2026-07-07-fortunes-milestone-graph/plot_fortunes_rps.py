@@ -38,7 +38,7 @@ milestones = [
     # anchor (83,798 — NOT the 88,057 cluster above, a different sitting) come from
     # that later sitting; rps is plotted on the hero line as reported (80,408) rather
     # than re-normalized against the earlier cluster.
-    ("boost cap\n192 MB", 80408),
+    ("tuning", 80408),
 ]
 
 # (label, line y, explicit label y). The four stock anchors are clustered within
@@ -49,7 +49,7 @@ milestones = [
 # its neighbor label.
 stock_refs = [
     ("Server GC (8 heaps)", 88057, 106000, "#3a3a37"),
-    ("Server GC (DATAS)", 86736, 101000, "#55544e"),
+    #("Server GC (DATAS)", 86736, 101000, "#55544e"),
     ("Server GC (32 heaps)", 80309, 96000, "#6b6a63"),
     ("Workstation GC", 76822, 91000, "#9a988f"),
 ]
@@ -67,7 +67,7 @@ plt.rcParams["font.family"] = font_family
 
 fig_w, fig_h, dpi = 15.0, 6.75, 100
 fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor="white")
-ax = fig.add_axes([0.055, 0.13, 0.82, 0.66])  # room for title block + right-edge ref labels
+ax = fig.add_axes([0.055, 0.13, 0.89, 0.66])  # room for title block + right-edge ref labels
 ax.set_facecolor("white")
 
 xs = list(range(len(milestones)))
@@ -137,16 +137,12 @@ ax.text(-0.4, ymax * 0.99, "ManagedDotnetGC (C#)",
         color=MAIN_COLOR, fontsize=13.5, fontweight="bold", ha="left", va="top")
 
 # ---- title block ----
-fig.text(0.07, 0.93, "A .NET GC written in C#: web-workload throughput across milestones",
+fig.text(0.07, 0.93, "A .NET GC written in C# - Throughput",
           fontsize=20, fontweight="bold", color=INK, ha="left", va="top")
 fig.text(0.07, 0.875,
           "TechEmpower Fortunes (ASP.NET MVC + EF Core, PostgreSQL) — 256 connections, "
-          "median of 3×15 s runs, all builds + stock anchors benched in one sitting",
+          "median of 3×15 s runs",
           fontsize=12.5, color=SECONDARY_INK, ha="left", va="top")
-
-# ---- small annotation ----
-fig.text(0.965, 0.03, "72h of work, 2026-07-05/06/07", fontsize=10, color=MUTED,
-          ha="right", va="bottom", style="italic")
 
 fig.savefig(OUT_PNG, dpi=dpi, facecolor="white")
 print("saved", OUT_PNG)

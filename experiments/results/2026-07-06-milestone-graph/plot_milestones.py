@@ -23,13 +23,12 @@ milestones = [
     ("partitioned\nstack scan", 1.194),
     ("zeroed-hole\nmarkers", 1.234),
     ("slow-path\nbump-serve", 1.104),
-    ("boost cap\n192 MB", 1.164),
+    ("tuning", 1.164),
 ]
 
 stock_refs = [
     ("Workstation GC", 2.595, "#9a988f"),
     ("Server GC (32 heaps)", 1.970, "#6b6a63"),
-    ("Server GC (DATAS)", 1.827, "#55544e"),
     ("Server GC (8 heaps)", 1.338, "#3a3a37"),
 ]
 
@@ -46,7 +45,7 @@ plt.rcParams["font.family"] = font_family
 
 fig_w, fig_h, dpi = 15.0, 6.75, 100
 fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor="white")
-ax = fig.add_axes([0.055, 0.13, 0.82, 0.66])  # leave room for title block + right-edge ref labels
+ax = fig.add_axes([0.055, 0.13, 0.89, 0.66])  # leave room for title block + right-edge ref labels
 ax.set_facecolor("white")
 
 xs = list(range(len(milestones)))
@@ -75,7 +74,6 @@ line_end_x = len(milestones) - 1 + 0.45
 stock_label_y = {
     "Workstation GC": 4.25,
     "Server GC (32 heaps)": 3.75,
-    "Server GC (DATAS)": 3.25,
     "Server GC (8 heaps)": 2.75,
 }
 
@@ -124,16 +122,11 @@ ax.text(-0.4, ys[0] + label_offset + (ymax - ymin) * 0.05, "ManagedDotnetGC (C#)
         color=MAIN_COLOR, fontsize=13.5, fontweight="bold", ha="left", va="bottom")
 
 # ---- title block ----
-fig.text(0.07, 0.93, "A .NET GC written in C#: wall time across milestones",
+fig.text(0.07, 0.93, "A .NET GC written in C#: GCPerfSim",
           fontsize=20, fontweight="bold", color=INK, ha="left", va="top")
 fig.text(0.07, 0.875,
-          "GCPerfSim, mixed workload: 95% ordinary / 5% pinned allocations — "
-          "all builds re-benchmarked same sitting, same machine, vs same-sitting stock anchors",
+          "GCPerfSim, mixed workload: 95% ordinary / 5% pinned allocations — ",
           fontsize=12.5, color=SECONDARY_INK, ha="left", va="top")
-
-# ---- small annotation ----
-fig.text(0.965, 0.03, "72h of work, 2026-07-05/06/07", fontsize=10, color=MUTED,
-          ha="right", va="bottom", style="italic")
 
 fig.savefig(OUT_PNG, dpi=dpi, facecolor="white")
 print("saved", OUT_PNG)
